@@ -142,8 +142,8 @@
 - [x] 任务通知点击直达任务页（v0.3.0：deep link `daoshi://tasks`；personas/data/chat 亦注册 deep link）
 - [x] 单聊页底栏遮挡输入栏修复（v0.3.0：push 层级页隐藏底栏 + AdaptiveScreen 统一 navigationBarsPadding）
 - [x] 种子数据并发竞态修复（v0.3.0：多收集器同时首订导致种子重复插入、列表出双行；改 Mutex + 一次性 + COUNT 判空）
-- [ ] AI 定期提炼 ProfileFact（conversation → 洞察 → 档案）
-- [ ] 数据页习惯/洞察接真实数据（依赖 AI 提炼流水线）
+- [x] AI 提炼流水线（v0.4.0：`data/ExtractionEngine.kt`——聊天回复成功落库后检查水位线，攒够 8 条增量消息自动调 LLM（复用 OpenAiClient）；产出 ProfileFact（按 key 覆盖，manual 来源不被篡改）+ AiInsight（标题去重、留 20 条）；解析器 `ProfileExtractor` 纯函数 + JVM 单测；数据页洞察区有手动「提炼」入口（API 未配置时隐藏））
+- [x] 数据页习惯/洞察接真实数据（v0.4.0：ai_insights 表（Room v4 + MIGRATION_3_4）驱动洞察卡，空时回退示例并标注「示例数据」；习惯卡改为「近 7 天打卡」每日完成热力（真数据）；档案条目 source=ai 带小徽标）
 
 ## 八、本地构建（已验证可用）
 

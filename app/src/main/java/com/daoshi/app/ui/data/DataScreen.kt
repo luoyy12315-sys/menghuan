@@ -39,6 +39,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.daoshi.app.data.model.AiInsight
 import com.daoshi.app.data.model.ProfileFact
 import com.daoshi.app.ui.common.EaseOutExpo
 import com.daoshi.app.ui.common.NeuButton
@@ -58,6 +59,21 @@ import com.daoshi.app.ui.theme.NeuBackground
 import com.daoshi.app.ui.theme.NeuTrack
 import com.daoshi.app.ui.theme.TextPrimary
 import com.daoshi.app.ui.theme.TextSecondary
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+
+/** 洞察卡日期：今天/昨天/具体日期 */
+private fun AiInsight.dateLabel(): String {
+    val zone = ZoneId.systemDefault()
+    val date = Instant.ofEpochMilli(createdAt).atZone(zone).toLocalDate()
+    val today = LocalDate.now(zone)
+    return when (date) {
+        today -> "今天"
+        today.minusDays(1) -> "昨天"
+        else -> "${date.monthValue}月${date.dayOfMonth}日"
+    }
+}
 
 /**
  * 我的数据页（新拟态）：目标完成度 + 基础档案 + 习惯追踪 + AI 洞察。
@@ -68,6 +84,10 @@ import com.daoshi.app.ui.theme.TextSecondary
 fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
     val facts by vm.facts.collectAsState()
     val weekProgress by vm.weekProgress.collectAsState()
+    val weekDaily by vm.weekDaily.collectAsState()
+    val insights by vm.insights.collectAsState()
+    val extracting by vm.extracting.collectAsState()
+    val apiReady by vm.apiReady.collectAsState()
     var showEditSheet by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
 
@@ -108,60 +128,58 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                         ProfileRow(
                             label = fact.key,
                             value = fact.value,
+                            aiSource = fact.source == "ai",
                             onClick = { showEditSheet = true },
                         )
                     }
                 }
             }
 
-            SampledSectionTitle("追踪中的习惯")
-            NeuCard(cornerRadius = 22.dp) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("睡前刷手机", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                    Text("追踪 21 天", fontSize = 12.sp, color = MutedText)
-                }
-                Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                    repeat(7) { i ->
-                        val filled = i < 5
-                        Box(
-                            Modifier
-                                .size(24.dp)
-                                .then(
-                                    if (filled) {
-                                        Modifier.background(AccentBrush, CircleShape)
-                                    } else {
-                                        Modifier.neuSurface(
-                                            999.dp,
-                                            color = NeuBackground,
-                                            elevation = 4.dp,
-                                            inset = true,
-                                            shape = CircleShape,
-                                        )
-                                    },
-                                ),
-                        )
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-                Text("近 7 天 5 天超标 · 平均时长 1h 40m", fontSize = 12.sp, color = MutedText)
-            }
+            // 习惯卡（真数据）：近 7 天每日完成任务数 = 打卡热力
+            NeuSectionTitle("近 7 天打卡", modifier = Modifier.padding(horizontal = 4.dp))
+            HabitCard(weekDaily)
 
-            SampledSectionTitle("AI 洞察")
-            InsightCard(
-                "熬夜与短视频强相关",
-                "过去 14 天，睡前刷短视频的日子平均晚睡 82 分钟。建议把「睡前刷手机」替换为固定的放松流程。",
-                "今天",
-            )
-            InsightCard(
-                "上午效率最高",
-                "你的深度工作集中在 9:00–11:30，重要任务建议安排在这个时段，下午适合处理琐事。",
-                "昨天",
-            )
+            // AI 洞察：有提炼产物显示真数据；没有时回退示例并标注。
+            // API 已配置时提供手动「提炼」入口。
+            Row(
+                Modifier.padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "AI 洞察",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MutedText,
+                    letterSpacing = 0.8.sp,
+                )
+                if (insights.isEmpty()) {
+                    Spacer(Modifier.width(7.dp))
+                    Text("示例数据", fontSize = 10.sp, color = com.daoshi.app.ui.theme.FaintText)
+                }
+                Spacer(Modifier.weight(1f))
+                if (apiReady) {
+                    NeuTextButton(
+                        if (extracting) "提炼中…" else "提炼",
+                        onClick = { vm.refreshInsights() },
+                    )
+                }
+            }
+            if (insights.isEmpty()) {
+                InsightCard(
+                    "熬夜与短视频强相关",
+                    "过去 14 天，睡前刷短视频的日子平均晚睡 82 分钟。建议把「睡前刷手机」替换为固定的放松流程。",
+                    "今天",
+                )
+                InsightCard(
+                    "上午效率最高",
+                    "你的深度工作集中在 9:00–11:30，重要任务建议安排在这个时段，下午适合处理琐事。",
+                    "昨天",
+                )
+            } else {
+                insights.forEach { insight ->
+                    InsightCard(insight.title, insight.detail, insight.dateLabel())
+                }
+            }
         }
     }
 
@@ -177,26 +195,49 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
     }
 }
 
-/** 分组标题 + 右侧「示例数据」小标：诚实标注尚未接真实数据的演示卡片 */
+/** 习惯卡（真数据）：近 7 天打卡热力——每天完成任务数，>0 记一格 */
 @Composable
-private fun SampledSectionTitle(title: String) {
-    Row(
-        Modifier.padding(horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            title,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MutedText,
-            letterSpacing = 0.8.sp,
-        )
-        Spacer(Modifier.width(7.dp))
-        Text(
-            "示例数据",
-            fontSize = 10.sp,
-            color = com.daoshi.app.ui.theme.FaintText,
-        )
+private fun HabitCard(weekDaily: List<DayCount>) {
+    val totalDone = weekDaily.sumOf { it.done }
+    val note = if (totalDone == 0) {
+        "暂无打卡记录 · 去任务页勾选完成"
+    } else {
+        "共完成 $totalDone 项 · 连续记录看你有多稳"
+    }
+    NeuCard(cornerRadius = 22.dp) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("每日任务打卡", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+            Text("6 天前 → 今天", fontSize = 12.sp, color = MutedText)
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+            weekDaily.forEach { day ->
+                val filled = day.done > 0
+                Box(
+                    Modifier
+                        .size(24.dp)
+                        .then(
+                            if (filled) {
+                                Modifier.background(AccentBrush, CircleShape)
+                            } else {
+                                Modifier.neuSurface(
+                                    999.dp,
+                                    color = NeuBackground,
+                                    elevation = 4.dp,
+                                    inset = true,
+                                    shape = CircleShape,
+                                )
+                            },
+                        ),
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(note, fontSize = 12.sp, color = MutedText)
     }
 }
 
@@ -259,17 +300,30 @@ private fun OverviewCard(progress: WeekProgress, scrollProvider: () -> Int) {
 }
 
 @Composable
-private fun ProfileRow(label: String, value: String, onClick: () -> Unit = {}) {
+private fun ProfileRow(label: String, value: String, aiSource: Boolean, onClick: () -> Unit = {}) {
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            label,
-            fontSize = 14.sp,
-            color = MutedText,
-            modifier = Modifier.width(72.dp),
-        )
+        Row(Modifier.width(72.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                fontSize = 14.sp,
+                color = MutedText,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            // AI 提炼来源徽标：与手填条目区分（手填的编辑更新后仍标记 manual）
+            if (aiSource) {
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "AI",
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NeuAccent,
+                )
+            }
+        }
         Text(
             value,
             fontSize = 14.sp,

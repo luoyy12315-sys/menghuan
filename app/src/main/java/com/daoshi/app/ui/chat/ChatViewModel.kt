@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.daoshi.app.MentorApp
+import com.daoshi.app.data.ExtractionEngine
 import com.daoshi.app.data.PersonaRepository
 import com.daoshi.app.data.SettingsRepository
 import com.daoshi.app.data.db.AppDatabase
@@ -48,6 +49,7 @@ class ChatViewModel(
     private val personaRepository: PersonaRepository,
     private val settingsRepository: SettingsRepository,
     private val db: AppDatabase,
+    private val extractionEngine: ExtractionEngine,
     private val personaId: Long,
 ) : ViewModel() {
 
@@ -233,6 +235,8 @@ class ChatViewModel(
         }
         persistReply(sb)
         _uiState.update { it.copy(isStreaming = false) }
+        // 提炼流水线：攒够增量消息后由引擎在应用级作用域自行决定是否调用 LLM
+        extractionEngine.maybeExtract(personaId)
     }
 
     /** 流结束后落库 assistant 回复；NonCancellable 保证已取消的作用域里也能写完 */
@@ -289,7 +293,13 @@ class ChatViewModel(
         fun factory(personaId: Long) = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MentorApp
-                ChatViewModel(app.personaRepository, app.settingsRepository, app.db, personaId)
+                ChatViewModel(
+                    app.personaRepository,
+                    app.settingsRepository,
+                    app.db,
+                    app.extractionEngine,
+                    personaId,
+                )
             }
         }
 

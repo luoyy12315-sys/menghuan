@@ -75,3 +75,12 @@ data class ProfileFact(
     val source: String = "manual",  // manual / ai
     val updatedAt: Long = System.currentTimeMillis(),
 )
+
+/** AI 洞察：提炼流水线从对话中产出的行为模式观察（数据页「AI 洞察」真数据源） */
+@Entity(tableName = "ai_insights")
+data class AiInsight(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String,
+    val detail: String,
+    val createdAt: Long = System.currentTimeMillis(),
+)

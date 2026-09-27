@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
@@ -41,6 +42,9 @@ class SettingsRepository(private val context: Context) {
 
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
+
+    /** 提炼水位线前缀：extract_upto_<personaId> = 已提炼到的最后一条消息 id */
+    private val watermarkPrefix = "extract_upto_"
 
     // Keystore 解密有成本：密文未变时复用内存中的明文
     private var cachedSealed: String? = null
@@ -124,6 +128,14 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setNotificationsEnabled(enabled: Boolean) {
         context.settingsStore.edit { it[keyNotifyEnabled] = enabled }
+    }
+
+    /** 提炼水位线：每个会话已提炼到的最后一条消息 id（extract_upto_<personaId>） */
+    suspend fun extractionWatermark(personaId: Long): Long =
+        context.settingsStore.data.first()[longPreferencesKey(watermarkPrefix + personaId)] ?: 0L
+
+    suspend fun setExtractionWatermark(personaId: Long, messageId: Long) {
+        context.settingsStore.edit { it[longPreferencesKey(watermarkPrefix + personaId)] = messageId }
     }
 
     private fun decrypt(sealed: String): String {

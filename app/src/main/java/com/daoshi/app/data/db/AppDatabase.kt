@@ -9,6 +9,7 @@ import androidx.room.RoomDatabase
 import androidx.room.Update
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.daoshi.app.data.model.AiInsight
 import com.daoshi.app.data.model.ChatMessage
 import com.daoshi.app.data.model.Persona
 import com.daoshi.app.data.model.ProfileFact
@@ -65,6 +66,13 @@ interface MessageDao {
     /** 清除全部聊天记录（数据与隐私面板，需确认） */
     @Query("DELETE FROM messages")
     suspend fun deleteAll()
+
+    /** 提炼水位线之后的增量消息（只送新内容给 LLM，省 token） */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId AND id > :afterId " +
+            "ORDER BY id ASC LIMIT 40"
+    )
+    suspend fun getAfterId(conversationId: Long, afterId: Long): List<ChatMessage>
 }
 
 @Dao
@@ -99,11 +107,35 @@ interface ProfileFactDao {
 
     @Query("DELETE FROM profile_facts WHERE id = :id")
     suspend fun delete(id: Long)
+
+    /** 提炼合并用：同名条目覆盖而非新增 */
+    @Query("SELECT * FROM profile_facts WHERE key = :key LIMIT 1")
+    suspend fun getByKey(key: String): ProfileFact?
+}
+
+@Dao
+interface AiInsightDao {
+    /** 数据页「AI 洞察」真数据源：最新两条 */
+    @Query("SELECT * FROM ai_insights ORDER BY createdAt DESC LIMIT 2")
+    fun observeLatest(): Flow<List<AiInsight>>
+
+    @Query("SELECT * FROM ai_insights WHERE title = :title LIMIT 1")
+    suspend fun getByTitle(title: String): AiInsight?
+
+    @Insert
+    suspend fun insert(insight: AiInsight): Long
+
+    /** 只留最近 20 条，防无限膨胀 */
+    @Query(
+        "DELETE FROM ai_insights WHERE id NOT IN " +
+            "(SELECT id FROM ai_insights ORDER BY createdAt DESC LIMIT 20)"
+    )
+    suspend fun prune()
 }
 
 @Database(
-    entities = [Persona::class, ChatMessage::class, TaskItem::class, ProfileFact::class],
-    version = 3,
+    entities = [Persona::class, ChatMessage::class, TaskItem::class, ProfileFact::class, AiInsight::class],
+    version = 4,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -112,6 +144,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun taskDao(): TaskDao
     abstract fun profileFactDao(): ProfileFactDao
+    abstract fun aiInsightDao(): AiInsightDao
 
     companion object {
         /** v2：任务加 dueAt/createdBy，人设加 tone（数据只存本机，不允许破坏性重建） */
@@ -135,6 +168,19 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL(
                     "CREATE INDEX IF NOT EXISTS `index_messages_conversationId_timestamp` " +
                         "ON `messages` (`conversationId`, `timestamp`)"
+                )
+            }
+        }
+
+        /** v4：AI 洞察表（提炼流水线产出，数据页真数据源） */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `ai_insights` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`detail` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL)"
                 )
             }
         }

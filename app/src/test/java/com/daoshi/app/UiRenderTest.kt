@@ -171,12 +171,50 @@ class UiRenderTest {
         // 搜索态输入框是主窗口 BasicTextField，可直接输入
         compose.onNode(androidx.compose.ui.test.hasSetTextAction())
             .performTextInput("睡前")
-        // 调试用：等待"命中结果"或"空结果提示"任一上屏，超时都能区分两种路径
-        compose.waitUntil(15_000) {
-            compose.onAllNodesWithText("睡前刷手机", substring = true).fetchSemanticsNodes().isNotEmpty() ||
-                compose.onAllNodesWithText("没有匹配结果", substring = true).fetchSemanticsNodes().isNotEmpty()
-        }
+        awaitText("睡前刷手机") // 命中结果上屏
         snap("7-search")
-        awaitText("睡前刷手机") // 最终仍要求命中结果上屏
+    }
+
+    /** 数据页真数据态：AI 洞察（提炼产物）+ 近 7 天打卡热力 + 真实完成度圆环 */
+    @Test
+    fun render7DataReal() {
+        val app = compose.activity.application as MentorApp
+        val zone = java.time.ZoneId.systemDefault()
+        val today = java.time.LocalDate.now(zone)
+        fun dayStart(offsetDays: Long) =
+            today.minusDays(offsetDays).atStartOfDay(zone).toInstant().toEpochMilli()
+        kotlinx.coroutines.runBlocking {
+            app.db.aiInsightDao().insert(
+                com.daoshi.app.data.model.AiInsight(
+                    title = "熬夜与短视频强相关",
+                    detail = "过去 14 天，睡前刷短视频的日子平均晚睡 82 分钟。建议把「睡前刷手机」替换为固定的放松流程。",
+                )
+            )
+            app.db.aiInsightDao().insert(
+                com.daoshi.app.data.model.AiInsight(
+                    title = "上午效率最高",
+                    detail = "你的深度工作集中在 9:00–11:30，重要任务建议安排在这个时段，下午适合处理琐事。",
+                    createdAt = System.currentTimeMillis() - 86_400_000,
+                )
+            )
+            // 近 7 天里 5 天有打卡（各 1 项完成），另有 1 项今天未完成
+            listOf(0L, 1L, 3L, 4L, 6L).forEach { offset ->
+                app.db.taskDao().upsert(
+                    com.daoshi.app.data.model.TaskItem(
+                        title = "打卡 D$offset",
+                        dueAt = dayStart(offset),
+                        isDone = true,
+                    )
+                )
+            }
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(title = "今日未完成的任务", dueAt = dayStart(0))
+            )
+        }
+        awaitText("阿布")
+        clickText("数据")
+        awaitText("熬夜与短视频强相关") // 真实洞察上屏
+        awaitText("自由职业") // 档案种子也已上屏（首个 DB 打开+种子的异步时序）
+        snap("8-data-real")
     }
 }
