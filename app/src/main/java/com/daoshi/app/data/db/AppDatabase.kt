@@ -47,6 +47,21 @@ interface MessageDao {
 
     @Insert
     suspend fun insert(message: ChatMessage): Long
+
+    /** 会话列表搜索：按内容匹配，时间倒序限量（命中后跳转会话） */
+    @Query(
+        "SELECT * FROM messages WHERE content LIKE '%' || :query || '%' " +
+            "ORDER BY timestamp DESC LIMIT 50"
+    )
+    suspend fun searchMessages(query: String): List<ChatMessage>
+
+    /** 数据与隐私面板：消息总数 */
+    @Query("SELECT COUNT(*) FROM messages")
+    fun observeCount(): Flow<Long>
+
+    /** 清除全部聊天记录（数据与隐私面板，需确认） */
+    @Query("DELETE FROM messages")
+    suspend fun deleteAll()
 }
 
 @Dao

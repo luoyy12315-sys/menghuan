@@ -1,9 +1,9 @@
 package com.daoshi.app.ui.chat
 
-import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,17 +12,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,7 +33,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,6 +57,7 @@ import com.daoshi.app.ui.common.EaseOutQuart
 import com.daoshi.app.ui.common.NeuAvatar
 import com.daoshi.app.ui.common.NeuCircleButton
 import com.daoshi.app.ui.common.NeuTopBar
+import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.neuRowPress
 import com.daoshi.app.ui.common.neuSurface
 import com.daoshi.app.ui.persona.PersonaEditorSheet
@@ -62,9 +68,14 @@ import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
 import com.daoshi.app.ui.theme.TextPrimary
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
@@ -81,6 +92,12 @@ data class ConversationRowUi(
     val showDot: Boolean,
 )
 
+/** 搜索结果行：人设 + 命中的最新一条消息（null = 仅名字/身份命中） */
+data class SearchResultUi(
+    val persona: Persona,
+    val matched: ChatMessage?,
+)
+
 /**
  * 会话列表页（新拟态）：主入口。
  * - 每个 persona 是一个独立会话，点行进入单聊（onOpen）
@@ -90,7 +107,7 @@ data class ConversationRowUi(
 class ChatListViewModel(
     private val personaRepository: PersonaRepository,
     private val settingsRepository: SettingsRepository,
-    db: AppDatabase,
+    private val db: AppDatabase,
 ) : ViewModel() {
 
     val rows: StateFlow<List<ConversationRowUi>> =
@@ -114,6 +131,42 @@ class ChatListViewModel(
 
     fun savePersona(persona: Persona) = viewModelScope.launch {
         personaRepository.save(persona)
+    }
+
+    // ===== 搜索：人设名/身份 + 消息内容，200ms 输入防抖 =====
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _searchResults = MutableStateFlow<List<SearchResultUi>>(emptyList())
+    val searchResults: StateFlow<List<SearchResultUi>> = _searchResults.asStateFlow()
+
+    private var searchJob: Job? = null
+
+    fun onSearchQueryChange(query: String) {
+        _searchQuery.value = query
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            _searchResults.value = emptyList()
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(200)
+            _searchResults.value = runSearch(query.trim())
+        }
+    }
+
+    private suspend fun runSearch(q: String): List<SearchResultUi> {
+        val persons = personaRepository.observePersonas().first()
+        val messages = runCatching { db.messageDao().searchMessages(q) }.getOrDefault(emptyList())
+        val latestByPersona = messages.groupBy { it.conversationId }
+            .mapValues { (_, list) -> list.maxByOrNull { it.timestamp } }
+        return persons.mapNotNull { persona ->
+            val nameMatch = persona.name.contains(q, ignoreCase = true) ||
+                persona.title.contains(q, ignoreCase = true)
+            val matched = latestByPersona[persona.id]
+            if (nameMatch || matched != null) SearchResultUi(persona, matched) else null
+        }
     }
 
     private fun previewOf(persona: Persona, last: ChatMessage?): String {
@@ -162,10 +215,12 @@ fun ChatListScreen(
     vm: ChatListViewModel = viewModel(factory = ChatListViewModel.Factory),
 ) {
     val rows by vm.rows.collectAsState()
+    val searchQuery by vm.searchQuery.collectAsState()
+    val searchResults by vm.searchResults.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
     var showApiConfig by remember { mutableStateOf(false) }
     var showNewPersona by remember { mutableStateOf(false) }
-    val context = LocalContext.current
+    var searchMode by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -194,42 +249,54 @@ fun ChatListScreen(
             },
         )
 
-        // 搜索行：凹陷胶囊（二期接真实搜索）
-        Box(Modifier.padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 10.dp)) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .neuSurface(16.dp, color = MaterialTheme.colorScheme.background, elevation = 5.dp, inset = true)
-                    .neuRowPress {
-                        Toast.makeText(context, "开发中", Toast.LENGTH_SHORT).show()
-                    }
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    MIcons.Search,
-                    contentDescription = null,
-                    tint = MutedText,
-                    modifier = Modifier.size(15.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("搜索", fontSize = 14.sp, color = MutedText)
-            }
-        }
-
-        // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画
-        LazyColumn(Modifier.fillMaxSize()) {
-            itemsIndexed(rows, key = { _, row -> row.persona.id }) { index, row ->
-                Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 40).coerceAtMost(320)))) {
-                    ConversationRow(
-                        persona = row.persona,
-                        preview = row.preview,
-                        time = row.time,
-                        unread = row.showDot,
-                        onClick = { onOpen(row.persona.id) },
+        if (!searchMode) {
+            // 搜索行：点击进入搜索态（凹陷胶囊，二期起为真实搜索）
+            Box(Modifier.padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 10.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .neuSurface(16.dp, color = MaterialTheme.colorScheme.background, elevation = 5.dp, inset = true)
+                        .neuRowPress { searchMode = true }
+                        .padding(horizontal = 14.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        MIcons.Search,
+                        contentDescription = null,
+                        tint = MutedText,
+                        modifier = Modifier.size(15.dp),
                     )
+                    Spacer(Modifier.width(8.dp))
+                    Text("搜索", fontSize = 14.sp, color = MutedText)
                 }
             }
+
+            // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画
+            LazyColumn(Modifier.fillMaxSize()) {
+                itemsIndexed(rows, key = { _, row -> row.persona.id }) { index, row ->
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 40).coerceAtMost(320)))) {
+                        ConversationRow(
+                            persona = row.persona,
+                            preview = row.preview,
+                            time = row.time,
+                            unread = row.showDot,
+                            onClick = { onOpen(row.persona.id) },
+                        )
+                    }
+                }
+            }
+        } else {
+            SearchOverlay(
+                query = searchQuery,
+                results = searchResults,
+                onQueryChange = vm::onSearchQueryChange,
+                onExit = { searchMode = false; vm.onSearchQueryChange("") },
+                onOpen = { id ->
+                    searchMode = false
+                    vm.onSearchQueryChange("")
+                    onOpen(id)
+                },
+            )
         }
     }
 
@@ -255,6 +322,112 @@ fun ChatListScreen(
             onSave = { vm.savePersona(it); showNewPersona = false },
             onDismiss = { showNewPersona = false },
         )
+    }
+}
+
+@Composable
+private fun SearchResultRow(result: SearchResultUi, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .neuRowPress(onClick)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        NeuAvatar(result.persona.avatarEmoji, size = 46.dp)
+        Spacer(Modifier.width(13.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                result.persona.name,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                result.matched?.content?.replace('\n', ' ') ?: result.persona.title,
+                fontSize = 13.sp,
+                color = MutedText,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Icon(MIcons.ChevronRight, contentDescription = null, tint = FaintText, modifier = Modifier.size(14.dp))
+    }
+}
+
+/** 搜索态：输入框自动聚焦 + 实时结果（人设名/身份 + 消息内容） */
+@Composable
+private fun SearchOverlay(
+    query: String,
+    results: List<SearchResultUi>,
+    onQueryChange: (String) -> Unit,
+    onExit: () -> Unit,
+    onOpen: (Long) -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    Column(Modifier.fillMaxSize().imePadding()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                Modifier
+                    .weight(1f)
+                    .neuSurface(16.dp, color = MaterialTheme.colorScheme.background, elevation = 5.dp, inset = true)
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(MIcons.Search, contentDescription = null, tint = MutedText, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(8.dp))
+                Box(Modifier.weight(1f)) {
+                    if (query.isEmpty()) {
+                        Text("搜索人设或消息", fontSize = 14.sp, color = MutedText)
+                    }
+                    BasicTextField(
+                        value = query,
+                        onValueChange = onQueryChange,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester),
+                        textStyle = TextStyle(fontSize = 14.sp, color = TextPrimary),
+                        singleLine = true,
+                        cursorBrush = SolidColor(NeuAccent),
+                    )
+                }
+                if (query.isNotEmpty()) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "×",
+                        fontSize = 16.sp,
+                        color = MutedText,
+                        modifier = Modifier
+                            .clickable { onQueryChange("") }
+                            .padding(2.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.width(4.dp))
+            NeuTextButton("取消", onClick = onExit, color = TextPrimary)
+        }
+
+        when {
+            query.isBlank() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("搜索人设名字或聊天内容", fontSize = 13.sp, color = FaintText)
+            }
+            results.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("没有匹配结果", fontSize = 13.sp, color = FaintText)
+            }
+            else -> LazyColumn(Modifier.fillMaxSize()) {
+                itemsIndexed(results, key = { _, r -> r.persona.id }) { _, result ->
+                    SearchResultRow(result) { onOpen(result.persona.id) }
+                }
+            }
+        }
     }
 }
 

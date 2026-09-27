@@ -369,6 +369,21 @@
   .remind-row { display: flex; align-items: center; padding: 6px 0; font-size: 14px; color: var(--ink); cursor: pointer; }
   .remind-row .v { margin-left: auto; color: var(--muted); }
 
+  /* ===== 搜索态（会话列表搜索框进入） ===== */
+  .search-overlay {
+    position: absolute; inset: 54px 0 0; z-index: 48; background: var(--bg);
+    display: none; flex-direction: column;
+  }
+  .search-overlay.show { display: flex; }
+  .search-bar { display: flex; align-items: center; gap: 6px; padding: 8px 16px; }
+  .search-bar .field-in {
+    flex: 1; border-radius: 16px; padding: 11px 14px; display: flex; align-items: center; gap: 8px;
+    color: var(--muted); font-size: 14px;
+  }
+  .search-bar .field-in input { border: none; outline: none; background: transparent; font: inherit; color: var(--ink); width: 100%; }
+  .search-bar .cancel { color: var(--ink); font-size: 15px; padding: 8px 6px; cursor: pointer; flex: none; }
+  .search-hint { text-align: center; color: var(--faint); font-size: 13px; padding-top: 120px; }
+
   /* ===== Toast ===== */
   .toast {
     position: absolute; left: 50%; bottom: 110px; transform: translateX(-50%) translateY(20px);
@@ -420,7 +435,7 @@
           <div class="icon-btn neu-raised" onclick="openSheet('sheet-settings')"><svg viewBox="0 0 24 24"><path d="M4 6.5L20 6.5"/><circle cx="15" cy="6.5" r="2.2"/><path d="M4 12L20 12"/><circle cx="8.5" cy="12" r="2.2"/><path d="M4 17.5L20 17.5"/><circle cx="17" cy="17.5" r="2.2"/></svg></div>
         </div>
       </div>
-      <div class="search neu-inset pressable" onclick="toast('开发中')">
+      <div class="search neu-inset pressable" onclick="openSearch()">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16L20.5 20.5"/></svg>搜索
       </div>
       <div class="conv-list" id="conv-list"></div>
@@ -515,6 +530,18 @@
 
     <!-- ============ 弹层 ============ -->
     <div class="scrim" id="scrim" onclick="closeSheets()"></div>
+
+    <!-- ============ 搜索态 ============ -->
+    <div class="search-overlay" id="search-overlay">
+      <div class="search-bar">
+        <div class="field-in neu-inset">
+          <svg viewBox="0 0 24 24" style="width:15px;height:15px;stroke:var(--muted);fill:none;stroke-width:1.8;stroke-linecap:round;"><circle cx="11" cy="11" r="6.5"/><path d="M16 16L20.5 20.5"/></svg>
+          <input id="search-input" placeholder="搜索人设或消息" oninput="renderSearch()">
+        </div>
+        <div class="cancel" onclick="closeSearch()">取消</div>
+      </div>
+      <div id="search-results" style="flex:1;overflow-y:auto;"></div>
+    </div>
 
     <div class="sheet" id="sheet-settings">
       <div class="grab"></div><h3>设置</h3>
@@ -822,6 +849,41 @@ setTimeout(animateRing, 400);
 
 /* 设置 → 人设管理跳转（预览里用 toast 代替二级页） */
 function navTo() { toast('开发中'); }
+
+/* ===== 搜索（人设名/身份 + 消息内容） ===== */
+function openSearch() {
+  document.getElementById('search-overlay').classList.add('show');
+  setTimeout(() => document.getElementById('search-input').focus(), 60);
+  renderSearch();
+}
+function closeSearch() {
+  document.getElementById('search-overlay').classList.remove('show');
+  document.getElementById('search-input').value = '';
+}
+function renderSearch() {
+  const q = document.getElementById('search-input').value.trim().toLowerCase();
+  const box = document.getElementById('search-results');
+  box.innerHTML = '';
+  if (!q) { box.innerHTML = '<div class="search-hint">搜索人设名字或聊天内容</div>'; return; }
+  const hits = personas.filter(p =>
+    p.name.toLowerCase().includes(q) || p.title.toLowerCase().includes(q) ||
+    seeds[p.id].some(m => m.text.toLowerCase().includes(q))
+  );
+  if (!hits.length) { box.innerHTML = '<div class="search-hint">没有匹配结果</div>'; return; }
+  hits.forEach(p => {
+    const msg = seeds[p.id].find(m => m.text.toLowerCase().includes(q));
+    const row = document.createElement('div');
+    row.className = 'conv';
+    row.innerHTML = `
+      <div class="avatar" style="width:46px;height:46px;font-size:19px;">${p.emoji}</div>
+      <div class="body">
+        <div class="name">${p.name}</div>
+        <div class="preview">${msg ? msg.text : p.title}</div>
+      </div>`;
+    row.onclick = () => { closeSearch(); openChat(p); };
+    box.appendChild(row);
+  });
+}
 </script>
 </body>
 </html>
