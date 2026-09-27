@@ -14,8 +14,8 @@ android {
         applicationId = "com.daoshi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "0.6.1"
+        versionCode = 14
+        versionName = "0.6.2"
         // 只保留中英文资源，去掉依赖库里几十种语言的 strings/日期符号
         resourceConfigurations.addAll(listOf("zh", "zh-rCN", "en"))
     }
@@ -116,4 +116,6 @@ dependencies {
     testImplementation("org.json:json:20231013")
     // SSE 客户端单测：本地 mock 服务器（走真实 socket，Robolectric/纯 JVM 均可用）
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    // ChatViewModel 状态机测试：可控的 Main 调度器（虚拟时间推进 delay）
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }

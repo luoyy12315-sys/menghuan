@@ -1,6 +1,7 @@
 package com.daoshi.app.data
 
 import android.content.Context
+import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -32,7 +33,11 @@ data class ApiConfig(
  * - 升级迁移：读到旧明文 `api_key` 时自动加密搬移并删除明文；Keystore 不可用时回退读明文（不删，密钥不丢）
  * - 解密失败（锁屏凭据变更使 Keystore 密钥失效）视为空，用户在「设置 · API 配置」重填即可
  */
-class SettingsRepository(private val context: Context) {
+class SettingsRepository(
+    context: Context,
+    // store 可注入：单测用独立 DataStore 实例（委托单例会跨 Robolectric 测试残留）
+    private val store: DataStore<Preferences> = context.settingsStore,
+) {
 
     private val keyBase = stringPreferencesKey("api_base_url")
     private val keyKey = stringPreferencesKey("api_key")        // 旧明文键（迁移后删除）
@@ -50,7 +55,7 @@ class SettingsRepository(private val context: Context) {
     private var cachedSealed: String? = null
     private var cachedPlain: String = ""
 
-    val apiConfig: Flow<ApiConfig> = context.settingsStore.data.map { prefs ->
+    val apiConfig: Flow<ApiConfig> = store.data.map { prefs ->
         ApiConfig(
             baseUrl = prefs[keyBase] ?: "",
             model = prefs[keyModel] ?: "",
@@ -67,7 +72,7 @@ class SettingsRepository(private val context: Context) {
                 val plain = if (sealed == cachedSealed) cachedPlain else decrypt(sealed)
                 if (legacyPlain.isNotEmpty()) {
                     // 加密版已就绪：清掉历史明文
-                    context.settingsStore.edit { it.remove(keyKey) }
+                    store.edit { it.remove(keyKey) }
                 }
                 plain
             }
@@ -75,7 +80,7 @@ class SettingsRepository(private val context: Context) {
                 val sealedText = ApiKeyCipher.encrypt(legacyPlain)
                 if (sealedText != null) {
                     // 旧数据迁移：明文 → 密文，删除明文
-                    context.settingsStore.edit { it[keyKeyEnc] = sealedText; it.remove(keyKey) }
+                    store.edit { it[keyKeyEnc] = sealedText; it.remove(keyKey) }
                     cache(sealedText, legacyPlain)
                 }
                 // encrypt 失败（JVM 单测/Keystore 异常）：回退读明文且不删，绝不让密钥凭空消失
@@ -87,7 +92,7 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun saveApiConfig(config: ApiConfig) = withContext(Dispatchers.IO) {
         val sealedText = if (config.apiKey.isEmpty()) null else ApiKeyCipher.encrypt(config.apiKey)
-        context.settingsStore.edit { prefs ->
+        store.edit { prefs ->
             when {
                 sealedText != null -> { prefs[keyKeyEnc] = sealedText; prefs.remove(keyKey) }
                 config.apiKey.isNotEmpty() -> {
@@ -108,7 +113,7 @@ class SettingsRepository(private val context: Context) {
     }
 
     /** 各会话的最后阅读时刻（未读点判断用）：personaId → 时间戳毫秒 */
-    val readMarks: Flow<Map<Long, Long>> = context.settingsStore.data.map { prefs ->
+    val readMarks: Flow<Map<Long, Long>> = store.data.map { prefs ->
         buildMap {
             prefs.asMap().forEach { (key, value) ->
                 if (key.name.startsWith(readPrefix) && value is Long) {
@@ -120,22 +125,22 @@ class SettingsRepository(private val context: Context) {
 
     /** 进入会话即标记已读（未读点消除） */
     suspend fun markChatRead(personaId: Long) {
-        context.settingsStore.edit { it[longPreferencesKey(readPrefix + personaId)] = System.currentTimeMillis() }
+        store.edit { it[longPreferencesKey(readPrefix + personaId)] = System.currentTimeMillis() }
     }
 
     /** 任务到点通知总开关（设置 · 通知与提醒） */
-    val notificationsEnabled: Flow<Boolean> = context.settingsStore.data.map { it[keyNotifyEnabled] ?: true }
+    val notificationsEnabled: Flow<Boolean> = store.data.map { it[keyNotifyEnabled] ?: true }
 
     suspend fun setNotificationsEnabled(enabled: Boolean) {
-        context.settingsStore.edit { it[keyNotifyEnabled] = enabled }
+        store.edit { it[keyNotifyEnabled] = enabled }
     }
 
     /** 提炼水位线：每个会话已提炼到的最后一条消息 id（extract_upto_<personaId>） */
     suspend fun extractionWatermark(personaId: Long): Long =
-        context.settingsStore.data.first()[longPreferencesKey(watermarkPrefix + personaId)] ?: 0L
+        store.data.first()[longPreferencesKey(watermarkPrefix + personaId)] ?: 0L
 
     suspend fun setExtractionWatermark(personaId: Long, messageId: Long) {
-        context.settingsStore.edit { it[longPreferencesKey(watermarkPrefix + personaId)] = messageId }
+        store.edit { it[longPreferencesKey(watermarkPrefix + personaId)] = messageId }
     }
 
     private fun decrypt(sealed: String): String {

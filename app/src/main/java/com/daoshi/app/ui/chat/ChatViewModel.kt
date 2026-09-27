@@ -18,7 +18,6 @@ import com.daoshi.app.llm.ApiException
 import com.daoshi.app.llm.OpenAiClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -284,7 +283,6 @@ class ChatViewModel(
             3L -> "那么，今晚你愿意迈出的最小一步是什么？"
             else -> "记下了。这事今晚复盘细聊。"
         }
-        delay(600)
         val msg = ChatMessage(conversationId = personaId, isFromUser = false, content = mock)
         _uiState.update { it.copy(messages = it.messages + msg, isStreaming = false) }
         runCatching { db.messageDao().insert(msg) }
