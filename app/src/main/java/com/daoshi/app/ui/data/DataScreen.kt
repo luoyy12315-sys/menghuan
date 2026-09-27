@@ -67,6 +67,7 @@ import com.daoshi.app.ui.theme.TextSecondary
 @Composable
 fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
     val facts by vm.facts.collectAsState()
+    val weekProgress by vm.weekProgress.collectAsState()
     var showEditSheet by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
 
@@ -90,7 +91,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Spacer(Modifier.height(2.dp))
-            OverviewCard(scrollProvider = { scrollState.value })
+            OverviewCard(progress = weekProgress, scrollProvider = { scrollState.value })
 
             NeuSectionTitle("基础档案", modifier = Modifier.padding(horizontal = 4.dp))
             NeuCard(cornerRadius = 22.dp) {
@@ -113,7 +114,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                 }
             }
 
-            NeuSectionTitle("追踪中的习惯", modifier = Modifier.padding(horizontal = 4.dp))
+            SampledSectionTitle("追踪中的习惯")
             NeuCard(cornerRadius = 22.dp) {
                 Row(
                     Modifier.fillMaxWidth(),
@@ -150,7 +151,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                 Text("近 7 天 5 天超标 · 平均时长 1h 40m", fontSize = 12.sp, color = MutedText)
             }
 
-            NeuSectionTitle("AI 洞察", modifier = Modifier.padding(horizontal = 4.dp))
+            SampledSectionTitle("AI 洞察")
             InsightCard(
                 "熬夜与短视频强相关",
                 "过去 14 天，睡前刷短视频的日子平均晚睡 82 分钟。建议把「睡前刷手机」替换为固定的放松流程。",
@@ -176,16 +177,44 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
     }
 }
 
+/** 分组标题 + 右侧「示例数据」小标：诚实标注尚未接真实数据的演示卡片 */
+@Composable
+private fun SampledSectionTitle(title: String) {
+    Row(
+        Modifier.padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MutedText,
+            letterSpacing = 0.8.sp,
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(
+            "示例数据",
+            fontSize = 10.sp,
+            color = com.daoshi.app.ui.theme.FaintText,
+        )
+    }
+}
+
 /** 本周目标完成度：凹陷轨道圆环 + 强调弧（扫入动画 + 数字滚动）+ 轻微滚动视差 */
 @Composable
-private fun OverviewCard(scrollProvider: () -> Int) {
+private fun OverviewCard(progress: WeekProgress, scrollProvider: () -> Int) {
     var revealed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { revealed = true }
     val sweep by animateFloatAsState(
-        if (revealed) 0.62f else 0f,
+        if (revealed) progress.fraction else 0f,
         tween(1000, easing = EaseOutExpo),
     )
-    val percentText = (sweep * 100).toInt().toString() + "%"
+    val percentText = "${(sweep * 100).toInt()}%"
+    val subtitle = if (progress.total == 0) {
+        "本周暂无任务 · 去任务页新建"
+    } else {
+        "本周完成 ${progress.done}/${progress.total} 项"
+    }
 
     NeuCard(cornerRadius = 24.dp, contentPadding = 18.dp) {
         Row(
@@ -223,7 +252,7 @@ private fun OverviewCard(scrollProvider: () -> Int) {
             Column {
                 Text("本周目标完成度", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                 Spacer(Modifier.height(5.dp))
-                Text("较上周 +13% · 继续保持", fontSize = 12.sp, color = MutedText)
+                Text(subtitle, fontSize = 12.sp, color = MutedText)
             }
         }
     }

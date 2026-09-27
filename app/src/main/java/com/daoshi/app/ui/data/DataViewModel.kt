@@ -7,23 +7,54 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.daoshi.app.MentorApp
 import com.daoshi.app.data.ProfileRepository
+import com.daoshi.app.data.db.AppDatabase
 import com.daoshi.app.data.model.ProfileFact
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.DayOfWeek
+import java.time.LocalDate
+import java.time.ZoneId
 
 /** 编辑弹层的草稿行：id = null 表示新增 */
 data class DraftFact(val id: Long?, val key: String, val value: String)
 
+/** 本周任务完成度（真实数据驱动完成度圆环） */
+data class WeekProgress(val done: Int, val total: Int) {
+    val fraction: Float get() = if (total == 0) 0f else done.toFloat() / total
+}
+
 /**
  * 我的数据页 VM：基础档案接 ProfileFact（此前整页为静态演示数据）。
  * 编辑保存：删除被移除的行，非空行 upsert（保留已有行的 source）。
+ * 完成度圆环 = 本周（周一起）到期任务的真实完成率。
  */
-class DataViewModel(private val repo: ProfileRepository) : ViewModel() {
+class DataViewModel(
+    private val repo: ProfileRepository,
+    db: AppDatabase,
+) : ViewModel() {
 
     val facts: StateFlow<List<ProfileFact>> = repo.observeFacts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val weekProgress: StateFlow<WeekProgress> = db.taskDao().observeAll()
+        .map { tasks ->
+            val zone = ZoneId.systemDefault()
+            val today = LocalDate.now(zone)
+            val monday = today.with(DayOfWeek.MONDAY)
+            val weekStart = monday.atStartOfDay(zone).toInstant().toEpochMilli()
+            val weekEnd = monday.plusDays(7).atStartOfDay(zone).toInstant().toEpochMilli()
+            val todayStart = today.atStartOfDay(zone).toInstant().toEpochMilli()
+            // dueAt = 0 视为今天
+            val inWeek = tasks.filter {
+                val due = if (it.dueAt == 0L) todayStart else it.dueAt
+                due >= weekStart && due < weekEnd
+            }
+            WeekProgress(inWeek.count { it.isDone }, inWeek.size)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeekProgress(0, 0))
 
     fun saveEdits(items: List<DraftFact>, removedIds: List<Long>) = viewModelScope.launch {
         removedIds.forEach { repo.delete(it) }
@@ -47,7 +78,7 @@ class DataViewModel(private val repo: ProfileRepository) : ViewModel() {
         val Factory = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MentorApp
-                DataViewModel(app.profileRepository)
+                DataViewModel(app.profileRepository, app.db)
             }
         }
     }
