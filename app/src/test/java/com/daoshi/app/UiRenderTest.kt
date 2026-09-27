@@ -50,7 +50,20 @@ class UiRenderTest {
         }
     }
 
-    private fun clickText(text: String) = compose.onNodeWithText(text).performClick()
+    /** 点击 + 重试：节点可能在数据流重组/进场动画瞬间不可注入触摸 */
+    private fun clickText(text: String) {
+        repeat(3) { attempt ->
+            try {
+                compose.onNodeWithText(text).performClick()
+                return
+            } catch (e: AssertionError) {
+                if (attempt == 2) throw e
+                compose.waitForIdle()
+                Thread.sleep(400)
+            }
+        }
+    }
+
     private fun clickDesc(desc: String) = compose.onNodeWithContentDescription(desc).performClick()
 
     @Test
@@ -81,5 +94,53 @@ class UiRenderTest {
         clickText("阿布") // 会话行 → push 单聊
         awaitText("你先别骂我") // 种子消息上屏
         snap("4-chat")
+    }
+
+    /** 长内容压测：超长消息 / ❤️ 大表情 / 任务页有数据态（逾期·今天·明天·已完成标签） */
+    @Test
+    fun render5FilledAndLong() {
+        val app = compose.activity.application as MentorApp
+        val zone = java.time.ZoneId.systemDefault()
+        val today = java.time.LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
+        kotlinx.coroutines.runBlocking {
+            app.db.messageDao().insert(
+                com.daoshi.app.data.model.ChatMessage(
+                    conversationId = 1, isFromUser = true,
+                    content = "最近两周都在熬夜，平均一点半才睡，白天效率特别低，下午基本废掉。我也试过早点上床，但躺下就忍不住刷手机，越刷越精神。帮我拆一个能落地的方案吧，要具体到每一步的那种，不要再说早点睡了这种正确的废话。",
+                )
+            )
+            app.db.messageDao().insert(
+                com.daoshi.app.data.model.ChatMessage(
+                    conversationId = 1, isFromUser = false,
+                    content = "好，不谈道理，只谈方案。第一步：今晚 22:30 把手机放到客厅充电，卧室不带——这是唯一重要的一步，其他都是它的附件。第二步：卧室换一本纸质书，翻 10 分钟，允许自己只看垃圾小说。第三步：前三天允许失败一次，但第二次失败就要复盘是哪一步断了。先把今晚的 22:30 定成闹钟，我现在就把这条发给你当凭证：22:30，手机出卧室。做到了明天告诉我，做不到也告诉我——我要的是数据，不是借口。",
+                )
+            )
+            app.db.messageDao().insert(
+                com.daoshi.app.data.model.ChatMessage(conversationId = 1, isFromUser = false, content = "❤️")
+            )
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(title = "整理作品集并更新主页", dueAt = today - 3L * 86_400_000, createdBy = "user")
+            )
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(title = "23:00 前放下手机", note = "打卡后发消息给阿布", dueAt = today, createdBy = "ai")
+            )
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(title = "画 1 小时商稿草图", dueAt = today, isDone = true, createdBy = "ai")
+            )
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(title = "08:00 起床 + 晨跑 20 分钟", dueAt = today + 86_400_000, createdBy = "ai")
+            )
+        }
+        awaitText("阿布")
+        // 任务页（有数据）：分组标题 + 标签 + 完成划线
+        clickText("任务")
+        awaitText("已逾期")
+        snap("5-tasks-filled")
+        // 单聊页（长内容）：气泡宽度折行 + ❤️ 大表情 + 未读点光晕
+        clickText("消息") // 底栏 tab（此页顶栏是「任务」，不冲突）
+        awaitText("❤️") // 列表预览已更新为最后一条消息
+        clickText("阿布")
+        awaitText("22:30，手机出卧室")
+        snap("6-chat-long")
     }
 }

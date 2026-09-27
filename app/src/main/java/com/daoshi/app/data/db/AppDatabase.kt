@@ -20,6 +20,9 @@ interface PersonaDao {
     @Query("SELECT * FROM personas ORDER BY isBuiltIn DESC, createdAt ASC")
     fun observeAll(): Flow<List<Persona>>
 
+    @Query("SELECT COUNT(*) FROM personas")
+    suspend fun count(): Int
+
     @Query("SELECT * FROM personas WHERE id = :id")
     suspend fun getById(id: Long): Persona?
 
@@ -84,6 +87,9 @@ interface ProfileFactDao {
     // 按录入顺序稳定排列：档案卡是固定条目视图，按 updatedAt 排会在每次编辑后整体跳动
     @Query("SELECT * FROM profile_facts ORDER BY id ASC")
     fun observeAll(): Flow<List<ProfileFact>>
+
+    @Query("SELECT COUNT(*) FROM profile_facts")
+    suspend fun count(): Int
 
     @Query("SELECT * FROM profile_facts WHERE id = :id")
     suspend fun getById(id: Long): ProfileFact?
