@@ -1,5 +1,6 @@
 package com.daoshi.app.data
 
+import android.util.Log
 import com.daoshi.app.data.db.AppDatabase
 import com.daoshi.app.data.model.AiInsight
 import com.daoshi.app.data.model.ChatMessage
@@ -35,6 +36,7 @@ class ExtractionEngine(
         val personaIds = db.personaDao().observeAll().first().map { it.id }
         personaIds.forEach { personaId ->
             runCatching { runExtract(personaId, force = true) }
+                .onFailure { Log.w(TAG, "extraction failed for persona=$personaId", it) }
         }
     }
 
@@ -60,6 +62,10 @@ class ExtractionEngine(
         saveInsights(extracted.insights)
         // 水位线推进到最后一条已处理消息；即便模型这次没产出，也不重复送同一段
         settingsRepository.setExtractionWatermark(personaId, newMessages.last().id)
+    }
+
+    private companion object {
+        const val TAG = "ExtractionEngine"
     }
 
     private suspend fun mergeFacts(facts: List<Pair<String, String>>) {

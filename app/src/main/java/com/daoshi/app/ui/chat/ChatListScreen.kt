@@ -39,7 +39,10 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -492,7 +495,7 @@ fun ChatListScreen(
 }
 
 @Composable
-private fun SearchResultRow(result: SearchResultUi, onClick: () -> Unit) {
+private fun SearchResultRow(result: SearchResultUi, query: String, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -512,8 +515,9 @@ private fun SearchResultRow(result: SearchResultUi, onClick: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(3.dp))
+            val preview = result.matched?.content?.replace('\n', ' ') ?: result.persona.title
             Text(
-                result.matched?.content?.replace('\n', ' ') ?: result.persona.title,
+                highlight(preview, query),
                 fontSize = 13.sp,
                 color = MutedText,
                 maxLines = 1,
@@ -522,6 +526,15 @@ private fun SearchResultRow(result: SearchResultUi, onClick: () -> Unit) {
         }
         Icon(MIcons.ChevronRight, contentDescription = null, tint = FaintText, modifier = Modifier.size(14.dp))
     }
+}
+
+/** 命中片段加粗提色（大小写不敏感，取第一处） */
+private fun highlight(content: String, query: String): AnnotatedString = buildAnnotatedString {
+    append(content)
+    if (query.isBlank()) return@buildAnnotatedString
+    val idx = content.indexOf(query, ignoreCase = true)
+    if (idx < 0) return@buildAnnotatedString
+    addStyle(SpanStyle(fontWeight = FontWeight.Bold, color = TextPrimary), idx, idx + query.length)
 }
 
 /** 搜索态：输入框自动聚焦 + 实时结果（人设名/身份 + 消息内容） */
@@ -590,7 +603,7 @@ private fun SearchOverlay(
             }
             else -> LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(results, key = { _, r -> r.persona.id }) { _, result ->
-                    SearchResultRow(result) { onOpen(result.persona.id) }
+                    SearchResultRow(result, query) { onOpen(result.persona.id) }
                 }
             }
         }
