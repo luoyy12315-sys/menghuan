@@ -47,7 +47,7 @@
 │       ├── persona/             # PersonaManageScreen + PersonaEditorSheet（新增/编辑/删除人设）
 │       ├── data/DataScreen.kt   # 我的数据页（完成度圆环 / 档案 / 习惯 / 洞察 + 编辑弹层）
 │       ├── tasks/TasksScreen.kt # 任务页（分组卡片/勾选打卡 + TasksViewModel）
-│       └── settings/SettingsSheet.kt  # 共享设置面板 + ApiConfigSheet
+│       └── settings/SettingsSheet.kt  # 共享设置面板 + ApiConfigSheet + MoreSheets.kt（通知/隐私/关于）
 ```
 
 ## 四、设计系统（Neumorphism 新拟态，不可擅自更改）
@@ -76,9 +76,12 @@
 - 设置入口**只在会话列表页**右上角，数据页/任务页不放
 
 **布局自适应（真机关键，勿破坏）：**
-- 系统栏 insets **只由 `ui/common/AdaptiveScreen.kt` 统一处理**（它负责 `statusBarsPadding`）。
+- 系统栏 insets **只由 `ui/common/AdaptiveScreen.kt` 统一处理**（它负责 `statusBarsPadding` + `navigationBarsPadding`）。
   页面内部**不要**再写 `statusBarsPadding()`；`Scaffold` 用 `contentWindowInsets = WindowInsets(0,0,0,0)`。
   这是"真机比设计稿挤/矮"的根因，已修一次，别再改回去。
+- **底栏只在消息/数据/任务三个顶级 tab 显示**：单聊页/人设管理页是 push 层级，
+  隐藏底栏让输入栏直达屏幕底部（否则输入栏与底栏叠在一起，v0.3.0 修的错乱）。
+  隐藏底栏页面的手势条避让由 AdaptiveScreen 的 navigationBarsPadding 补足。
 - 底部导航**不要**用 Material `NavigationBar`（默认 80dp 高 + 胶囊指示器，与设计稿差一截），
   用 `MainActivity` 里的 `NeuBottomBar`（浮起胶囊 + 凹陷选中圆井 + 22dp 图标 + 9.5sp 标签）。
 - 版心规则：手机（< 600dp）铺满；平板/折叠屏（>= 600dp）内容居中收窄到 **600dp**，两侧浅灰边槽。
@@ -131,9 +134,16 @@
 - [x] 新增人设 / 人设管理页：设置 · 人设管理 → PersonaManageScreen；会话列表 ＋ 直接新增；预置人设可编辑不可删
 - [x] 对话风格按 persona 持久化（Persona.tone 列，重进会话保留）；聊天请求失败不落库 + 错误条重试
 - [x] API Key 迁移 Keystore 加密（v0.2.3：AndroidKeyStore AES-256-GCM，DataStore 落密文 `api_key_enc`；旧明文自动迁移删除，Keystore 不可用回退读明文；`data/ApiKeyCipher.kt`）
-- [ ] 聊天里打卡回执（任务卡片进聊天 / 打卡写回消息流）
+- [x] 聊天打卡闭环（v0.3.0：任务页勾选完成 → 主导师会话写「✅ 已完成打卡」用户消息进 LLM 历史；聊天页输入栏左键 = 快捷打卡面板，选任务即以消息发进当前会话；ChatViewModel 持续观察 Room，外部写入实时上屏）
+- [x] 会话列表真实搜索（v0.3.0：人设名/身份 + 消息内容 LIKE，200ms 防抖，点击直达会话；搜索框点击进入搜索态）
+- [x] 未读点闭环（v0.3.0：DataStore `last_read_<personaId>`，打开会话即已读；未读点 = AI 新回复且晚于已读时刻，带光晕）
+- [x] 设置面板五项全部可用（v0.3.0：通知与提醒 = 总开关 + 系统设置入口，TaskReminderReceiver 到点先查开关；数据与隐私 = 四类数据统计 + 清除聊天记录（二次确认）；关于 = 版本信息）
+- [x] 数据页完成度接真实任务数据（本周周一起到期任务完成率；习惯/洞察仍为示例并已标注「示例数据」）
+- [x] 任务通知点击直达任务页（v0.3.0：deep link `daoshi://tasks`；personas/data/chat 亦注册 deep link）
+- [x] 单聊页底栏遮挡输入栏修复（v0.3.0：push 层级页隐藏底栏 + AdaptiveScreen 统一 navigationBarsPadding）
+- [x] 种子数据并发竞态修复（v0.3.0：多收集器同时首订导致种子重复插入、列表出双行；改 Mutex + 一次性 + COUNT 判空）
 - [ ] AI 定期提炼 ProfileFact（conversation → 洞察 → 档案）
-- [ ] 相机键、搜索（当前点击仅 toast「开发中」）；数据页完成度/习惯/洞察接真实数据
+- [ ] 数据页习惯/洞察接真实数据（依赖 AI 提炼流水线）
 
 ## 八、本地构建（已验证可用）
 

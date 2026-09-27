@@ -118,6 +118,10 @@ class UiRenderTest {
             app.db.messageDao().insert(
                 com.daoshi.app.data.model.ChatMessage(conversationId = 1, isFromUser = false, content = "❤️")
             )
+            // 严格教练的新回复：会话列表未读点 + 光晕的渲染证据
+            app.db.messageDao().insert(
+                com.daoshi.app.data.model.ChatMessage(conversationId = 2, isFromUser = false, content = "今晚 23:00 前睡觉，做到没有？")
+            )
             app.db.taskDao().upsert(
                 com.daoshi.app.data.model.TaskItem(title = "整理作品集并更新主页", dueAt = today - 3L * 86_400_000, createdBy = "user")
             )
@@ -132,6 +136,7 @@ class UiRenderTest {
             )
         }
         awaitText("阿布")
+        snap("0-chatlist-unread") // 未读点光晕 + 打卡回执消息的列表预览
         // 任务页（有数据）：分组标题 + 标签 + 完成划线
         clickText("任务")
         awaitText("已逾期")
