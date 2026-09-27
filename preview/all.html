@@ -297,7 +297,7 @@
   .typing i:nth-child(2) { animation-delay: .16s; } .typing i:nth-child(3) { animation-delay: .32s; }
   @keyframes pulse { 0%,100% { opacity: .35; transform: scale(.9);} 50% { opacity: 1; transform: scale(1);} }
 
-  .inputbar { display: flex; align-items: center; gap: 10px; padding: 10px 12px 12px; }
+  .inputbar { display: flex; align-items: center; gap: 10px; padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); }
   .input-pill {
     flex: 1; min-height: 44px; border-radius: 22px; padding: 11px 18px;
     font-size: 15px; color: var(--ink); display: flex; align-items: center;
@@ -680,6 +680,8 @@ function switchTab(tab) {
 let currentPersona = personas[0];
 function openChat(p) {
   currentPersona = p;
+  // 单聊页是 push 层级：隐藏底栏，输入栏直达屏幕底部（标准 IM 习惯）
+  document.querySelector('.tabbar-wrap').classList.add('hidden');
   document.getElementById('chat-avatar').textContent = p.emoji;
   document.getElementById('chat-name').textContent = p.name;
   document.getElementById('chat-title').textContent = p.title + ' · ' + p.tone;
@@ -696,7 +698,10 @@ function openChat(p) {
   showPage('page-chat');
   scrollBottom(false);
 }
-function goChatList() { showPage('page-' + currentTab); }
+function goChatList() {
+  document.querySelector('.tabbar-wrap').classList.remove('hidden');
+  showPage('page-' + currentTab);
+}
 function showPage(id) {
   document.querySelectorAll('.page').forEach(pg => pg.classList.remove('active'));
   const to = document.getElementById(id);

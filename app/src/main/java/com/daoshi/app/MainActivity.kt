@@ -105,17 +105,22 @@ private fun MentorAppRoot() {
         // 系统栏 insets 全交给 AdaptiveScreen 处理，避免与各页面重复叠加
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
+            // 底栏只在三个顶级 tab 显示；单聊/人设管理是 push 层级页，
+            // 隐藏底栏让输入栏直达屏幕底部（否则输入栏与底栏叠在一起）
             val backStackEntry by navController.currentBackStackEntryAsState()
-            NeuBottomBar(
-                currentRoute = backStackEntry?.destination?.route,
-                onSelect = { route ->
-                    navController.navigate(route) {
-                        popUpTo("chatList") { saveState = true }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
-                },
-            )
+            val route = backStackEntry?.destination?.route
+            if (topLevelRoutes.any { it.route == route }) {
+                NeuBottomBar(
+                    currentRoute = route,
+                    onSelect = { target ->
+                        navController.navigate(target) {
+                            popUpTo("chatList") { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                )
+            }
         },
     ) { innerPadding ->
         NavHost(

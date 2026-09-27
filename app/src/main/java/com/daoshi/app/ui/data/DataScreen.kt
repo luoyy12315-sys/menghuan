@@ -49,6 +49,7 @@ import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.NeuTextField
 import com.daoshi.app.ui.common.NeuTopBar
+import com.daoshi.app.ui.common.neuRowPress
 import com.daoshi.app.ui.common.neuSurface
 import com.daoshi.app.ui.theme.AccentBrush
 import com.daoshi.app.ui.theme.MutedText
@@ -102,7 +103,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                     )
                 } else {
                     facts.forEachIndexed { i, fact ->
-                        if (i > 0) Spacer(Modifier.height(10.dp))
+                        if (i > 0) Spacer(Modifier.height(8.dp))
                         ProfileRow(
                             label = fact.key,
                             value = fact.value,
@@ -249,7 +250,14 @@ private fun ProfileRow(label: String, value: String, onClick: () -> Unit = {}) {
             maxLines = 2,
         )
         Spacer(Modifier.width(6.dp))
-        NeuTextButton("改", onClick = onClick)
+        // 紧凑文字按钮：与预览稿一致（行高由 14sp 文本决定，按钮自身不撑行高）
+        Box(
+            Modifier
+                .neuRowPress(onClick)
+                .padding(horizontal = 6.dp, vertical = 4.dp),
+        ) {
+            Text("改", fontSize = 13.sp, color = NeuAccent)
+        }
     }
 }
 

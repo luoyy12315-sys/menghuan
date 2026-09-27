@@ -66,7 +66,8 @@ interface TaskDao {
 
 @Dao
 interface ProfileFactDao {
-    @Query("SELECT * FROM profile_facts ORDER BY updatedAt DESC")
+    // 按录入顺序稳定排列：档案卡是固定条目视图，按 updatedAt 排会在每次编辑后整体跳动
+    @Query("SELECT * FROM profile_facts ORDER BY id ASC")
     fun observeAll(): Flow<List<ProfileFact>>
 
     @Query("SELECT * FROM profile_facts WHERE id = :id")

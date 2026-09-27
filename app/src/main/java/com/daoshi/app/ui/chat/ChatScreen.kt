@@ -172,7 +172,9 @@ fun ChatScreen(
                     }
             }
             // 是否贴底：控制回底按钮显隐
-            val nearBottom by remember {
+            // key = chatItems：derivedStateOf 闭包在首帧捕获 chatItems 引用，
+            // 不加 key 会永远对着旧列表判断（消息更新后显隐错乱）
+            val nearBottom by remember(chatItems) {
                 derivedStateOf {
                     val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
                     last >= chatItems.lastIndex - 1

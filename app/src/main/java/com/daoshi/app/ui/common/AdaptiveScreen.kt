@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -62,7 +63,10 @@ fun AdaptiveScreen(
             Modifier
                 .fillMaxSize()
                 .background(if (wide) NeuTrack else MaterialTheme.colorScheme.background)
-                .statusBarsPadding(),
+                .statusBarsPadding()
+                // 手势导航条避让：顶级 tab 页由底栏消费该 inset（Scaffold innerPadding
+                // 已 consumeWindowInsets），单聊等隐藏底栏的 push 页由此处补上
+                .navigationBarsPadding(),
         ) {
             Column(
                 Modifier
@@ -95,7 +99,8 @@ fun NeuTopBar(
     actions: @Composable (() -> Unit)? = null,
     center: @Composable (() -> Unit)? = null,
 ) {
-    val slot = (LocalContentWidth.current * 0.195f).coerceIn(56.dp, 76.dp)
+    // 84dp = 双 38dp 图标按钮 + 8dp 间距：会话列表右侧两颗按钮正好放下不外溢
+    val slot = (LocalContentWidth.current * 0.195f).coerceIn(56.dp, 84.dp)
     Column(Modifier.fillMaxWidth().background(Color.Transparent)) {
         Row(
             Modifier
