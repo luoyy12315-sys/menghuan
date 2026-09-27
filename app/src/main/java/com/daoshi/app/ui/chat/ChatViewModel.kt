@@ -83,11 +83,13 @@ class ChatViewModel(
         }
         // 持续观察持久化消息：任务页勾选生成的打卡回执、未来其他写入源都实时上屏。
         // 流式期间跳过（占位尾巴尚未落库，本地列表才是最新视图）；流结束后 DB 即为事实源。
+        // 有消息即视为已读：会话列表未读点随之消除
         viewModelScope.launch {
             runCatching {
                 db.messageDao().observeConversation(personaId).collect { persisted ->
                     if (persisted.isNotEmpty()) {
                         _uiState.update { if (it.isStreaming) it else it.copy(messages = persisted) }
+                        runCatching { settingsRepository.markChatRead(personaId) }
                     }
                 }
             }

@@ -50,7 +50,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
@@ -59,6 +58,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -467,7 +467,7 @@ private fun Modifier.drawUserBubble(): Modifier = this.then(
     }.clip(RoundedCornerShape(22.dp)),
 )
 
-/** 流式等待三点：错落呼吸 */
+/** 流式等待三点：错落呼吸（alpha 走 graphicsLayer，渲染期更新不重组） */
 @Composable
 private fun TypingDots() {
     val transition = rememberInfiniteTransition(label = "typing")
@@ -488,7 +488,7 @@ private fun TypingDots() {
             Box(
                 Modifier
                     .size(7.dp)
-                    .alpha(pulse)
+                    .graphicsLayer { alpha = pulse }
                     .background(MutedText, CircleShape),
             )
         }

@@ -90,7 +90,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Spacer(Modifier.height(2.dp))
-            OverviewCard(scrollFraction = scrollState.value)
+            OverviewCard(scrollProvider = { scrollState.value })
 
             NeuSectionTitle("基础档案", modifier = Modifier.padding(horizontal = 4.dp))
             NeuCard(cornerRadius = 22.dp) {
@@ -178,9 +178,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
 
 /** 本周目标完成度：凹陷轨道圆环 + 强调弧（扫入动画 + 数字滚动）+ 轻微滚动视差 */
 @Composable
-private fun OverviewCard(scrollFraction: Int) {
-    // 滚动视差：环随上滚轻微下移，制造纵深
-    val parallax = scrollFraction * 0.15f
+private fun OverviewCard(scrollProvider: () -> Int) {
     var revealed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { revealed = true }
     val sweep by animateFloatAsState(
@@ -193,8 +191,10 @@ private fun OverviewCard(scrollFraction: Int) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // 视差：滚动位置延迟到渲染阶段读取（lambda 内读取 State），
+            // 滚动每一帧只更新图层属性，不再触发整个数据页重组
             Box(
-                Modifier.graphicsLayer { translationY = parallax },
+                Modifier.graphicsLayer { translationY = scrollProvider() * 0.15f },
                 contentAlignment = Alignment.Center,
             ) {
                 Canvas(Modifier.size(96.dp)) {

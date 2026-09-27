@@ -49,6 +49,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.navigation.navDeepLink
 import com.daoshi.app.ui.chat.ChatListScreen
 import com.daoshi.app.ui.chat.ChatScreen
 import com.daoshi.app.ui.common.AdaptiveScreen
@@ -171,6 +172,7 @@ private fun MentorAppRoot() {
             }
             composable(
                 route = "personas",
+                deepLinks = listOf(navDeepLink { uriPattern = "daoshi://personas" }),
                 enterTransition = {
                     slideInHorizontally(tween(360, easing = EaseOutExpo)) { it } + fadeIn(tween(280))
                 },
@@ -182,8 +184,14 @@ private fun MentorAppRoot() {
             ) {
                 AdaptiveScreen { PersonaManageScreen(onBack = { navController.popBackStack() }) }
             }
-            composable("data") { AdaptiveScreen { DataScreen() } }
-            composable("tasks") { AdaptiveScreen { TasksScreen() } }
+            composable(
+                "data",
+                deepLinks = listOf(navDeepLink { uriPattern = "daoshi://data" }),
+            ) { AdaptiveScreen { DataScreen() } }
+            composable(
+                "tasks",
+                deepLinks = listOf(navDeepLink { uriPattern = "daoshi://tasks" }),
+            ) { AdaptiveScreen { TasksScreen() } }
         }
     }
 }

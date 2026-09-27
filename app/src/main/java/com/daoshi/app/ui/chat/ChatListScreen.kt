@@ -44,6 +44,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.daoshi.app.MentorApp
 import com.daoshi.app.data.PersonaRepository
+import com.daoshi.app.data.SettingsRepository
 import com.daoshi.app.data.db.AppDatabase
 import com.daoshi.app.data.model.ChatMessage
 import com.daoshi.app.data.model.Persona
@@ -83,11 +84,12 @@ data class ConversationRowUi(
 /**
  * 会话列表页（新拟态）：主入口。
  * - 每个 persona 是一个独立会话，点行进入单聊（onOpen）
- * - 预览 = MessageDao 最后一条消息；未读点 = 导师有新回复
+ * - 预览 = MessageDao 最后一条消息；未读点 = 导师有新回复且晚于上次阅读时刻
  * - 设置入口在本页右上角（仅此一处）；＋ 直接新增人设
  */
 class ChatListViewModel(
     private val personaRepository: PersonaRepository,
+    private val settingsRepository: SettingsRepository,
     db: AppDatabase,
 ) : ViewModel() {
 
@@ -95,7 +97,8 @@ class ChatListViewModel(
         combine(
             personaRepository.observePersonas(),
             db.messageDao().observeLastMessages(),
-        ) { personas, lastMessages ->
+            settingsRepository.readMarks,
+        ) { personas, lastMessages, readMarks ->
             val byConversation = lastMessages.associateBy { it.conversationId }
             personas.map { persona ->
                 val last = byConversation[persona.id]
@@ -103,7 +106,8 @@ class ChatListViewModel(
                     persona = persona,
                     preview = previewOf(persona, last),
                     time = timeOf(last?.timestamp),
-                    showDot = last != null && !last.isFromUser,
+                    showDot = last != null && !last.isFromUser &&
+                        last.timestamp > (readMarks[persona.id] ?: 0L),
                 )
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -145,7 +149,7 @@ class ChatListViewModel(
         val Factory = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MentorApp
-                ChatListViewModel(app.personaRepository, app.db)
+                ChatListViewModel(app.personaRepository, app.settingsRepository, app.db)
             }
         }
     }
@@ -295,11 +299,18 @@ private fun ConversationRow(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(time, fontSize = 11.sp, color = FaintText)
+            // 未读点 = 实心圆 + 淡光晕（与预览 box-shadow 0 0 0 3px 一致）
             Box(
                 Modifier.size(9.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 if (dotScale > 0.01f) {
+                    Box(
+                        Modifier
+                            .scale(dotScale)
+                            .size(15.dp)
+                            .background(NeuAccent.copy(alpha = 0.18f), CircleShape),
+                    )
                     Box(
                         Modifier
                             .scale(dotScale)

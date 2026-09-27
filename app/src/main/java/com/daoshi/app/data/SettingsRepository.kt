@@ -2,7 +2,9 @@ package com.daoshi.app.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +37,10 @@ class SettingsRepository(private val context: Context) {
     private val keyKey = stringPreferencesKey("api_key")        // 旧明文键（迁移后删除）
     private val keyModel = stringPreferencesKey("api_model")
     private val keyKeyEnc = stringPreferencesKey("api_key_enc") // 新密文键 Base64(IV+GCM)
+    private val keyNotifyEnabled = booleanPreferencesKey("notify_enabled")
+
+    /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
+    private val readPrefix = "last_read_"
 
     // Keystore 解密有成本：密文未变时复用内存中的明文
     private var cachedSealed: String? = null
@@ -95,6 +101,29 @@ class SettingsRepository(private val context: Context) {
     private fun cache(sealed: String?, plain: String) {
         cachedSealed = sealed
         cachedPlain = plain
+    }
+
+    /** 各会话的最后阅读时刻（未读点判断用）：personaId → 时间戳毫秒 */
+    val readMarks: Flow<Map<Long, Long>> = context.settingsStore.data.map { prefs ->
+        buildMap {
+            prefs.asMap().forEach { (key, value) ->
+                if (key.name.startsWith(readPrefix) && value is Long) {
+                    key.name.removePrefix(readPrefix).toLongOrNull()?.let { put(it, value) }
+                }
+            }
+        }
+    }
+
+    /** 进入会话即标记已读（未读点消除） */
+    suspend fun markChatRead(personaId: Long) {
+        context.settingsStore.edit { it[longPreferencesKey(readPrefix + personaId)] = System.currentTimeMillis() }
+    }
+
+    /** 任务到点通知总开关（设置 · 通知与提醒） */
+    val notificationsEnabled: Flow<Boolean> = context.settingsStore.data.map { it[keyNotifyEnabled] ?: true }
+
+    suspend fun setNotificationsEnabled(enabled: Boolean) {
+        context.settingsStore.edit { it[keyNotifyEnabled] = enabled }
     }
 
     private fun decrypt(sealed: String): String {

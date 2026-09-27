@@ -30,6 +30,10 @@ import com.daoshi.app.ui.theme.NeuDanger
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/** 粗校验：必须是 http(s) URL（targetSdk 28+ 默认禁明文，http 仅自架服务可用） */
+private fun isValidBaseUrl(url: String): Boolean =
+    url.trim().startsWith("http://") || url.trim().startsWith("https://")
+
 /**
  * API 配置表单（新拟态）：接口地址 / 密钥 / 模型 三件套 + 测试连接 + 保存。
  * 保存至 DataStore（SettingsRepository）。
@@ -96,6 +100,10 @@ fun ApiConfigSheet(onDismiss: () -> Unit) {
                         testResult = "先填接口地址和 Key"
                         return@NeuButton
                     }
+                    if (!isValidBaseUrl(baseUrl)) {
+                        testResult = "接口地址需以 http(s):// 开头，例：https://api.deepseek.com/v1"
+                        return@NeuButton
+                    }
                     scope.launch {
                         testing = true
                         val err = OpenAiClient(baseUrl, apiKey, model).testConnection()
@@ -110,6 +118,10 @@ fun ApiConfigSheet(onDismiss: () -> Unit) {
             NeuButton(
                 text = "保存",
                 onClick = {
+                    if (!isValidBaseUrl(baseUrl)) {
+                        testResult = "接口地址需以 http(s):// 开头，例：https://api.deepseek.com/v1"
+                        return@NeuButton
+                    }
                     scope.launch {
                         app.settingsRepository.saveApiConfig(
                             ApiConfig(baseUrl.trim(), apiKey.trim(), model.trim())
