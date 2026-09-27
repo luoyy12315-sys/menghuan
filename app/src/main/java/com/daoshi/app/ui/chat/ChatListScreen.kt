@@ -62,7 +62,11 @@ import com.daoshi.app.ui.common.neuRowPress
 import com.daoshi.app.ui.common.neuSurface
 import com.daoshi.app.ui.persona.PersonaEditorSheet
 import com.daoshi.app.ui.settings.ApiConfigSheet
+import com.daoshi.app.ui.settings.DataPrivacySheet
+import com.daoshi.app.ui.settings.DataStats
+import com.daoshi.app.ui.settings.NotificationSettingsSheet
 import com.daoshi.app.ui.settings.SettingsSheet
+import com.daoshi.app.ui.settings.AboutSheet
 import com.daoshi.app.ui.theme.FaintText
 import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
@@ -76,6 +80,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
@@ -169,6 +174,30 @@ class ChatListViewModel(
         }
     }
 
+    // ===== 设置面板补全：通知开关 / 数据统计与清理 =====
+
+    val notificationsEnabled: StateFlow<Boolean> = settingsRepository.notificationsEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setNotificationsEnabled(enabled: Boolean) = viewModelScope.launch {
+        settingsRepository.setNotificationsEnabled(enabled)
+    }
+
+    /** 数据与隐私面板：各类数据条数 */
+    val dataStats: StateFlow<DataStats> = combine(
+        db.messageDao().observeCount(),
+        db.taskDao().observeAll().map { it.size.toLong() },
+        personaRepository.observePersonas().map { it.size.toLong() },
+        db.profileFactDao().observeAll().map { it.size.toLong() },
+    ) { messages, tasks, personas, facts ->
+        DataStats(messages, tasks, personas, facts)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DataStats())
+
+    /** 清除全部聊天记录（人设与任务保留）；清除后各会话回到种子演示消息 */
+    fun clearAllChats() = viewModelScope.launch {
+        runCatching { db.messageDao().deleteAll() }
+    }
+
     private fun previewOf(persona: Persona, last: ChatMessage?): String {
         val content = last?.content?.replace('\n', ' ') ?: return persona.title
         return if (last.isFromUser) "你：$content" else content
@@ -217,9 +246,14 @@ fun ChatListScreen(
     val rows by vm.rows.collectAsState()
     val searchQuery by vm.searchQuery.collectAsState()
     val searchResults by vm.searchResults.collectAsState()
+    val notificationsEnabled by vm.notificationsEnabled.collectAsState()
+    val dataStats by vm.dataStats.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
     var showApiConfig by remember { mutableStateOf(false) }
     var showNewPersona by remember { mutableStateOf(false) }
+    var showNotifications by remember { mutableStateOf(false) }
+    var showDataPrivacy by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
     var searchMode by remember { mutableStateOf(false) }
 
     Column(
@@ -311,7 +345,36 @@ fun ChatListScreen(
                 showSettings = false
                 onManagePersonas()
             },
+            onNotifications = {
+                showSettings = false
+                showNotifications = true
+            },
+            onDataPrivacy = {
+                showSettings = false
+                showDataPrivacy = true
+            },
+            onAbout = {
+                showSettings = false
+                showAbout = true
+            },
         )
+    }
+    if (showNotifications) {
+        NotificationSettingsSheet(
+            enabled = notificationsEnabled,
+            onToggle = { vm.setNotificationsEnabled(it) },
+            onDismiss = { showNotifications = false },
+        )
+    }
+    if (showDataPrivacy) {
+        DataPrivacySheet(
+            stats = dataStats,
+            onClearChats = { vm.clearAllChats() },
+            onDismiss = { showDataPrivacy = false },
+        )
+    }
+    if (showAbout) {
+        AboutSheet(onDismiss = { showAbout = false })
     }
     if (showApiConfig) {
         ApiConfigSheet(onDismiss = { showApiConfig = false })

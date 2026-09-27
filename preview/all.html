@@ -547,8 +547,8 @@
       <div class="grab"></div><h3>设置</h3>
       <div class="srow neu-raised" onclick="closeSheets();navTo('personas')"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.4"/><path d="M5.5 19C6.7 16 9.2 14.5 12 14.5C14.8 14.5 17.3 16 18.5 19"/></svg></div><div class="tx"><div class="t1">人设管理</div><div class="t2">名字、身份、设定词 · 可增删改</div></div><span class="chev">›</span></div>
       <div class="srow neu-raised" onclick="toast('开发中')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M8.5 8L5 11.5L8.5 15M15.5 8L19 11.5L15.5 15M13.6 5.5L10.4 17.5"/></svg></div><div class="tx"><div class="t1">API 配置</div><div class="t2">接口地址 · 密钥 · 模型</div></div><span class="chev">›</span></div>
-      <div class="srow neu-raised" onclick="toast('开发中')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 5a5.5 5.5 0 0 0 -5.5 5.5C6.5 14.5 5 16 5 16L19 16C19 16 17.5 14.5 17.5 10.5A5.5 5.5 0 0 0 12 5Z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg></div><div class="tx"><div class="t1">通知与提醒</div><div class="t2">定时督促 · 勿扰时段</div></div><span class="chev">›</span></div>
-      <div class="srow neu-raised" onclick="toast('开发中')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 4.5L5.5 7L5.5 12C5.5 16.3 8.3 19 12 20.5C15.7 19 18.5 16.3 18.5 12L18.5 7Z"/></svg></div><div class="tx"><div class="t1">数据与隐私</div><div class="t2">全部数据仅存本机</div></div><span class="chev">›</span></div>
+      <div class="srow neu-raised" onclick="closeSheets();openSheet('sheet-notif')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 5a5.5 5.5 0 0 0 -5.5 5.5C6.5 14.5 5 16 5 16L19 16C19 16 17.5 14.5 17.5 10.5A5.5 5.5 0 0 0 12 5Z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg></div><div class="tx"><div class="t1">通知与提醒</div><div class="t2">任务到点提醒开关</div></div><span class="chev">›</span></div>
+      <div class="srow neu-raised" onclick="closeSheets();openSheet('sheet-privacy')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 4.5L5.5 7L5.5 12C5.5 16.3 8.3 19 12 20.5C15.7 19 18.5 16.3 18.5 12L18.5 7Z"/></svg></div><div class="tx"><div class="t1">数据与隐私</div><div class="t2">本机数据统计 · 清除记录</div></div><span class="chev">›</span></div>
       <div class="srow neu-raised" onclick="toast('导师 v0.2.0')"><div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/><path d="M12 11L12 16"/><circle cx="12" cy="7.8" r="0.5" fill="var(--ink)" stroke="none"/></svg></div><div class="tx"><div class="t1">关于</div><div class="t2">版本 0.2.0</div></div><span class="chev">›</span></div>
       <p class="hint" style="margin-top:6px;">数据仅存本机，不上传云端。</p>
     </div>
@@ -605,6 +605,33 @@
       <div class="srow neu-raised" onclick="closeSheets();toast('✅ 打卡已发送给导师')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M7 3L17 3a3 3 0 0 1 3 3L20 18a3 3 0 0 1 -3 3L7 21a3 3 0 0 1 -3 -3L4 6a3 3 0 0 1 3 -3Z"/><path d="M8 8L16 8M8 12L16 12M8 16L13 16"/></svg></div><div class="tx"><div class="t1">23:00 前放下手机</div><div class="t2">今天</div></div><span class="chev">›</span></div>
       <div class="srow neu-raised" onclick="closeSheets();toast('✅ 打卡已发送给导师')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M7 3L17 3a3 3 0 0 1 3 3L20 18a3 3 0 0 1 -3 3L7 21a3 3 0 0 1 -3 -3L4 6a3 3 0 0 1 3 -3Z"/><path d="M8 8L16 8M8 12L16 12M8 16L13 16"/></svg></div><div class="tx"><div class="t1">整理作品集并更新主页</div><div class="t2" style="color:var(--danger);">已逾期</div></div><span class="chev">›</span></div>
       <p class="hint" style="margin-top:4px;">打卡会以消息发送给当前导师，进入对话记录。</p>
+    </div>
+
+    <div class="sheet" id="sheet-notif">
+      <div class="grab"></div><h3>通知与提醒</h3>
+      <div class="srow neu-raised" style="cursor:default;" onclick="this.querySelector('.sw').classList.toggle('on');"><div class="tx" style="padding-left:2px;"><div class="t1">任务到点提醒</div><div class="t2">关闭后到点不再弹通知，可手动打卡</div></div><div class="sw" style="width:46px;height:27px;border-radius:999px;background:var(--bg);box-shadow:inset 3px 3px 7px rgba(191,201,220,.5),inset -3px -3px 7px rgba(255,255,255,.95);position:relative;flex:none;"><span class="knob" style="position:absolute;top:3px;left:3px;width:21px;height:21px;border-radius:50%;background:var(--accent-grad);box-shadow:3px 3px 7px rgba(108,125,240,.4);"></span></div></div>
+      <div class="srow neu-raised" onclick="toast('跳转系统通知设置')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 5a5.5 5.5 0 0 0 -5.5 5.5C6.5 14.5 5 16 5 16L19 16C19 16 17.5 14.5 17.5 10.5A5.5 5.5 0 0 0 12 5Z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg></div><div class="tx"><div class="t1">系统通知设置</div><div class="t2">横幅 · 锁屏 · 声音</div></div><span class="chev">›</span></div>
+      <p class="hint" style="margin-top:4px;">提醒由系统闹钟触发，全部数据仅存本机。</p>
+    </div>
+
+    <div class="sheet" id="sheet-privacy">
+      <div class="grab"></div><h3>数据与隐私</h3>
+      <div class="remind-row" style="cursor:default;">聊天消息<span class="v" style="color:var(--ink);">36 条</span></div>
+      <div class="remind-row" style="cursor:default;">任务<span class="v" style="color:var(--ink);">4 条</span></div>
+      <div class="remind-row" style="cursor:default;">人设<span class="v" style="color:var(--ink);">3 个</span></div>
+      <div class="remind-row" style="cursor:default;">档案条目<span class="v" style="color:var(--ink);">4 项</span></div>
+      <div class="btn-row" style="margin-top:14px;"><div class="nbtn danger" onclick="toast('需二次确认')">清除全部聊天记录</div></div>
+      <p class="hint" style="margin-top:10px;">全部数据仅存于本机应用私有目录，不上传云端；卸载即清除。API 密钥经系统 Keystore 加密存储。</p>
+    </div>
+
+    <div class="sheet" id="sheet-about">
+      <div class="grab"></div><h3>关于</h3>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:8px 0 14px;">
+        <div class="avatar ring" style="width:64px;height:64px;font-size:27px;">🖋️</div>
+        <div style="font-size:19px;font-weight:600;color:var(--ink);">导师</div>
+        <div style="font-size:12px;color:var(--muted);">版本 0.3.0</div>
+      </div>
+      <p class="hint" style="text-align:center;">个人全能 AI 导师：与导师对话获得指导，档案自动注入上下文，任务到点督促打卡。<br>AI 接口由你自己配置，数据仅存本机。</p>
     </div>
 
     <div class="toast" id="toast">开发中</div>
