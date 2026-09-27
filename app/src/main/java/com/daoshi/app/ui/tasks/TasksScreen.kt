@@ -375,6 +375,11 @@ private fun NewTaskSheet(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Unit) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val toggleWithHaptic = {
+        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+        onToggle()
+    }
     val tag = when {
         task.isDone -> "已完成"
         dueDateOf(task) < LocalDate.now() -> "未打卡"
@@ -388,10 +393,10 @@ private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Uni
         modifier = Modifier.fillMaxWidth(),
     ) {
         Row(
-            Modifier.combinedClickable(onClick = onToggle, onLongClick = onLongPress),
+            Modifier.combinedClickable(onClick = toggleWithHaptic, onLongClick = onLongPress),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            NeuCheckCircle(checked = task.isDone, onToggle = onToggle)
+            NeuCheckCircle(checked = task.isDone, onToggle = toggleWithHaptic)
             Spacer(Modifier.width(13.dp))
             Column(Modifier.weight(1f)) {
                 Text(

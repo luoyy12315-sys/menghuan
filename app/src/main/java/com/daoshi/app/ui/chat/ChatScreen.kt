@@ -1,6 +1,5 @@
 package com.daoshi.app.ui.chat
 
-import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -60,7 +59,9 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.daoshi.app.data.model.ChatMessage
+import com.daoshi.app.data.model.TaskItem
 import com.daoshi.app.data.model.ToneStyle
 import com.daoshi.app.ui.common.LocalContentWidth
 import com.daoshi.app.ui.common.NeuAvatar
@@ -87,6 +89,9 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
 
 /**
  * 单聊页（新拟态）：从会话列表 push 进入，左上返回即退出。
@@ -103,8 +108,10 @@ fun ChatScreen(
     val uiState by vm.uiState.collectAsState()
     val persona by vm.activePersona.collectAsState()
     val tone by vm.tone.collectAsState()
+    val quickTasks by vm.quickCheckTasks.collectAsState()
     var showToneSheet by remember { mutableStateOf(false) }
-    val context = LocalContext.current
+    var showQuickCheck by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
 
     // 气泡最大宽度 = 版心的 76%（比例随版心自适应）
     val bubbleMaxWidth = LocalContentWidth.current * 0.76f
@@ -122,7 +129,11 @@ fun ChatScreen(
                     Row(
                         Modifier.combinedClickable(
                             onClick = {},
-                            onLongClick = { showToneSheet = true }, // 隐藏入口：长按头像
+                            // 隐藏入口：长按头像（500ms），带触觉反馈确认触发
+                            onLongClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                showToneSheet = true
+                            },
                         ),
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
@@ -272,16 +283,9 @@ fun ChatScreen(
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    Modifier
-                        .size(38.dp)
-                        .neuSurface(13.dp, color = MaterialTheme.colorScheme.background, elevation = 4.dp, inset = true)
-                        .combinedClickable(onClick = {
-                            Toast.makeText(context, "开发中", Toast.LENGTH_SHORT).show()
-                        }, onLongClick = {}),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(MIcons.Camera, contentDescription = "相机", tint = MutedText, modifier = Modifier.size(19.dp))
+                // 快捷打卡入口：从当前会话直接打卡，回执进对话流（导师下轮可感知）
+                NeuCircleButton(onClick = { showQuickCheck = true }, size = 38.dp) {
+                    Icon(MIcons.Checklist, contentDescription = "快捷打卡", tint = MutedText, modifier = Modifier.size(19.dp))
                 }
                 Spacer(Modifier.width(10.dp))
                 Box(Modifier.weight(1f)) {
@@ -291,7 +295,12 @@ fun ChatScreen(
                     )
                 }
                 Spacer(Modifier.width(10.dp))
-                NeuCircleButton(onClick = { vm.send() }, accent = true, size = 38.dp) {
+                NeuCircleButton(
+                    onClick = { vm.send() },
+                    accent = true,
+                    size = 38.dp,
+                    enabled = !uiState.isStreaming,
+                ) {
                     Icon(MIcons.Plane, contentDescription = "发送", tint = Color.White, modifier = Modifier.size(16.dp))
                 }
             }
@@ -303,6 +312,18 @@ fun ChatScreen(
             currentTone = tone,
             onSelect = { vm.selectTone(it); showToneSheet = false },
             onDismiss = { showToneSheet = false },
+        )
+    }
+
+    if (showQuickCheck) {
+        QuickCheckSheet(
+            tasks = quickTasks,
+            onCheckIn = { task ->
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                vm.sendText("✅ 打卡：${task.title}")
+                showQuickCheck = false
+            },
+            onDismiss = { showQuickCheck = false },
         )
     }
 }
@@ -500,6 +521,62 @@ private fun ToneSwitchSheet(
         Spacer(Modifier.height(4.dp))
         Text(
             "人设（名字 / 身份 / 设定词）可在「设置」中自由修改或新增，不止于「导师」。",
+            fontSize = 12.sp,
+            color = MutedText,
+        )
+    }
+}
+
+/** 输入栏左键弹出：快捷打卡——勾选未完成任务，以消息形式发进当前会话 */
+@Composable
+private fun QuickCheckSheet(
+    tasks: List<TaskItem>,
+    onCheckIn: (TaskItem) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    NeuSheetScaffold(title = "快捷打卡", onDismiss = onDismiss) {
+        Spacer(Modifier.height(14.dp))
+        if (tasks.isEmpty()) {
+            Text(
+                "没有待打卡的任务\n去任务页新建一个吧",
+                modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                fontSize = 14.sp,
+                lineHeight = 22.sp,
+                color = MutedText,
+            )
+        } else {
+            Column(
+                Modifier
+                    .heightIn(max = 380.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                tasks.forEach { task ->
+                    val dueTag = when {
+                        task.dueAt == 0L -> "今天"
+                        else -> {
+                            val date = Instant.ofEpochMilli(task.dueAt)
+                                .atZone(ZoneId.systemDefault()).toLocalDate()
+                            when {
+                                date < LocalDate.now() -> "已逾期"
+                                date == LocalDate.now() -> "今天"
+                                else -> "${date.monthValue}月${date.dayOfMonth}日"
+                            }
+                        }
+                    }
+                    NeuSheetRow(
+                        icon = MIcons.Checklist,
+                        title = task.title,
+                        subtitle = dueTag,
+                        onClick = { onCheckIn(task) },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "打卡会以消息发送给当前导师，进入对话记录。",
             fontSize = 12.sp,
             color = MutedText,
         )

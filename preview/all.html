@@ -498,7 +498,7 @@
       <div class="msgs" id="msgs"></div>
       <div class="to-bottom" id="to-bottom" onclick="scrollBottom(true)">↓</div>
       <div class="inputbar">
-        <div class="icon-btn neu-inset" style="border-radius:13px;" onclick="toast('开发中')"><svg viewBox="0 0 24 24" style="stroke:var(--muted);"><path d="M7.5 7L16.5 7a4.5 4.5 0 0 1 4.5 4.5L21 15.5a4.5 4.5 0 0 1 -4.5 4.5L7.5 20a4.5 4.5 0 0 1 -4.5 -4.5L3 11.5a4.5 4.5 0 0 1 4.5 -4.5Z"/><circle cx="12" cy="13.5" r="4"/><circle cx="17.2" cy="10" r="0.9" fill="var(--muted)" stroke="none"/></svg></div>
+        <div class="icon-btn neu-inset" style="border-radius:50%;" onclick="openSheet('sheet-quickcheck')"><svg viewBox="0 0 24 24"><path d="M7 3L17 3a3 3 0 0 1 3 3L20 18a3 3 0 0 1 -3 3L7 21a3 3 0 0 1 -3 -3L4 6a3 3 0 0 1 3 -3Z"/><path d="M8 8L16 8M8 12L16 12M8 16L13 16"/></svg></div>
         <div class="input-pill neu-inset"><input id="chat-input" placeholder="发消息…" onkeydown="if(event.key==='Enter')sendMsg()"></div>
         <div class="icon-btn accent" style="border-radius:50%;" onclick="sendMsg()"><svg viewBox="0 0 24 24" style="stroke:#fff;fill:#fff;stroke-width:0;"><path d="M2 21L23 12L2 3L2 10L17 12L2 14Z"/></svg></div>
       </div>
@@ -571,6 +571,13 @@
       </div>
       <div class="remind-row" onclick="toast('开发中')">提醒<span class="v">不提醒</span></div>
       <div class="btn-row" style="margin-top:14px;"><div class="nbtn" onclick="closeSheets()">取消</div><div class="nbtn primary" onclick="closeSheets();toast('已添加')">添加</div></div>
+    </div>
+
+    <div class="sheet" id="sheet-quickcheck">
+      <div class="grab"></div><h3>快捷打卡</h3>
+      <div class="srow neu-raised" onclick="closeSheets();toast('✅ 打卡已发送给导师')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M7 3L17 3a3 3 0 0 1 3 3L20 18a3 3 0 0 1 -3 3L7 21a3 3 0 0 1 -3 -3L4 6a3 3 0 0 1 3 -3Z"/><path d="M8 8L16 8M8 12L16 12M8 16L13 16"/></svg></div><div class="tx"><div class="t1">23:00 前放下手机</div><div class="t2">今天</div></div><span class="chev">›</span></div>
+      <div class="srow neu-raised" onclick="closeSheets();toast('✅ 打卡已发送给导师')"><div class="ic"><svg viewBox="0 0 24 24"><path d="M7 3L17 3a3 3 0 0 1 3 3L20 18a3 3 0 0 1 -3 3L7 21a3 3 0 0 1 -3 -3L4 6a3 3 0 0 1 3 -3Z"/><path d="M8 8L16 8M8 12L16 12M8 16L13 16"/></svg></div><div class="tx"><div class="t1">整理作品集并更新主页</div><div class="t2" style="color:var(--danger);">已逾期</div></div><span class="chev">›</span></div>
+      <p class="hint" style="margin-top:4px;">打卡会以消息发送给当前导师，进入对话记录。</p>
     </div>
 
     <div class="toast" id="toast">开发中</div>

@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.daoshi.app.MentorApp
 import com.daoshi.app.data.db.AppDatabase
+import com.daoshi.app.data.model.ChatMessage
 import com.daoshi.app.data.model.TaskItem
 import com.daoshi.app.notify.AlarmScheduler
 import kotlinx.coroutines.flow.SharingStarted
@@ -18,6 +19,7 @@ import kotlinx.coroutines.launch
 /**
  * 任务页 VM：任务清单 Room 化（此前为内存假数据）。
  * 保存/勾选/删除同步调度通知；未完成任务的未来提醒在取消勾选时重排。
+ * 勾选完成时向主导师会话写入打卡回执（用户消息），下轮对话 LLM 即可感知执行情况。
  */
 class TasksViewModel(
     private val db: AppDatabase,
@@ -29,18 +31,31 @@ class TasksViewModel(
 
     fun addTask(title: String, note: String, dueAt: Long, remindAt: Long?) =
         viewModelScope.launch {
-            val id = db.taskDao().upsert(
-                TaskItem(title = title, note = note, dueAt = dueAt, remindAt = remindAt)
-            )
-            remindAt?.let { AlarmScheduler.schedule(appContext, id, title, it) }
+            runCatching {
+                val id = db.taskDao().upsert(
+                    TaskItem(title = title, note = note, dueAt = dueAt, remindAt = remindAt)
+                )
+                remindAt?.let { AlarmScheduler.schedule(appContext, id, title, it) }
+            }
         }
 
     fun toggle(task: TaskItem) = viewModelScope.launch {
         val updated = task.copy(isDone = !task.isDone)
-        db.taskDao().update(updated)
+        val saved = runCatching { db.taskDao().update(updated) }
+        if (saved.isFailure) return@launch
         val remindAt = updated.remindAt
         if (updated.isDone) {
             AlarmScheduler.cancel(appContext, task.id, task.title)
+            // 打卡回执：写进主导师（种子 id=1）会话作为用户消息，进入 LLM 历史上下文
+            runCatching {
+                db.messageDao().insert(
+                    ChatMessage(
+                        conversationId = MENTOR_PERSONA_ID,
+                        isFromUser = true,
+                        content = "✅ 已完成打卡：${task.title}",
+                    )
+                )
+            }
         } else if (remindAt != null && remindAt > System.currentTimeMillis()) {
             // 取消勾选且提醒仍在未来：重新挂上闹钟
             AlarmScheduler.schedule(appContext, task.id, updated.title, remindAt)
@@ -48,11 +63,16 @@ class TasksViewModel(
     }
 
     fun delete(task: TaskItem) = viewModelScope.launch {
-        db.taskDao().delete(task.id)
-        AlarmScheduler.cancel(appContext, task.id, task.title)
+        runCatching {
+            db.taskDao().delete(task.id)
+            AlarmScheduler.cancel(appContext, task.id, task.title)
+        }
     }
 
     companion object {
+        /** 主导师 = 种子人设「阿布」，打卡回执固定写入该会话 */
+        const val MENTOR_PERSONA_ID = 1L
+
         val Factory = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MentorApp

@@ -11,6 +11,7 @@ import com.daoshi.app.data.SettingsRepository
 import com.daoshi.app.data.db.AppDatabase
 import com.daoshi.app.data.model.ChatMessage
 import com.daoshi.app.data.model.Persona
+import com.daoshi.app.data.model.TaskItem
 import com.daoshi.app.data.model.ToneStyle
 import com.daoshi.app.llm.ApiException
 import com.daoshi.app.llm.OpenAiClient
@@ -18,9 +19,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -33,8 +38,8 @@ data class ChatUiState(
 
 /**
  * 单聊页 VM：每个 persona 一个独立会话（personaId 区分，消息互不混淆）。
- * - 打开时加载 Room 持久化消息，为空则显示种子对话
- * - 发送 → 持久化用户消息 → OpenAiClient 流式回复 → 边收边显 → 完成后持久化
+ * - 持续观察 Room 消息：打卡回执等外部写入实时上屏（流式期间以本地流为准）
+ * - 发送 → 持久化用户消息 → OpenAiClient 流式回复 → 节流上屏 → 完成后持久化
  * - system prompt = persona.systemPrompt + tone.promptSnippet + 用户档案（ProfileFact）
  * - 对话风格按 persona 持久化（长按头像切换，重进保留）
  * - 请求失败（含 HTTP 错误）：不落库、给错误条 + 重试；已收到部分回复则保留已收内容
@@ -56,45 +61,70 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(ChatUiState(messages = seedMessages(personaId)))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    /** 快捷打卡候选：未完成任务，逾期/今天在前 */
+    val quickCheckTasks: StateFlow<List<TaskItem>> = db.taskDao().observeAll()
+        .map { tasks ->
+            val today = startOfToday()
+            tasks.filter { !it.isDone }.sortedBy { if (it.dueAt == 0L) today else it.dueAt }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     init {
         viewModelScope.launch {
-            val persona = personaRepository.getPersona(personaId)
-                ?: personaRepository.observePersonas().first().firstOrNull()
-            _activePersona.value = persona
-            if (persona != null) {
-                _tone.value = runCatching { ToneStyle.valueOf(persona.tone) }
-                    .getOrDefault(ToneStyle.GENTLE)
+            runCatching {
+                val persona = personaRepository.getPersona(personaId)
+                    ?: personaRepository.observePersonas().first().firstOrNull()
+                _activePersona.value = persona
+                if (persona != null) {
+                    _tone.value = runCatching { ToneStyle.valueOf(persona.tone) }
+                        .getOrDefault(ToneStyle.GENTLE)
+                }
             }
-            // 已有持久化消息则覆盖种子
-            val persisted = db.messageDao().observeConversation(personaId).first()
-            if (persisted.isNotEmpty()) {
-                _uiState.value = _uiState.value.copy(messages = persisted)
+        }
+        // 持续观察持久化消息：任务页勾选生成的打卡回执、未来其他写入源都实时上屏。
+        // 流式期间跳过（占位尾巴尚未落库，本地列表才是最新视图）；流结束后 DB 即为事实源。
+        viewModelScope.launch {
+            runCatching {
+                db.messageDao().observeConversation(personaId).collect { persisted ->
+                    if (persisted.isNotEmpty()) {
+                        _uiState.update { if (it.isStreaming) it else it.copy(messages = persisted) }
+                    }
+                }
             }
         }
     }
 
     fun onInputChange(text: String) {
-        _uiState.value = _uiState.value.copy(input = text)
+        _uiState.update { it.copy(input = text) }
     }
 
     fun selectTone(tone: ToneStyle) {
         _tone.value = tone
         _activePersona.value = _activePersona.value?.copy(tone = tone.name)
-        viewModelScope.launch { personaRepository.updateTone(personaId, tone.name) }
+        viewModelScope.launch { runCatching { personaRepository.updateTone(personaId, tone.name) } }
     }
 
     fun send() {
         val text = _uiState.value.input.trim()
         if (text.isEmpty() || _uiState.value.isStreaming) return
+        sendText(text)
+    }
+
+    /** 快捷打卡 / 重试等场景：以给定文本直接发送（走完整落库 + 回复链路） */
+    fun sendText(text: String) {
+        if (text.isBlank() || _uiState.value.isStreaming) return
         val userMsg = ChatMessage(conversationId = personaId, isFromUser = true, content = text)
-        _uiState.value = _uiState.value.copy(
-            input = "",
-            messages = _uiState.value.messages + userMsg,
-            isStreaming = true,
-            error = null,
-        )
+        _uiState.update {
+            it.copy(input = "", messages = it.messages + userMsg, isStreaming = true, error = null)
+        }
         viewModelScope.launch {
-            db.messageDao().insert(userMsg)
+            val saved = runCatching { db.messageDao().insert(userMsg) }
+            if (saved.isFailure) {
+                _uiState.update {
+                    it.copy(isStreaming = false, error = "消息保存失败：${saved.exceptionOrNull()?.message ?: "存储异常"}")
+                }
+                return@launch
+            }
             reply()
         }
     }
@@ -102,14 +132,21 @@ class ChatViewModel(
     /** 上次请求失败后重试（用户消息已在历史中） */
     fun retry() {
         if (_uiState.value.isStreaming) return
-        _uiState.value = _uiState.value.copy(isStreaming = true, error = null)
+        _uiState.update { it.copy(isStreaming = true, error = null) }
         viewModelScope.launch { reply() }
     }
 
     /** 组装 system prompt 并流式获取回复 */
     private suspend fun reply() {
         val persona = _activePersona.value
-        val config = settingsRepository.apiConfig.first()
+        val config = try {
+            settingsRepository.apiConfig.first()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _uiState.update { it.copy(isStreaming = false, error = "配置读取失败：${e.message ?: "存储异常"}") }
+            return
+        }
 
         // 未配置 API 或人设缺失：模拟回复（演示模式）
         if (persona == null || !config.isComplete) {
@@ -117,62 +154,94 @@ class ChatViewModel(
             return
         }
 
+        val facts = try {
+            db.profileFactDao().observeAll().first()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            emptyList()
+        }
         val systemPrompt = buildString {
             append(persona.systemPrompt)
             append("\n\n").append(_tone.value.promptSnippet)
-            val facts = db.profileFactDao().observeAll().first()
             if (facts.isNotEmpty()) {
                 append("\n\n以下是用户档案，回答时请结合这些信息：")
                 facts.forEach { append("\n- ").append(it.key).append("：").append(it.value) }
             }
         }
         // 历史取持久化消息：UI 种子对话是展示用假数据，绝不能发给 LLM 当真历史
-        val history = db.messageDao().observeConversation(personaId)
-            .first()
-            .filter { it.content.isNotBlank() }
-            .takeLast(20)
+        val history = try {
+            db.messageDao().observeConversation(personaId).first()
+                .filter { it.content.isNotBlank() }
+                .takeLast(20)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            _uiState.update { it.copy(isStreaming = false, error = "历史读取失败：${e.message ?: "存储异常"}") }
+            return
+        }
 
         val sb = StringBuilder()
+        var lastEmitAt = 0L
         try {
             OpenAiClient(config.baseUrl, config.apiKey, config.model)
                 .chat(systemPrompt, history)
                 .collect { token ->
                     sb.append(token)
-                    replaceStreamingTail(sb.toString())
+                    val now = System.currentTimeMillis()
+                    // UI 节流：SSE token 可达 20–50 个/秒，逐 token 全量重组长会话会掉帧；
+                    // 60ms（≈16fps 文本增量）肉眼无差，重组与分配次数降一个量级
+                    if (now - lastEmitAt >= STREAM_UI_THROTTLE_MS) {
+                        lastEmitAt = now
+                        replaceStreamingTail(sb.toString())
+                    }
                 }
         } catch (e: CancellationException) {
             // 用户中途退出：把已显示的部分回复存档（看到过的内容不该消失），再照常传播取消
+            replaceStreamingTail(sb.toString())
             persistReply(sb)
             throw e
         } catch (e: ApiException) {
+            replaceStreamingTail(sb.toString())
             // HTTP 失败：一个 token 都没收到 → 错误条 + 重试，不落库
             if (sb.isEmpty()) {
-                _uiState.value = _uiState.value.copy(isStreaming = false, error = friendlyApiError(e))
+                _uiState.update { it.copy(isStreaming = false, error = friendlyApiError(e)) }
                 return
             }
             // 已收到部分回复：保留已收内容并正常落库
         } catch (e: Exception) {
+            replaceStreamingTail(sb.toString())
             if (sb.isEmpty()) {
                 // 一个 token 都没收到：不落库，给出可重试的错误提示
-                _uiState.value = _uiState.value.copy(
-                    isStreaming = false,
-                    error = "回复失败：${e.message ?: "网络异常"}",
-                )
+                _uiState.update {
+                    it.copy(isStreaming = false, error = "回复失败：${e.message ?: "网络异常"}")
+                }
                 return
             }
             // 已收到部分回复：保留已收内容并正常落库
         }
+        replaceStreamingTail(sb.toString())
+        if (sb.isEmpty()) {
+            // 服务端 200 但没有任何流式内容（网关错误页 / 非 SSE 响应）：
+            // 明确报错而不是静默复位，否则用户不知道发生了什么
+            _uiState.update {
+                it.copy(isStreaming = false, error = "回复为空：请检查模型名是否正确，或稍后重试")
+            }
+            return
+        }
         persistReply(sb)
-        _uiState.value = _uiState.value.copy(isStreaming = false)
+        _uiState.update { it.copy(isStreaming = false) }
     }
 
     /** 流结束后落库 assistant 回复；NonCancellable 保证已取消的作用域里也能写完 */
     private suspend fun persistReply(sb: StringBuilder) {
         if (sb.isEmpty()) return
         withContext(NonCancellable) {
-            db.messageDao().insert(
-                ChatMessage(conversationId = personaId, isFromUser = false, content = sb.toString())
-            )
+            runCatching {
+                db.messageDao().insert(
+                    ChatMessage(conversationId = personaId, isFromUser = false, content = sb.toString())
+                )
+            }
         }
     }
 
@@ -187,14 +256,16 @@ class ChatViewModel(
 
     /** 流式期间：替换列表末尾的 assistant 占位消息 */
     private fun replaceStreamingTail(text: String) {
-        val msgs = _uiState.value.messages.toMutableList()
-        val tail = msgs.lastOrNull()
-        if (tail != null && !tail.isFromUser) {
-            msgs[msgs.lastIndex] = tail.copy(content = text)
-        } else {
-            msgs.add(ChatMessage(conversationId = personaId, isFromUser = false, content = text))
+        _uiState.update { state ->
+            val msgs = state.messages.toMutableList()
+            val tail = msgs.lastOrNull()
+            if (tail != null && !tail.isFromUser) {
+                msgs[msgs.lastIndex] = tail.copy(content = text)
+            } else {
+                msgs.add(ChatMessage(conversationId = personaId, isFromUser = false, content = text))
+            }
+            state.copy(messages = msgs)
         }
-        _uiState.value = _uiState.value.copy(messages = msgs)
     }
 
     private suspend fun appendMockReply() {
@@ -205,20 +276,24 @@ class ChatViewModel(
         }
         delay(600)
         val msg = ChatMessage(conversationId = personaId, isFromUser = false, content = mock)
-        _uiState.value = _uiState.value.copy(
-            messages = _uiState.value.messages + msg,
-            isStreaming = false,
-        )
-        db.messageDao().insert(msg)
+        _uiState.update { it.copy(messages = it.messages + msg, isStreaming = false) }
+        runCatching { db.messageDao().insert(msg) }
     }
 
     companion object {
+        /** 流式上屏节流间隔 */
+        private const val STREAM_UI_THROTTLE_MS = 60L
+
         fun factory(personaId: Long) = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MentorApp
                 ChatViewModel(app.personaRepository, app.settingsRepository, app.db, personaId)
             }
         }
+
+        private fun startOfToday(): Long =
+            java.time.LocalDate.now().atStartOfDay(java.time.ZoneId.systemDefault())
+                .toInstant().toEpochMilli()
 
         /** 每个会话的独立种子对话（仅在 Room 无记录时显示） */
         private fun seedMessages(personaId: Long): List<ChatMessage> = when (personaId) {
