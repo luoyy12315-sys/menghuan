@@ -184,6 +184,6 @@ fun NeuTextButton(text: String, onClick: () -> Unit, color: Color = NeuAccent) {
 
 /** 次级说明文字 */
 @Composable
-fun NeuMuted(text: String, fontSize: Float = 12f, modifier: Modifier = Modifier) {
-    Text(text, modifier = modifier, fontSize = fontSize.sp, color = MutedText)
+fun NeuMuted(modifier: Modifier = Modifier, text: String, fontSize: Float = 12f) {
+    Text(text, fontSize = fontSize.sp, color = MutedText, modifier = modifier)
 }

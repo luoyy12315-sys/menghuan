@@ -477,8 +477,9 @@ fun NeuSwitch(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val knobOffset by animateDpAsState(
-        if (checked) 20.dp else 3.dp,
-        tween(220, easing = EaseOutQuart),
+        targetValue = if (checked) 20.dp else 3.dp,
+        animationSpec = tween(220, easing = EaseOutQuart),
+        label = "knobOffset",
     )
     Box(
         modifier

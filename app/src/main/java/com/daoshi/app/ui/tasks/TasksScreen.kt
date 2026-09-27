@@ -257,7 +257,7 @@ private fun NewTaskSheet(
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(16.dp))
-        com.daoshi.app.ui.common.NeuMuted("日期")
+        com.daoshi.app.ui.common.NeuMuted(text = "日期")
         Spacer(Modifier.height(9.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
             NeuChip("今天", selected = dueDate == LocalDate.now()) { dueDate = LocalDate.now() }

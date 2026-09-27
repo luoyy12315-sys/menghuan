@@ -123,7 +123,7 @@ fun PersonaEditorSheet(
         }
         if (persona?.isBuiltIn == true) {
             Spacer(Modifier.height(10.dp))
-            com.daoshi.app.ui.common.NeuMuted("预置人设可自由编辑，但不可删除。")
+            com.daoshi.app.ui.common.NeuMuted(text = "预置人设可自由编辑，但不可删除。")
         }
         Spacer(Modifier.height(6.dp))
     }

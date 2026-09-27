@@ -41,3 +41,7 @@
 - 修复：演示模式（未配置 API）去掉 600ms 人为延迟，回复即时且行为确定化
 - SettingsRepository 支持注入独立 DataStore（测试隔离，消除委托单例跨测试残留）
 - 移除 mock 回复演示路径中的冗余 delay import
+
+## v0.6.3（versionCode 15）
+- 修复：Lint 清理——NeuMuted 签名规范（modifier 前置）、NeuSwitch 用 lambda 重载动画、新增 dataExtractionRules（Android 12+ 备份排除，与 allowBackup=false 配套）；0 errors
+- 文档：AGENTS 目录树同步新文件

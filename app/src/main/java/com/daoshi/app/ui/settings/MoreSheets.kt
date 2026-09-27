@@ -85,7 +85,7 @@ fun NotificationSettingsSheet(
             },
         )
         Spacer(Modifier.height(4.dp))
-        NeuMuted("提醒由系统闹钟触发，全部数据仅存本机。")
+        NeuMuted(text = "提醒由系统闹钟触发，全部数据仅存本机。")
     }
 }
 
