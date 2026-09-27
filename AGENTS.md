@@ -32,21 +32,24 @@
 │   ├── MainActivity.kt          # NavHost：chatList → chat/{personaId}，personas，data，tasks
 │   ├── MentorApp.kt             # Application + 服务容器（db / persona / profile / settings 仓库）
 │   ├── data/
-│   │   ├── model/Models.kt      # Persona(含 tone) / ToneStyle / ChatMessage / TaskItem(含 dueAt/createdBy) / ProfileFact
-│   │   ├── db/AppDatabase.kt    # Room v3 + 正式 Migration（4 DAO，messages 有联合索引；schema 导出到 app/schemas，禁破坏性重建）
-│   │   ├── PersonaRepository.kt # 人设仓库（3 个种子均 isBuiltIn；updateTone 持久化风格）
+│   │   ├── model/Models.kt      # Persona(含 tone/pinned) / ToneStyle / ChatMessage / TaskItem / ProfileFact / AiInsight
+│   │   ├── db/AppDatabase.kt    # Room v5 + 正式 Migration（5 DAO，messages 有联合索引；schema 导出到 app/schemas，禁破坏性重建）
+│   │   ├── ExtractionEngine.kt  # AI 提炼流水线（水位线增量 → LLM → facts/insights 落库）
+│   │   ├── ProfileExtractor.kt  # 提炼 prompt + 宽容 JSON 解析（纯函数，JVM 单测）
+│   │   ├── PersonaRepository.kt # 人设仓库（3 个种子均 isBuiltIn；updateTone/setPinned）
 │   │   ├── ProfileRepository.kt # 用户档案仓库（ProfileFact 种子 + 增删改）
-│   │   └── SettingsRepository.kt# DataStore：ApiConfig（API Key 经 ApiKeyCipher/AndroidKeyStore 加密）
+│   │   └── SettingsRepository.kt# DataStore（API Key 经 ApiKeyCipher/AndroidKeyStore 加密；DataStore 可注入供测试）
 │   ├── llm/OpenAiClient.kt      # OpenAI 兼容 SSE 流式客户端
-│   ├── notify/                  # AlarmScheduler + TaskReminderReceiver + BootReceiver（任务到点通知）
+│   ├── notify/                  # AlarmScheduler + TaskReminderReceiver（含稍后提醒）+ TaskSnoozeReceiver + BootReceiver
 │   └── ui/
 │       ├── theme/Theme.kt       # 新拟态设计令牌：NeuBackground/NeuSurface/NeuAccent/AccentBrush…
 │       ├── theme/Icons.kt       # MIcons 纯线条图标（path 照搬 preview/all.html 的 SVG）
 │       ├── common/Neu.kt        # 新拟态核心：neuSurface 双向渐变阴影 / NeuButton / NeuTextField / NeuCheckCircle / NeuSheet*
-│       ├── chat/                # ChatListScreen + ChatScreen（按天分组/失败重试）+ ChatViewModel（档案注入 prompt）
+│       ├── chat/                # ChatListScreen + ChatScreen（MarkdownText 渲染/按天分组/快捷打卡/失败重试）+ ChatViewModel + ChatDrafts
 │       ├── persona/             # PersonaManageScreen + PersonaEditorSheet（新增/编辑/删除人设）
-│       ├── data/DataScreen.kt   # 我的数据页（完成度圆环 / 档案 / 习惯 / 洞察 + 编辑弹层）
-│       ├── tasks/TasksScreen.kt # 任务页（分组卡片/勾选打卡 + TasksViewModel）
+│       ├── data/DataScreen.kt   # 我的数据页（真实完成度圆环/打卡热力/档案 AI 徽标/洞察 + 编辑弹层）
+│       ├── tasks/TasksScreen.kt # 任务页（分组卡片/勾选打卡/长按删除 + TasksViewModel）
+│       ├── common/MarkdownText.kt # AI 气泡轻量 Markdown（粗体/行内码/列表/标题/代码栅栏）
 │       └── settings/SettingsSheet.kt  # 共享设置面板 + ApiConfigSheet + MoreSheets.kt（通知/隐私/关于）
 ```
 
