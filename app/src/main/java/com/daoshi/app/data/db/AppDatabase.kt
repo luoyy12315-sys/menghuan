@@ -18,7 +18,8 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PersonaDao {
-    @Query("SELECT * FROM personas ORDER BY isBuiltIn DESC, createdAt ASC")
+    // 置顶优先，其次预置排序，最后按创建时间
+    @Query("SELECT * FROM personas ORDER BY pinned DESC, isBuiltIn DESC, createdAt ASC")
     fun observeAll(): Flow<List<Persona>>
 
     @Query("SELECT COUNT(*) FROM personas")
@@ -35,6 +36,10 @@ interface PersonaDao {
 
     @Query("UPDATE personas SET tone = :tone WHERE id = :id")
     suspend fun updateTone(id: Long, tone: String)
+
+    /** 会话置顶（长按会话行切换） */
+    @Query("UPDATE personas SET pinned = :pinned WHERE id = :id")
+    suspend fun setPinned(id: Long, pinned: Boolean)
 }
 
 @Dao
@@ -139,7 +144,7 @@ interface AiInsightDao {
 
 @Database(
     entities = [Persona::class, ChatMessage::class, TaskItem::class, ProfileFact::class, AiInsight::class],
-    version = 4,
+    version = 5,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -186,6 +191,13 @@ abstract class AppDatabase : RoomDatabase() {
                         "`detail` TEXT NOT NULL, " +
                         "`createdAt` INTEGER NOT NULL)"
                 )
+            }
+        }
+
+        /** v5：会话置顶 */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE personas ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

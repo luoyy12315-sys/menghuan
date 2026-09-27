@@ -46,6 +46,7 @@ fun PersonaEditorSheet(
         systemPrompt = prompt.trim(),
         isBuiltIn = persona?.isBuiltIn ?: false,
         tone = persona?.tone ?: ToneStyle.GENTLE.name,
+        pinned = persona?.pinned ?: false, // 编辑不改置顶状态
         createdAt = persona?.createdAt ?: System.currentTimeMillis(),
     )
 

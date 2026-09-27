@@ -20,6 +20,8 @@ data class Persona(
     val isBuiltIn: Boolean = false, // 预置人设标记（仍可编辑，仅不可删除）
     @ColumnInfo(defaultValue = "GENTLE")
     val tone: String = ToneStyle.GENTLE.name,  // 该会话当前对话风格（持久化）
+    @ColumnInfo(defaultValue = "0")
+    val pinned: Boolean = false,    // 会话置顶（长按会话行切换）
     val createdAt: Long = System.currentTimeMillis(),
 )
 

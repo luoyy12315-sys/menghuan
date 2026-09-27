@@ -26,13 +26,28 @@ import com.daoshi.app.ui.theme.TextPrimary
  * 样式保持气泡排版语言（15sp/21sp 主文字），代码用等宽字体。
  */
 
-private sealed interface MdBlock {
+internal sealed interface MdBlock {
     data class Line(val text: String) : MdBlock
     data class Code(val lines: List<String>) : MdBlock
 }
 
-/** ``` 栅栏整体成块；未闭合栅栏的余下行也按代码处理 */
-private fun splitBlocks(text: String): List<MdBlock> {
+/** 行分类（纯函数，JVM 单测覆盖）：返回种类与"清理后"的正文 */
+internal enum class LineKind { Blank, Heading, Bullet, Plain }
+
+internal fun classifyLine(raw: String): Pair<LineKind, String> {
+    val line = raw.trimEnd()
+    return when {
+        line.isBlank() -> LineKind.Blank to ""
+        line.startsWith("#") && line.dropWhile { it == '#' }.startsWith(" ") ->
+            LineKind.Heading to line.dropWhile { it == '#' }.trim()
+        Regex("^\\s*[-•]\\s+").containsMatchIn(line) ->
+            LineKind.Bullet to line.replaceFirst(Regex("^\\s*[-•]\\s+"), "")
+        else -> LineKind.Plain to line.trimStart()
+    }
+}
+
+/** ``` 栅栏整体成块；未闭合栅栏的余下行也按代码处理（纯函数，JVM 单测覆盖） */
+internal fun splitBlocks(text: String): List<MdBlock> {
     val out = mutableListOf<MdBlock>()
     var inFence = false
     val fence = mutableListOf<String>()
@@ -73,26 +88,23 @@ fun MarkdownText(
 
 @Composable
 private fun ColumnScope.LineText(raw: String, color: Color) {
-    val line = raw.trimEnd()
-    when {
-        line.isBlank() -> Spacer(Modifier.height(3.dp))
-
-        line.startsWith("#") && line.dropWhile { it == '#' }.startsWith(" ") -> Text(
-            inline(line.dropWhile { it == '#' }.trim()),
+    val (kind, content) = classifyLine(raw)
+    when (kind) {
+        LineKind.Blank -> Spacer(Modifier.height(3.dp))
+        LineKind.Heading -> Text(
+            inline(content),
             fontSize = 15.sp,
             fontWeight = FontWeight.SemiBold,
             color = color,
         )
-
-        Regex("^\\s*[-•]\\s+").containsMatchIn(line) -> Text(
-            "•  " + inline(line.replaceFirst(Regex("^\\s*[-•]\\s+"), "")),
+        LineKind.Bullet -> Text(
+            "•  " + inline(content),
             fontSize = 15.sp,
             lineHeight = 21.sp,
             color = color,
         )
-
-        else -> Text(
-            inline(line.trimStart()),
+        LineKind.Plain -> Text(
+            inline(content),
             fontSize = 15.sp,
             lineHeight = 21.sp,
             color = color,

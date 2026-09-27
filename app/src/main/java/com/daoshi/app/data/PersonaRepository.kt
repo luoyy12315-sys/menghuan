@@ -24,6 +24,9 @@ class PersonaRepository(private val db: AppDatabase) {
     /** 对话风格按 persona 持久化（长按头像切换后保存） */
     suspend fun updateTone(id: Long, tone: String) = db.personaDao().updateTone(id, tone)
 
+    /** 会话置顶（长按会话行切换） */
+    suspend fun setPinned(id: Long, pinned: Boolean) = db.personaDao().setPinned(id, pinned)
+
     /**
      * 种子只播一次。此前在 onStart 里"查空再插"没有并发保护：
      * 两个收集器（会话列表 + 数据统计）同时首次订阅时双双判空，种子重复插入，

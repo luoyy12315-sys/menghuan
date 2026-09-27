@@ -2,10 +2,15 @@ package com.daoshi.app.ui.chat
 
 import android.content.Context
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,8 +42,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -64,6 +71,7 @@ import com.daoshi.app.ui.common.NeuAvatar
 import com.daoshi.app.ui.common.NeuCircleButton
 import com.daoshi.app.ui.common.NeuTopBar
 import com.daoshi.app.ui.common.NeuTextButton
+import com.daoshi.app.ui.common.NeuPressSpec
 import com.daoshi.app.ui.common.neuRowPress
 import org.json.JSONArray
 import org.json.JSONObject
@@ -180,6 +188,11 @@ class ChatListViewModel(
             val matched = latestByPersona[persona.id]
             if (nameMatch || matched != null) SearchResultUi(persona, matched) else null
         }
+    }
+
+    /** 会话置顶（长按会话行切换），置顶的排最前 */
+    fun setPinned(personaId: Long, pinned: Boolean) = viewModelScope.launch {
+        runCatching { personaRepository.setPinned(personaId, pinned) }
     }
 
     // ===== 设置面板补全：通知开关 / 数据统计与清理 =====
@@ -360,6 +373,7 @@ fun ChatListScreen(
     var showAbout by remember { mutableStateOf(false) }
     var searchMode by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
 
     Column(
         Modifier
@@ -410,7 +424,7 @@ fun ChatListScreen(
                 }
             }
 
-            // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画
+            // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画；长按置顶
             LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(rows, key = { _, row -> row.persona.id }) { index, row ->
                     Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 40).coerceAtMost(320)))) {
@@ -420,6 +434,16 @@ fun ChatListScreen(
                             time = row.time,
                             unread = row.showDot,
                             onClick = { onOpen(row.persona.id) },
+                            onLongClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                val target = !row.persona.pinned
+                                vm.setPinned(row.persona.id, target)
+                                Toast.makeText(
+                                    context,
+                                    if (target) "已置顶，会话将排在最前" else "已取消置顶",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            },
                         )
                     }
                 }
@@ -610,6 +634,7 @@ private fun SearchOverlay(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationRow(
     persona: Persona,
@@ -617,12 +642,22 @@ private fun ConversationRow(
     time: String,
     unread: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val dotScale by animateFloatAsState(if (unread) 1f else 0f, tween(220, easing = EaseOutQuart))
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) 0.975f else 1f, NeuPressSpec)
     Row(
         Modifier
             .fillMaxWidth()
-            .neuRowPress(onClick = onClick)
+            .scale(scale)
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            )
             .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -650,7 +685,11 @@ private fun ConversationRow(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            Text(time, fontSize = 11.sp, color = FaintText)
+            Text(
+                if (persona.pinned) "📌 $time" else time,
+                fontSize = 11.sp,
+                color = if (persona.pinned) NeuAccent else FaintText,
+            )
             // 未读点 = 实心圆 + 淡光晕（与预览 box-shadow 0 0 0 3px 一致）
             Box(
                 Modifier.size(9.dp),
