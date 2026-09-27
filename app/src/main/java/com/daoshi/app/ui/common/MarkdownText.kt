@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -114,19 +116,26 @@ private fun ColumnScope.LineText(raw: String, color: Color) {
 
 @Composable
 private fun ColumnScope.CodeLines(lines: List<String>, color: Color) {
-    Text(
-        buildAnnotatedString {
-            lines.forEachIndexed { i, l ->
-                append(l)
-                if (i < lines.lastIndex) append('\n')
-            }
-        },
-        fontSize = 13.sp,
-        lineHeight = 19.sp,
-        fontFamily = FontFamily.Monospace,
-        color = color,
-        modifier = Modifier.fillMaxWidth(),
-    )
+    // 代码块：凹陷纸面 + 等宽字体，与气泡内嵌语言一致
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .neuSurface(12.dp, color = MaterialTheme.colorScheme.background, elevation = 3.dp, inset = true)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Text(
+            buildAnnotatedString {
+                lines.forEachIndexed { i, l ->
+                    append(l)
+                    if (i < lines.lastIndex) append('\n')
+                }
+            },
+            fontSize = 13.sp,
+            lineHeight = 19.sp,
+            fontFamily = FontFamily.Monospace,
+            color = color,
+        )
+    }
 }
 
 /** 行内格式：**粗体** 与 `行内代码`（字符扫描，未配对的记号原样输出） */

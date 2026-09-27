@@ -687,6 +687,27 @@ personas.forEach((p, i) => {
     </div>
     <div class="meta"><span class="time">${p.time}</span>${i === 0 ? '<span class="dot"></span>' : '<span style="width:9px;height:9px;"></span>'}</div>`;
   row.onclick = () => openChat(p);
+  // 长按（右键模拟）置顶：移到列表最前 + 标识
+  row.oncontextmenu = e => {
+    e.preventDefault();
+    p.pinned = !p.pinned;
+    toast(p.pinned ? '已置顶，会话将排在最前' : '已取消置顶');
+    convList.querySelectorAll('.conv').forEach(el => el.remove());
+    [...personas].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)).forEach(rebuildRow);
+  };
+  convList.appendChild(row);
+}
+function rebuildRow(p) {
+  const row = document.createElement('div');
+  row.className = 'conv';
+  row.innerHTML = `
+    <div class="avatar" style="width:46px;height:46px;font-size:19px;">${p.emoji}</div>
+    <div class="body">
+      <div class="name">${p.name}</div>
+      <div class="preview">${p.pinned ? '📌 ' : ''}${p.preview || p.title}</div>
+    </div>
+    <div class="meta"><span class="time">${p.time || ''}</span>${p.id === 1 ? '<span class="dot"></span>' : '<span style="width:9px;height:9px;"></span>'}</div>`;
+  row.onclick = () => openChat(p);
   convList.appendChild(row);
 });
 

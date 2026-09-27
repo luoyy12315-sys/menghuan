@@ -142,6 +142,12 @@
 - [x] 任务通知点击直达任务页（v0.3.0：deep link `daoshi://tasks`；personas/data/chat 亦注册 deep link）
 - [x] 单聊页底栏遮挡输入栏修复（v0.3.0：push 层级页隐藏底栏 + AdaptiveScreen 统一 navigationBarsPadding）
 - [x] 种子数据并发竞态修复（v0.3.0：多收集器同时首订导致种子重复插入、列表出双行；改 Mutex + 一次性 + COUNT 判空）
+- [x] AI 气泡轻量 Markdown 渲染（v0.5.0：`ui/common/MarkdownText.kt` 粗体/行内码/标题/列表/代码栅栏，无新依赖；行分类与栅栏切分为纯函数 + 单测）
+- [x] 通知「10 分钟后再提醒」action（v0.5.0：TaskSnoozeReceiver 取消通知并重排闹钟）
+- [x] 数据导出 JSON（v0.5.0：数据与隐私面板 → 全量导出走系统分享，密钥不含）
+- [x] 气泡长按复制 + 会话草稿保留（v0.5.0：ChatDrafts 进程内存级，切走再回输入还在）+ 数据页完成度附上周对比
+- [x] 会话置顶（v0.6.0：Room v5 personas.pinned + 长按会话行切换 + 📌 标识；编辑人设透传 pinned）
+- [x] 测试基建（v0.5.1：OpenAiClientTest 用 MockWebServer 验证 SSE 契约；ExtractionEngineTest 集成测试——提炼落库/去重/水位线；共 25 个测试）
 - [x] AI 提炼流水线（v0.4.0：`data/ExtractionEngine.kt`——聊天回复成功落库后检查水位线，攒够 8 条增量消息自动调 LLM（复用 OpenAiClient）；产出 ProfileFact（按 key 覆盖，manual 来源不被篡改）+ AiInsight（标题去重、留 20 条）；解析器 `ProfileExtractor` 纯函数 + JVM 单测；数据页洞察区有手动「提炼」入口（API 未配置时隐藏））
 - [x] 数据页习惯/洞察接真实数据（v0.4.0：ai_insights 表（Room v4 + MIGRATION_3_4）驱动洞察卡，空时回退示例并标注「示例数据」；习惯卡改为「近 7 天打卡」每日完成热力（真数据）；档案条目 source=ai 带小徽标）
 

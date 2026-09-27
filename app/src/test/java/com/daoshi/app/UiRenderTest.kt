@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import com.github.takahirom.roborazzi.captureRoboImage
+import kotlinx.coroutines.flow.first
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -141,9 +142,12 @@ class UiRenderTest {
             app.db.taskDao().upsert(
                 com.daoshi.app.data.model.TaskItem(title = "08:00 起床 + 晨跑 20 分钟", dueAt = today + 86_400_000, createdBy = "ai")
             )
+            // 置顶严格教练（id=2）：列表行排到首位，时间前带 📌 标识
+            app.db.personaDao().setPinned(2L, true)
         }
         awaitText("阿布")
-        snap("0-chatlist-unread") // 未读点光晕 + 打卡回执消息的列表预览
+        awaitText("📌") // 等 Room invalidation 重发后 UI 真正重排（置顶行上屏）
+        snap("0-chatlist-unread") // 未读点光晕 + 打卡回执消息的列表预览 + 置顶标识
         // 任务页（有数据）：分组标题 + 标签 + 完成划线
         clickText("任务")
         awaitText("已逾期")
@@ -216,6 +220,8 @@ class UiRenderTest {
             app.db.taskDao().upsert(
                 com.daoshi.app.data.model.TaskItem(title = "今日未完成的任务", dueAt = dayStart(0))
             )
+            // 置顶严格教练：列表行时间前出现 📌 并排到首位
+            app.db.personaDao().setPinned(2L, true)
         }
         awaitText("阿布")
         clickText("数据")
