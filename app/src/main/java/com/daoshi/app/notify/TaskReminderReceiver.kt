@@ -60,6 +60,19 @@ class TaskReminderReceiver : BroadcastReceiver() {
                     .setCategory(NotificationCompat.CATEGORY_REMINDER)
                     .setAutoCancel(true)
                     .setContentIntent(openTasks)
+                    // 稍后提醒：取消本条通知，10 分钟后重排同一条闹钟（打卡场景刚需）
+                    .addAction(
+                        0,
+                        "10 分钟后再提醒",
+                        PendingIntent.getBroadcast(
+                            context,
+                            ((taskId % Int.MAX_VALUE) + 1).toInt(),
+                            Intent(context, TaskSnoozeReceiver::class.java)
+                                .putExtra(AlarmScheduler.EXTRA_TASK_ID, taskId)
+                                .putExtra(AlarmScheduler.EXTRA_TITLE, title),
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                        ),
+                    )
                     .build()
                 manager.notify((taskId % Int.MAX_VALUE).toInt(), notification)
             } finally {
@@ -70,6 +83,22 @@ class TaskReminderReceiver : BroadcastReceiver() {
 
     private companion object {
         const val CHANNEL_ID = "task_reminder"
+    }
+}
+
+/** 通知「稍后提醒」action：取消当前通知，10 分钟后重排同一条提醒闹钟 */
+class TaskSnoozeReceiver : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val taskId = intent.getLongExtra(AlarmScheduler.EXTRA_TASK_ID, 0)
+        val title = intent.getStringExtra(AlarmScheduler.EXTRA_TITLE) ?: "任务提醒"
+        NotificationManagerCompat.from(context).cancel((taskId % Int.MAX_VALUE).toInt())
+        AlarmScheduler.schedule(
+            context,
+            taskId,
+            title,
+            System.currentTimeMillis() + 10 * 60_000L,
+        )
     }
 }
 

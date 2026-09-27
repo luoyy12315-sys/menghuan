@@ -89,11 +89,12 @@ fun NotificationSettingsSheet(
     }
 }
 
-/** 设置 · 数据与隐私：本机数据统计 + 清除聊天记录（二次确认） */
+/** 设置 · 数据与隐私：本机数据统计 + 导出/清除聊天记录（二次确认） */
 @Composable
 fun DataPrivacySheet(
     stats: DataStats,
     onClearChats: () -> Unit,
+    onExport: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     var confirmClear by remember { mutableStateOf(false) }
@@ -105,14 +106,20 @@ fun DataPrivacySheet(
         StatRow("档案条目", "${stats.facts} 项")
         Spacer(Modifier.height(16.dp))
         NeuButton(
+            text = "导出全部数据（JSON）",
+            kind = NeuButtonKind.Secondary,
+            onClick = onExport,
+        )
+        Spacer(Modifier.height(10.dp))
+        NeuButton(
             text = "清除全部聊天记录",
             kind = NeuButtonKind.Danger,
             onClick = { confirmClear = true },
         )
         Spacer(Modifier.height(12.dp))
         Text(
-            "全部数据仅存于本机应用私有目录，不上传云端；卸载应用即全部清除。" +
-                "API 密钥经系统 Keystore 加密存储。",
+            "全部数据仅存于本机应用私有目录，不上传云端；导出走系统分享，选哪里存由你决定。" +
+                "API 密钥经系统 Keystore 加密存储，不包含在导出中。",
             fontSize = 12.sp,
             lineHeight = 19.sp,
             color = MutedText,

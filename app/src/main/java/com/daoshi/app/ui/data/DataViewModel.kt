@@ -27,8 +27,8 @@ import java.time.ZoneId
 /** 编辑弹层的草稿行：id = null 表示新增 */
 data class DraftFact(val id: Long?, val key: String, val value: String)
 
-/** 本周任务完成度（真实数据驱动完成度圆环） */
-data class WeekProgress(val done: Int, val total: Int) {
+/** 本周任务完成度（真实数据驱动完成度圆环）；上周有数据时附对比 */
+data class WeekProgress(val done: Int, val total: Int, val lastWeekFraction: Float? = null) {
     val fraction: Float get() = if (total == 0) 0f else done.toFloat() / total
 }
 
@@ -59,13 +59,16 @@ class DataViewModel(
             val monday = today.with(DayOfWeek.MONDAY)
             val weekStart = monday.atStartOfDay(zone).toInstant().toEpochMilli()
             val weekEnd = monday.plusDays(7).atStartOfDay(zone).toInstant().toEpochMilli()
+            val lastWeekStart = monday.minusDays(7).atStartOfDay(zone).toInstant().toEpochMilli()
             val todayStart = today.atStartOfDay(zone).toInstant().toEpochMilli()
             // dueAt = 0 视为今天
-            val inWeek = tasks.filter {
-                val due = if (it.dueAt == 0L) todayStart else it.dueAt
-                due >= weekStart && due < weekEnd
-            }
-            WeekProgress(inWeek.count { it.isDone }, inWeek.size)
+            fun dueOf(task: com.daoshi.app.data.model.TaskItem): Long =
+                if (task.dueAt == 0L) todayStart else task.dueAt
+            val inWeek = tasks.filter { val due = dueOf(it); due >= weekStart && due < weekEnd }
+            val lastWeek = tasks.filter { val due = dueOf(it); due >= lastWeekStart && due < weekStart }
+            val lastFraction = if (lastWeek.isEmpty()) null
+            else lastWeek.count { it.isDone }.toFloat() / lastWeek.size
+            WeekProgress(inWeek.count { it.isDone }, inWeek.size, lastFraction)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeekProgress(0, 0))
 

@@ -1,5 +1,7 @@
 package com.daoshi.app.ui.chat
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -35,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -59,6 +62,8 @@ import com.daoshi.app.ui.common.NeuCircleButton
 import com.daoshi.app.ui.common.NeuTopBar
 import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.neuRowPress
+import org.json.JSONArray
+import org.json.JSONObject
 import com.daoshi.app.ui.common.neuSurface
 import com.daoshi.app.ui.persona.PersonaEditorSheet
 import com.daoshi.app.ui.settings.ApiConfigSheet
@@ -198,6 +203,102 @@ class ChatListViewModel(
         runCatching { db.messageDao().deleteAll() }
     }
 
+    /** 导出全部数据为 JSON，走系统分享（数据自主权：仅存本机，但随时可带走） */
+    fun exportData(context: Context) = viewModelScope.launch {
+        runCatching {
+            val json = buildExportJson()
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "导师 · 数据导出")
+                putExtra(Intent.EXTRA_TEXT, json)
+            }
+            context.startActivity(Intent.createChooser(send, "导出数据"))
+        }
+    }
+
+    private suspend fun buildExportJson(): String {
+        val personas = personaRepository.observePersonas().first()
+        val messages = db.messageDao().getAll()
+        val tasks = db.taskDao().observeAll().first()
+        val facts = db.profileFactDao().observeAll().first()
+        val insights = db.aiInsightDao().observeLatest().first()
+        val root = JSONObject()
+        root.put("exportedAt", System.currentTimeMillis())
+        root.put(
+            "personas",
+            JSONArray().apply {
+                personas.forEach {
+                    put(
+                        JSONObject()
+                            .put("id", it.id)
+                            .put("name", it.name)
+                            .put("title", it.title)
+                            .put("systemPrompt", it.systemPrompt)
+                            .put("tone", it.tone)
+                    )
+                }
+            },
+        )
+        val nameById = personas.associate { it.id to it.name }
+        root.put(
+            "messages",
+            JSONArray().apply {
+                messages.forEach {
+                    put(
+                        JSONObject()
+                            .put("persona", nameById[it.conversationId] ?: it.conversationId)
+                            .put("from", if (it.isFromUser) "user" else "mentor")
+                            .put("content", it.content)
+                            .put("timestamp", it.timestamp)
+                    )
+                }
+            },
+        )
+        root.put(
+            "tasks",
+            JSONArray().apply {
+                tasks.forEach {
+                    put(
+                        JSONObject()
+                            .put("title", it.title)
+                            .put("note", it.note)
+                            .put("dueAt", it.dueAt)
+                            .put("remindAt", it.remindAt ?: JSONObject.NULL)
+                            .put("isDone", it.isDone)
+                            .put("createdBy", it.createdBy)
+                    )
+                }
+            },
+        )
+        root.put(
+            "profileFacts",
+            JSONArray().apply {
+                facts.forEach {
+                    put(
+                        JSONObject()
+                            .put("key", it.key)
+                            .put("value", it.value)
+                            .put("source", it.source)
+                    )
+                }
+            },
+        )
+        root.put(
+            "aiInsights",
+            JSONArray().apply {
+                insights.forEach {
+                    put(
+                        JSONObject()
+                            .put("title", it.title)
+                            .put("detail", it.detail)
+                            .put("createdAt", it.createdAt)
+                    )
+                }
+            },
+        )
+        return root.toString(2)
+    }
+
     private fun previewOf(persona: Persona, last: ChatMessage?): String {
         val content = last?.content?.replace('\n', ' ') ?: return persona.title
         return if (last.isFromUser) "你：$content" else content
@@ -255,6 +356,7 @@ fun ChatListScreen(
     var showDataPrivacy by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var searchMode by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     Column(
         Modifier
@@ -370,6 +472,7 @@ fun ChatListScreen(
         DataPrivacySheet(
             stats = dataStats,
             onClearChats = { vm.clearAllChats() },
+            onExport = { vm.exportData(context) },
             onDismiss = { showDataPrivacy = false },
         )
     }

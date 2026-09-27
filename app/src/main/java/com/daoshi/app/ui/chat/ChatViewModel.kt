@@ -60,7 +60,9 @@ class ChatViewModel(
     private val _tone = MutableStateFlow(ToneStyle.GENTLE)
     val tone: StateFlow<ToneStyle> = _tone.asStateFlow()
 
-    private val _uiState = MutableStateFlow(ChatUiState(messages = seedMessages(personaId)))
+    private val _uiState = MutableStateFlow(
+        ChatUiState(messages = seedMessages(personaId), input = ChatDrafts.get(personaId))
+    )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     /** 快捷打卡候选：未完成任务，逾期/今天在前 */
@@ -100,6 +102,7 @@ class ChatViewModel(
 
     fun onInputChange(text: String) {
         _uiState.update { it.copy(input = text) }
+        ChatDrafts.set(personaId, text)
     }
 
     fun selectTone(tone: ToneStyle) {
@@ -121,6 +124,7 @@ class ChatViewModel(
         _uiState.update {
             it.copy(input = "", messages = it.messages + userMsg, isStreaming = true, error = null)
         }
+        ChatDrafts.clear(personaId)
         viewModelScope.launch {
             val saved = runCatching { db.messageDao().insert(userMsg) }
             if (saved.isFailure) {

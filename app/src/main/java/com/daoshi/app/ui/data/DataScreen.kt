@@ -254,7 +254,8 @@ private fun OverviewCard(progress: WeekProgress, scrollProvider: () -> Int) {
     val subtitle = if (progress.total == 0) {
         "本周暂无任务 · 去任务页新建"
     } else {
-        "本周完成 ${progress.done}/${progress.total} 项"
+        "本周完成 ${progress.done}/${progress.total} 项" +
+            (progress.lastWeekFraction?.let { " · 上周 ${(it * 100).toInt()}%" } ?: "")
     }
 
     NeuCard(cornerRadius = 24.dp, contentPadding = 18.dp) {

@@ -73,6 +73,10 @@ interface MessageDao {
             "ORDER BY id ASC LIMIT 40"
     )
     suspend fun getAfterId(conversationId: Long, afterId: Long): List<ChatMessage>
+
+    /** 数据导出：全量消息（本机数据自主权） */
+    @Query("SELECT * FROM messages ORDER BY id ASC")
+    suspend fun getAll(): List<ChatMessage>
 }
 
 @Dao

@@ -1,5 +1,6 @@
 package com.daoshi.app.ui.chat
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -13,6 +14,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -72,6 +74,7 @@ import com.daoshi.app.data.model.ChatMessage
 import com.daoshi.app.data.model.TaskItem
 import com.daoshi.app.data.model.ToneStyle
 import com.daoshi.app.ui.common.LocalContentWidth
+import com.daoshi.app.ui.common.MarkdownText
 import com.daoshi.app.ui.common.NeuAvatar
 import com.daoshi.app.ui.common.NeuCircleButton
 import com.daoshi.app.ui.common.NeuSheetRow
@@ -409,12 +412,24 @@ private fun MessageBubble(
     }
 }
 
-/** AI 气泡：凹陷纸面 */
+/** AI 气泡：凹陷纸面；长按复制全文 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AiBubble(content: String, maxWidth: androidx.compose.ui.unit.Dp) {
+    val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
     Box(
         Modifier
             .widthIn(max = maxWidth)
+            .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    copyToClipboard(context, content)
+                },
+            )
             .neuSurface(
                 22.dp,
                 color = MaterialTheme.colorScheme.background,
@@ -426,22 +441,41 @@ private fun AiBubble(content: String, maxWidth: androidx.compose.ui.unit.Dp) {
         if (content.isBlank()) {
             TypingDots()
         } else {
-            Text(content, color = TextPrimary, fontSize = 15.sp, lineHeight = 21.sp)
+            MarkdownText(content)
         }
     }
 }
 
-/** 用户气泡：强调渐变 + 柔光投影 */
+/** 用户气泡：强调渐变 + 柔光投影；长按复制 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun UserBubble(content: String, maxWidth: androidx.compose.ui.unit.Dp) {
+    val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
     Box(
         Modifier
             .widthIn(max = maxWidth)
+            .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
+                onLongClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    copyToClipboard(context, content)
+                },
+            )
             .drawUserBubble()
             .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
         Text(content, color = Color.White, fontSize = 15.sp, lineHeight = 21.sp)
     }
+}
+
+private fun copyToClipboard(context: android.content.Context, text: String) {
+    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+        as? android.content.ClipboardManager ?: return
+    cm.setPrimaryClip(android.content.ClipData.newPlainText("daoshi", text))
+    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
 }
 
 /** 用户气泡渐变填充 + 同色系柔光投影 */

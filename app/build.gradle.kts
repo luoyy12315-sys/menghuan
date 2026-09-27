@@ -14,8 +14,8 @@ android {
         applicationId = "com.daoshi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.4.0"
+        versionCode = 10
+        versionName = "0.5.0"
         // 只保留中英文资源，去掉依赖库里几十种语言的 strings/日期符号
         resourceConfigurations.addAll(listOf("zh", "zh-rCN", "en"))
     }
@@ -30,6 +30,13 @@ android {
     dependenciesInfo {
         includeInApk = false
         includeInBundle = false
+    }
+
+    // 瘦身：依赖库的版本清单与协程调试探针资源对运行时无用（堆栈恢复是尽力而为的能力）
+    packaging {
+        resources {
+            excludes += setOf("META-INF/*.version", "DebugProbesKt.bin")
+        }
     }
 
     buildTypes {
