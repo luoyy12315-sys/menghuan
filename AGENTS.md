@@ -135,7 +135,7 @@
 - [x] 对话风格按 persona 持久化（Persona.tone 列，重进会话保留）；聊天请求失败不落库 + 错误条重试
 - [x] API Key 迁移 Keystore 加密（v0.2.3：AndroidKeyStore AES-256-GCM，DataStore 落密文 `api_key_enc`；旧明文自动迁移删除，Keystore 不可用回退读明文；`data/ApiKeyCipher.kt`）
 - [x] 聊天打卡闭环（v0.3.0：任务页勾选完成 → 主导师会话写「✅ 已完成打卡」用户消息进 LLM 历史；聊天页输入栏左键 = 快捷打卡面板，选任务即以消息发进当前会话；ChatViewModel 持续观察 Room，外部写入实时上屏）
-- [x] 会话列表真实搜索（v0.3.0：人设名/身份 + 消息内容 LIKE，200ms 防抖，点击直达会话；搜索框点击进入搜索态）
+- [x] 会话列表真实搜索（v0.3.0：人设名/身份 + 消息内容 LIKE，点击直达会话；搜索框点击进入搜索态。不做 delay 防抖——本地查询毫秒级且 Robolectric PAUSED 时钟下 delay 永不恢复，靠 cancel 旧任务保序）
 - [x] 未读点闭环（v0.3.0：DataStore `last_read_<personaId>`，打开会话即已读；未读点 = AI 新回复且晚于已读时刻，带光晕）
 - [x] 设置面板五项全部可用（v0.3.0：通知与提醒 = 总开关 + 系统设置入口，TaskReminderReceiver 到点先查开关；数据与隐私 = 四类数据统计 + 清除聊天记录（二次确认）；关于 = 版本信息）
 - [x] 数据页完成度接真实任务数据（本周周一起到期任务完成率；习惯/洞察仍为示例并已标注「示例数据」）

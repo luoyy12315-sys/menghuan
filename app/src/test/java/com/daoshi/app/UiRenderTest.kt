@@ -7,6 +7,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Rule
 import org.junit.Test
@@ -147,5 +148,35 @@ class UiRenderTest {
         clickText("阿布")
         awaitText("22:30，手机出卧室")
         snap("6-chat-long")
+    }
+
+    /** 搜索态：输入关键字 → 人设/消息命中结果上屏 */
+    @Test
+    fun render6Search() {
+        // 搜索走真实 DB（种子演示消息不入库），先预置一条可命中的消息
+        val app = compose.activity.application as MentorApp
+        kotlinx.coroutines.runBlocking {
+            app.db.messageDao().insert(
+                com.daoshi.app.data.model.ChatMessage(
+                    conversationId = 1, isFromUser = false,
+                    content = "把「睡前刷手机」单独拆成追踪目标。",
+                )
+            )
+        }
+        awaitText("阿布")
+        // DAO 直查：证明搜索 SQL 本身能命中（失败则问题在查询；成功则问题在 UI 链路）
+        val hits = kotlinx.coroutines.runBlocking { app.db.messageDao().searchMessages("睡前") }
+        assert(hits.isNotEmpty()) { "searchMessages 应命中预置消息，实得 ${hits.size} 条" }
+        clickText("搜索") // 搜索行（列表态唯一）
+        // 搜索态输入框是主窗口 BasicTextField，可直接输入
+        compose.onNode(androidx.compose.ui.test.hasSetTextAction())
+            .performTextInput("睡前")
+        // 调试用：等待"命中结果"或"空结果提示"任一上屏，超时都能区分两种路径
+        compose.waitUntil(15_000) {
+            compose.onAllNodesWithText("睡前刷手机", substring = true).fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithText("没有匹配结果", substring = true).fetchSemanticsNodes().isNotEmpty()
+        }
+        snap("7-search")
+        awaitText("睡前刷手机") // 最终仍要求命中结果上屏
     }
 }

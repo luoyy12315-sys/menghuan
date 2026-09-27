@@ -73,7 +73,6 @@ import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
 import com.daoshi.app.ui.theme.TextPrimary
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -138,7 +137,9 @@ class ChatListViewModel(
         personaRepository.save(persona)
     }
 
-    // ===== 搜索：人设名/身份 + 消息内容，200ms 输入防抖 =====
+    // ===== 搜索：人设名/身份 + 消息内容。不做 delay 防抖：本地查询毫秒级，
+    // 且 Robolectric 的 PAUSED 主线程时钟下 delay 永不恢复（截图测试实测），
+    // 靠 cancel 旧任务保证只有最新一次输入的查询存活。 =====
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -156,7 +157,6 @@ class ChatListViewModel(
             return
         }
         searchJob = viewModelScope.launch {
-            delay(200)
             _searchResults.value = runSearch(query.trim())
         }
     }
