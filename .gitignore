@@ -1,0 +1,10 @@
+# 构建产物
+build/
+app/build/
+.gradle/
+.kotlin/
+local.properties
+*.log
+# 产物 APK（版本交付物保留在根目录但不入库历史）
+*.apk
+ui-screenshots/

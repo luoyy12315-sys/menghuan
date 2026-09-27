@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 ui/theme/Theme.kt 的 NeuBackground 保持一致：冷启动窗口底色，消除白屏闪烁 -->
+    <color name="neu_background">#E4E9F3</color>
+    <color name="ic_launcher_background">#E4E9F3</color>
+</resources>

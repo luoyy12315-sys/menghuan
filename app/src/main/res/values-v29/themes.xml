@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 29+：退出系统 Force Dark。本 App 浅色锁定（AGENTS §四），不做深色主题；
+  若不显式关闭，系统深色模式下 Android 10+ 会对整棵 View 树做强制颜色反转，
+  新拟态的灰阶双向阴影会被搅成无法辨认的色块（真机"全是乱码/UI错乱"的主因）。
+-->
+<resources>
+    <style name="Theme.Mentor" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowBackground">@color/neu_background</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+    </style>
+</resources>

@@ -1,0 +1,433 @@
+package com.daoshi.app.ui.tasks
+
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberTimePickerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.daoshi.app.data.model.TaskItem
+import com.daoshi.app.ui.common.NeuButton
+import com.daoshi.app.ui.common.NeuButtonKind
+import com.daoshi.app.ui.common.NeuCard
+import com.daoshi.app.ui.common.NeuCheckCircle
+import com.daoshi.app.ui.common.NeuChip
+import com.daoshi.app.ui.common.NeuCircleButton
+import com.daoshi.app.ui.common.NeuSectionTitle
+import com.daoshi.app.ui.common.NeuSheetScaffold
+import com.daoshi.app.ui.common.NeuTextField
+import com.daoshi.app.ui.common.NeuTopBar
+import com.daoshi.app.ui.common.neuSurface
+import com.daoshi.app.ui.theme.FaintText
+import com.daoshi.app.ui.theme.MIcons
+import com.daoshi.app.ui.theme.MutedText
+import com.daoshi.app.ui.theme.NeuAccent
+import com.daoshi.app.ui.theme.NeuBackground
+import com.daoshi.app.ui.theme.NeuDanger
+import com.daoshi.app.ui.theme.NeuSurface
+import com.daoshi.app.ui.theme.TextPrimary
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+/**
+ * 任务清单页（新拟态）：Room 真数据 + 分组（已逾期/今天/明天/以后）+ 勾选打卡。
+ * 新建任务走右上角 ＋ → 底部弹层；长按任务行删除；设提醒时申请通知权限。
+ */
+private fun dueDateOf(task: TaskItem): LocalDate =
+    if (task.dueAt == 0L) LocalDate.now()
+    else Instant.ofEpochMilli(task.dueAt).atZone(ZoneId.systemDefault()).toLocalDate()
+
+private fun startOfDayMs(date: LocalDate): Long =
+    date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)) {
+    val tasks by vm.tasks.collectAsState()
+    var showNewTask by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<TaskItem?>(null) }
+
+    val today = LocalDate.now()
+    val tomorrow = today.plusDays(1)
+    val overdue = tasks.filter { dueDateOf(it) < today }
+    val todayTasks = tasks.filter { dueDateOf(it) == today }
+    val tomorrowTasks = tasks.filter { dueDateOf(it) == tomorrow }
+    val laterTasks = tasks.filter { dueDateOf(it) > tomorrow }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+        NeuTopBar(
+            title = "任务",
+            actions = {
+                NeuCircleButton(onClick = { showNewTask = true }, size = 38.dp) {
+                    Icon(MIcons.Plus, contentDescription = "新建任务", tint = TextPrimary, modifier = Modifier.size(19.dp))
+                }
+            },
+        )
+
+        if (tasks.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                EmptyTasksHint()
+            }
+            return@Column
+        }
+
+        LazyColumn(
+            Modifier.fillMaxSize().padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (overdue.isNotEmpty()) {
+                item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(top = 10.dp)) }
+                itemsIndexed(overdue, key = { _, t -> t.id }) { _, task ->
+                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { deleteTarget = task })
+                }
+            }
+            if (todayTasks.isNotEmpty()) {
+                item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(top = 10.dp)) }
+                itemsIndexed(todayTasks, key = { _, t -> t.id }) { _, task ->
+                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { deleteTarget = task })
+                }
+            }
+            if (tomorrowTasks.isNotEmpty()) {
+                item { NeuSectionTitle("明天", modifier = Modifier.padding(top = 10.dp)) }
+                itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { _, task ->
+                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { deleteTarget = task })
+                }
+            }
+            if (laterTasks.isNotEmpty()) {
+                item { NeuSectionTitle("以后", modifier = Modifier.padding(top = 10.dp)) }
+                itemsIndexed(laterTasks, key = { _, t -> t.id }) { _, task ->
+                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { deleteTarget = task })
+                }
+            }
+            item { Spacer(Modifier.height(18.dp)) }
+        }
+    }
+
+    if (showNewTask) {
+        NewTaskSheet(
+            onAdd = { title, note, dueAt, remindAt ->
+                vm.addTask(title, note, dueAt, remindAt)
+                showNewTask = false
+            },
+            onDismiss = { showNewTask = false },
+        )
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            containerColor = NeuSurface,
+            title = { Text("删除任务", color = TextPrimary) },
+            text = { Text("确定删除「${target.title}」吗？", color = TextPrimary) },
+            confirmButton = {
+                TextButton(onClick = { vm.delete(target); deleteTarget = null }) {
+                    Text("删除", color = NeuDanger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text("取消", color = MutedText)
+                }
+            },
+        )
+    }
+}
+
+/** 空态：凹陷圆井 + 提示 */
+@Composable
+private fun EmptyTasksHint() {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier
+                .size(64.dp)
+                .neuSurface(999.dp, color = NeuBackground, elevation = 6.dp, inset = true),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(MIcons.Checklist, contentDescription = null, tint = MutedText, modifier = Modifier.size(24.dp))
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(
+            "暂无任务\n点右上角 ＋ 新建一个",
+            textAlign = TextAlign.Center,
+            fontSize = 14.sp,
+            lineHeight = 22.sp,
+            color = MutedText,
+        )
+    }
+}
+
+/** 新建任务弹层：内容 / 备注 / 日期（今天·明天·自选）/ 提醒时间（可选） */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NewTaskSheet(
+    onAdd: (title: String, note: String, dueAt: Long, remindAt: Long?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    var title by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    var dueDate by remember { mutableStateOf(LocalDate.now()) }
+    var remindTime by remember { mutableStateOf<LocalTime?>(null) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var showTimePicker by remember { mutableStateOf(false) }
+
+    fun commit() {
+        val remindAt = remindTime?.let { time ->
+            var at = LocalDateTime.of(dueDate, time)
+                .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            if (at <= System.currentTimeMillis()) {
+                at = LocalDateTime.of(dueDate.plusDays(1), time)
+                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            }
+            at
+        }
+        onAdd(title.trim(), note.trim(), startOfDayMs(dueDate), remindAt)
+    }
+
+    // Android 13+ 需要运行时通知权限：授权回调里再真正保存
+    val notifPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { commit() }
+
+    NeuSheetScaffold(title = "新建任务", onDismiss = onDismiss) {
+        Spacer(Modifier.height(16.dp))
+        NeuTextField(
+            value = title,
+            onValueChange = { title = it },
+            label = "任务内容",
+            placeholder = "例：23:00 前放下手机",
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(14.dp))
+        NeuTextField(
+            value = note,
+            onValueChange = { note = it },
+            label = "备注（可选）",
+            placeholder = "例：打卡后发消息给阿布",
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(16.dp))
+        com.daoshi.app.ui.common.NeuMuted("日期")
+        Spacer(Modifier.height(9.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+            NeuChip("今天", selected = dueDate == LocalDate.now()) { dueDate = LocalDate.now() }
+            NeuChip("明天", selected = dueDate == LocalDate.now().plusDays(1)) {
+                dueDate = LocalDate.now().plusDays(1)
+            }
+            NeuChip(
+                text = if (dueDate == LocalDate.now() || dueDate == LocalDate.now().plusDays(1))
+                    "选日期…" else "${dueDate.monthValue}月${dueDate.dayOfMonth}日",
+                selected = dueDate != LocalDate.now() && dueDate != LocalDate.now().plusDays(1),
+            ) { showDatePicker = true }
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { showTimePicker = true }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("提醒", fontSize = 14.sp, color = TextPrimary, modifier = Modifier.weight(1f))
+            Text(
+                remindTime?.format(DateTimeFormatter.ofPattern("HH:mm")) ?: "不提醒",
+                fontSize = 14.sp,
+                color = if (remindTime != null) NeuAccent else MutedText,
+            )
+            if (remindTime != null) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "×",
+                    fontSize = 17.sp,
+                    color = MutedText,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable { remindTime = null },
+                )
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+        Row(Modifier.fillMaxWidth()) {
+            NeuButton(
+                text = "取消",
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(10.dp))
+            NeuButton(
+                text = "添加",
+                onClick = {
+                    if (title.isBlank()) return@NeuButton
+                    val needsPermission = remindTime != null && Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.POST_NOTIFICATIONS,
+                        ) != PackageManager.PERMISSION_GRANTED
+                    if (needsPermission) {
+                        notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        commit()
+                    }
+                },
+                kind = NeuButtonKind.Primary,
+                enabled = title.isNotBlank(),
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+    }
+
+    if (showDatePicker) {
+        val pickerState = rememberDatePickerState(initialSelectedDateMillis = startOfDayMs(dueDate))
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let { ms ->
+                        // DatePicker 返回 UTC 当日 0 点，按 UTC 还原为所选日期
+                        dueDate = Instant.ofEpochMilli(ms).atZone(ZoneId.of("UTC")).toLocalDate()
+                    }
+                    showDatePicker = false
+                }) { Text("确定", color = NeuAccent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("取消", color = MutedText) }
+            },
+        ) {
+            DatePicker(state = pickerState)
+        }
+    }
+
+    if (showTimePicker) {
+        val timeState = rememberTimePickerState(
+            initialHour = remindTime?.hour ?: 22,
+            initialMinute = remindTime?.minute ?: 0,
+            is24Hour = true,
+        )
+        AlertDialog(
+            onDismissRequest = { showTimePicker = false },
+            containerColor = NeuSurface,
+            title = { Text("提醒时间", color = TextPrimary) },
+            text = { TimePicker(state = timeState) },
+            confirmButton = {
+                TextButton(onClick = {
+                    remindTime = LocalTime.of(timeState.hour, timeState.minute)
+                    showTimePicker = false
+                }) { Text("确定", color = NeuAccent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTimePicker = false }) { Text("取消", color = MutedText) }
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Unit) {
+    val tag = when {
+        task.isDone -> "已完成"
+        dueDateOf(task) < LocalDate.now() -> "未打卡"
+        task.createdBy == "ai" -> "导师安排"
+        else -> "自建"
+    }
+    val showTagAccent = tag == "导师安排"
+    NeuCard(
+        cornerRadius = 20.dp,
+        contentPadding = 13.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.combinedClickable(onClick = onToggle, onLongClick = onLongPress),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            NeuCheckCircle(checked = task.isDone, onToggle = onToggle)
+            Spacer(Modifier.width(13.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    task.title,
+                    fontSize = 15.sp,
+                    color = if (task.isDone) FaintText else TextPrimary,
+                    textDecoration = if (task.isDone) TextDecoration.LineThrough else TextDecoration.None,
+                )
+                task.note.takeIf { it.isNotBlank() }?.let {
+                    Text(it, fontSize = 12.sp, color = MutedText, maxLines = 1)
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            TaskTag(tag, showTagAccent)
+        }
+    }
+}
+
+/** 任务标签：凹陷小胶囊 */
+@Composable
+private fun TaskTag(text: String, accent: Boolean) {
+    Box(
+        Modifier.neuSurface(
+            999.dp,
+            color = NeuBackground,
+            elevation = 3.dp,
+            inset = true,
+        ).padding(horizontal = 9.dp, vertical = 4.dp),
+    ) {
+        Text(
+            text,
+            fontSize = 11.sp,
+            color = if (accent) NeuAccent else MutedText,
+            fontWeight = if (accent) FontWeight_SemiBold else null,
+        )
+    }
+}
+
+private val FontWeight_SemiBold = androidx.compose.ui.text.font.FontWeight.SemiBold

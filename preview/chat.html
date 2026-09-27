@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>导师 · 聊天页预览（ins 风）</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { font-family: -apple-system, BlinkMacSystemFont, "Instagram Sans", "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body {
+    background: #e5e7eb; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px; gap: 40px; flex-wrap: wrap;
+  }
+  .side-note { width: 250px; color: #3a3f4a; font-size: 13px; line-height: 1.8; }
+  .side-note h1 { font-size: 17px; margin-bottom: 10px; font-weight: 600; color: #262626; }
+  .side-note li { margin: 5px 0 5px 18px; }
+  .side-note b { color: #d62976; }
+
+  .phone {
+    width: 390px; height: 844px; border-radius: 54px; overflow: hidden; position: relative;
+    background: #fff; border: 11px solid #1c1c1e;
+    box-shadow: 0 30px 80px rgba(20,30,60,.35);
+    display: flex; flex-direction: column;
+  }
+
+  /* ===== 状态栏：与导航严格左对齐 30px 边距 ===== */
+  .statusbar {
+    position: relative; z-index: 3; height: 54px; flex: none;
+    display: flex; align-items: flex-end; justify-content: space-between;
+    padding: 0 30px 6px; font-size: 15px; font-weight: 600; color: #262626;
+    background: #fff;
+  }
+
+  /* ===== 顶部导航：白底、左 16 网格 ===== */
+  .navbar {
+    position: relative; z-index: 3; flex: none; background: #fff;
+    border-bottom: .5px solid #dbdbdb;
+    padding: 8px 16px 8px 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .navbar .chev { width: 28px; height: 28px; fill: #262626; flex: none; cursor: pointer; }
+  .navbar .center { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; user-select: none; }
+  /* IG 渐变头像圈 */
+  .ring {
+    width: 40px; height: 40px; border-radius: 50%; flex: none;
+    background: linear-gradient(45deg, #feda75, #fa7e1e, #d62976, #962fbf, #4f5bd5);
+    padding: 2.5px;
+  }
+  .ring .inner {
+    width: 100%; height: 100%; border-radius: 50%;
+    border: 2px solid #fff; background: #fafafa;
+    display: flex; align-items: center; justify-content: center; font-size: 18px;
+    transition: transform .12s;
+  }
+  .ring.pressing .inner { transform: scale(.85); }
+  .navbar .who { text-align: left; }
+  .navbar .name { font-size: 14px; font-weight: 600; color: #262626; line-height: 1.25; }
+  .navbar .status { font-size: 11px; color: #8e8e93; line-height: 1.25; }
+  .navbar .call { display: flex; gap: 18px; margin-right: 4px; }
+  .navbar .call svg { width: 24px; height: 24px; fill: #262626; }
+
+  /* ===== 消息区：严格 16px 侧边距，8px 网格 ===== */
+  .messages {
+    position: relative; z-index: 1; flex: 1; overflow-y: auto;
+    background: #fff;
+    padding: 12px 16px 8px; display: flex; flex-direction: column; gap: 2px;
+    scrollbar-width: none;
+  }
+  .messages::-webkit-scrollbar { display: none; }
+  .date-line {
+    align-self: center; font-size: 11px; color: #8e8e93; margin: 6px 0 10px;
+  }
+  .row { display: flex; }
+  .row.in  { justify-content: flex-start; }
+  .row.out { justify-content: flex-end; }
+  .gap { height: 8px; }
+  .bubble {
+    position: relative; max-width: 76%;
+    background: #efefef; color: #262626;
+    border-radius: 22px; padding: 10px 16px;
+    font-size: 15px; line-height: 1.4; word-break: break-word;
+    cursor: pointer; user-select: none;
+  }
+  .bubble.bare { background: transparent; padding: 2px 6px; font-size: 44px; line-height: 1; }
+
+  /* 双击飘心 */
+  .float-heart {
+    position: absolute; left: 50%; top: 50%;
+    font-size: 60px; transform: translate(-50%, -50%);
+    pointer-events: none; animation: heartUp .9s ease-out forwards;
+  }
+  @keyframes heartUp {
+    0%   { opacity: 0; transform: translate(-50%,-30%) scale(.3); }
+    20%  { opacity: 1; transform: translate(-50%,-60%) scale(1.1); }
+    100% { opacity: 0; transform: translate(-50%,-260%) scale(1); }
+  }
+
+  /* 任务卡片：极简白卡 */
+  .task-card {
+    align-self: flex-start; margin: 8px 0 2px; width: 76%;
+    background: #fff; border: .5px solid #dbdbdb; border-radius: 16px; padding: 12px 16px;
+  }
+  .task-card .t-row { display: flex; align-items: center; gap: 8px; }
+  .task-card .t-dot {
+    width: 18px; height: 18px; border-radius: 50%; flex: none;
+    border: 1.5px solid #d62976; position: relative;
+  }
+  .task-card .t-title { font-size: 14px; font-weight: 600; color: #262626; }
+  .task-card .t-sub { font-size: 12px; color: #8e8e93; margin-top: 4px; padding-left: 26px; }
+
+  /* ===== 输入栏：白底，左渐变相机 ===== */
+  .inputbar {
+    position: relative; z-index: 3; flex: none; background: #fff;
+    border-top: .5px solid #efefef;
+    padding: 10px 12px 26px; display: flex; align-items: center; gap: 10px;
+  }
+  .cam {
+    width: 34px; height: 34px; border-radius: 11px; flex: none; cursor: pointer;
+    background: linear-gradient(45deg, #feda75, #fa7e1e, #d62976, #962fbf, #4f5bd5);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .cam svg { width: 20px; height: 20px; }
+  .field {
+    flex: 1; background: #efefef; border-radius: 22px; min-height: 40px;
+    padding: 10px 18px; font-size: 15px; color: #262626; outline: none; cursor: text;
+  }
+  .field:empty::before { content: "发消息…"; color: #8e8e93; }
+  .action { width: 34px; height: 34px; flex: none; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .action svg { width: 26px; height: 26px; }
+  .action .plane-wrap {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: linear-gradient(45deg, #feda75, #fa7e1e, #d62976, #962fbf, #4f5bd5);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .action .plane-wrap svg { width: 16px; height: 16px; fill: #fff; margin-left: -2px; }
+
+  /* ===== 提示 toast ===== */
+  .toast {
+    position: absolute; top: 120px; left: 50%; transform: translateX(-50%);
+    z-index: 5; background: rgba(38,38,38,.88); color: #fff; font-size: 12px;
+    border-radius: 16px; padding: 8px 16px; opacity: 0; transition: opacity .4s; pointer-events: none;
+    white-space: nowrap;
+  }
+  .toast.show { opacity: 1; }
+
+  /* ===== 风格切换底部弹层 ===== */
+  .sheet-mask {
+    position: absolute; inset: 0; z-index: 8; background: rgba(0,0,0,.4);
+    opacity: 0; pointer-events: none; transition: opacity .25s;
+  }
+  .sheet-mask.show { opacity: 1; pointer-events: auto; }
+  .sheet {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 9;
+    background: #fff; border-radius: 20px 20px 0 0; padding: 10px 0 34px;
+    transform: translateY(105%); transition: transform .3s cubic-bezier(.32,.72,0,1);
+    box-shadow: 0 -8px 40px rgba(0,0,0,.15);
+  }
+  .sheet.show { transform: translateY(0); }
+  .sheet .handle { width: 36px; height: 5px; border-radius: 3px; background: #dbdbdb; margin: 0 auto 12px; }
+  .sheet h2 { font-size: 15px; font-weight: 600; color: #262626; padding: 4px 24px 10px; }
+  .tone {
+    padding: 13px 24px; display: flex; align-items: center; gap: 14px; cursor: pointer;
+  }
+  .tone:active { background: #fafafa; }
+  .tone + .tone { border-top: .5px solid #efefef; }
+  .tone .t-icon {
+    width: 36px; height: 36px; border-radius: 50%; flex: none; font-size: 17px;
+    display: flex; align-items: center; justify-content: center; background: #efefef;
+  }
+  .tone .t-body { flex: 1; }
+  .tone .t-name { font-size: 15px; color: #262626; font-weight: 500; }
+  .tone .t-desc { font-size: 12px; color: #8e8e93; margin-top: 1px; }
+  .tone .t-check {
+    font-size: 14px; font-weight: 600; opacity: 0;
+    background: linear-gradient(45deg, #fa7e1e, #d62976, #962fbf);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .tone.active .t-check { opacity: 1; }
+  .sheet .note {
+    margin: 12px 24px 0; font-size: 11px; color: #8e8e93; line-height: 1.6;
+    border-top: .5px solid #efefef; padding-top: 12px;
+  }
+</style>
+</head>
+<body>
+
+<div class="side-note">
+  <h1>聊天页 · ins 风预览</h1>
+  <ul>
+    <li><b>长按头像</b>：打开隐藏的风格切换面板</li>
+    <li><b>双击消息气泡</b>：飘心点赞（IG 经典交互）</li>
+    <li>输入框为空时右侧是<b>心形键</b>，点它直接发送 ❤️；输入文字后变为<b>渐变纸飞机</b></li>
+    <li>左侧渐变方块是相机键；顶部头像带 IG 渐变圈</li>
+  </ul>
+</div>
+
+<div class="phone">
+  <div class="statusbar">
+    <span id="clock">16:46</span>
+    <svg width="68" height="14" viewBox="0 0 68 14" fill="#262626">
+      <rect x="0" y="7" width="3" height="5" rx="1"/><rect x="5" y="5" width="3" height="7" rx="1"/>
+      <rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="1" width="3" height="11" rx="1"/>
+      <path d="M26 6c2.4-2.4 6.3-2.4 8.7 0l-1.3 1.4c-1.6-1.6-4.2-1.6-5.8 0z"/>
+      <path d="M28.3 8.4c1.2-1.2 3.2-1.2 4.4 0l-1.2 1.3c-.5-.5-1.3-.5-1.8 0z"/>
+      <circle cx="30.5" cy="11.2" r="1.2"/>
+      <rect x="40" y="2" width="22" height="10" rx="3" fill="none" stroke="#262626" opacity=".4"/>
+      <rect x="42" y="4" width="14" height="6" rx="1.5"/>
+      <path d="M63.5 5v4c1-.3 1.5-1 1.5-2s-.5-1.7-1.5-2z"/>
+    </svg>
+  </div>
+
+  <div class="navbar">
+    <svg class="chev" viewBox="0 0 24 24"><path d="M15.4 4.6 8 12l7.4 7.4-1.8 1.8L4.4 12l9.2-9.2z"/></svg>
+    <div class="center" id="avatarArea">
+      <div class="ring" id="ring"><div class="inner">🖋️</div></div>
+      <div class="who">
+        <div class="name">abu.daoshi</div>
+        <div class="status" id="statusText">人生导师 · 温和陪伴</div>
+      </div>
+    </div>
+    <div class="call">
+      <svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11z"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M6.6 10.8a15.9 15.9 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.2.4 2.4.6 3.7.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.2.2 2.5.6 3.7.1.3 0 .7-.2 1z"/></svg>
+    </div>
+  </div>
+
+  <div class="messages" id="msgArea">
+    <div class="date-line">9月27日 下午 16:20</div>
+    <div class="row in"><div class="bubble">昨晚说好的 11 点前睡，打卡记录显示你 1:24 才放下手机。说说原因？</div></div>
+    <div class="gap"></div>
+    <div class="row out"><div class="bubble">本来打算睡了，结果刷短视频没刹住……</div></div>
+    <div class="row out"><div class="bubble">你先别骂我</div></div>
+    <div class="gap"></div>
+    <div class="row in"><div class="bubble">我不骂人，我只看数据：本周第三次了。换个方案——22:50 我提醒你，23:00 自动进勿扰。另外把「睡前刷手机」单独拆成追踪目标。</div></div>
+    <div class="task-card">
+      <div class="t-row"><div class="t-dot"></div><div class="t-title">今晚 23:00 开启勿扰模式</div></div>
+      <div class="t-sub">已排入任务清单 · 到点提醒 · 点卡片打卡</div>
+    </div>
+  </div>
+
+  <div class="inputbar">
+    <div class="cam">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8">
+        <rect x="3" y="7" width="18" height="13" rx="4.5"/>
+        <circle cx="12" cy="13.5" r="4"/>
+        <circle cx="17.2" cy="10" r=".9" fill="#fff" stroke="none"/>
+      </svg>
+    </div>
+    <div class="field" id="field" contenteditable="true"></div>
+    <div class="action" id="actionBtn"></div>
+  </div>
+
+  <div class="toast" id="toast">提示：长按顶部头像，可切换对话风格</div>
+
+  <div class="sheet-mask" id="mask"></div>
+  <div class="sheet" id="sheet">
+    <div class="handle"></div>
+    <h2>对话风格</h2>
+    <div id="toneList"></div>
+    <div class="note">人设（名字 / 身份 / 设定词）可在「设置」中自由修改或新增，不止于"导师"。</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var TONES = [
+    { id: 'gentle',   name: '温和陪伴',     icon: '🌿', desc: '先接纳情绪，再给出建议' },
+    { id: 'strict',   name: '严格教练',     icon: '🎯', desc: '直接点破问题，重视执行结果' },
+    { id: 'socratic', name: '苏格拉底反问', icon: '💭', desc: '用追问引导你自己找到答案' },
+  ];
+  var currentTone = TONES[0];
+  var msgs = document.getElementById('msgArea');
+  var field = document.getElementById('field');
+  var actionBtn = document.getElementById('actionBtn');
+  var avatarArea = document.getElementById('avatarArea');
+  var ring = document.getElementById('ring');
+  var statusText = document.getElementById('statusText');
+  var sheet = document.getElementById('sheet');
+  var mask = document.getElementById('mask');
+  var toneList = document.getElementById('toneList');
+  var toast = document.getElementById('toast');
+
+  function clock() {
+    var d = new Date();
+    document.getElementById('clock').textContent =
+      ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+  }
+  clock(); setInterval(clock, 15000);
+
+  // ===== 消息 =====
+  function addRow(cls, text, bare) {
+    var r = document.createElement('div');
+    r.className = 'row ' + cls;
+    var b = document.createElement('div');
+    b.className = 'bubble' + (bare ? ' bare' : '');
+    b.textContent = text;
+    attachHeart(b);
+    r.appendChild(b);
+    msgs.appendChild(r);
+    msgs.scrollTop = msgs.scrollHeight;
+    return b;
+  }
+  function addGap() {
+    var g = document.createElement('div');
+    g.className = 'gap';
+    msgs.appendChild(g);
+  }
+
+  // 双击飘心（IG 经典）
+  function attachHeart(bubble) {
+    var lastTap = 0;
+    bubble.addEventListener('click', function () {
+      var now = Date.now();
+      if (now - lastTap < 300) {
+        var h = document.createElement('div');
+        h.className = 'float-heart';
+        h.textContent = '❤️';
+        bubble.appendChild(h);
+        setTimeout(function () { h.remove(); }, 950);
+      }
+      lastTap = now;
+    });
+  }
+  document.querySelectorAll('.bubble').forEach(attachHeart);
+
+  // ===== 输入区：空 → 心形键；有字 → 渐变纸飞机 =====
+  var HEART_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="#262626" stroke-width="1.8"><path d="M12 20.5C7 16.5 3 13.3 3 9.5 3 7 5 5 7.5 5c1.7 0 3.3.9 4.5 2.4C13.2 5.9 14.8 5 16.5 5 19 5 21 7 21 9.5c0 3.8-4 7-9 11z"/></svg>';
+  var PLANE_SVG = '<div class="plane-wrap"><svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg></div>';
+
+  function updateAction() {
+    var has = field.textContent.trim() !== '';
+    actionBtn.innerHTML = has ? PLANE_SVG : HEART_SVG;
+  }
+  field.addEventListener('input', updateAction);
+  actionBtn.addEventListener('click', function () {
+    var text = field.textContent.trim();
+    if (text) {
+      addRow('out', text);
+      field.textContent = '';
+      updateAction();
+      setTimeout(function () {
+        addGap();
+        addRow('in', '记下了。换到「' + currentTone.name + '」模式回你——这事今晚复盘细聊。');
+      }, 700);
+    } else {
+      addRow('out', '❤️', true);
+    }
+  });
+  field.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); actionBtn.click(); }
+  });
+  updateAction();
+
+  // ===== 长按头像（500ms）打开风格切换 =====
+  var pressTimer = null;
+  function startPress() { ring.classList.add('pressing'); pressTimer = setTimeout(openSheet, 500); }
+  function cancelPress() { ring.classList.remove('pressing'); clearTimeout(pressTimer); }
+  avatarArea.addEventListener('mousedown', startPress);
+  avatarArea.addEventListener('mouseup', cancelPress);
+  avatarArea.addEventListener('mouseleave', cancelPress);
+  avatarArea.addEventListener('touchstart', function (e) { e.preventDefault(); startPress(); }, { passive: false });
+  avatarArea.addEventListener('touchend', cancelPress);
+  avatarArea.addEventListener('touchcancel', cancelPress);
+
+  function renderTones() {
+    toneList.innerHTML = '';
+    TONES.forEach(function (t) {
+      var el = document.createElement('div');
+      el.className = 'tone' + (t.id === currentTone.id ? ' active' : '');
+      el.innerHTML =
+        '<div class="t-icon">' + t.icon + '</div>' +
+        '<div class="t-body"><div class="t-name">' + t.name + '</div>' +
+        '<div class="t-desc">' + t.desc + '</div></div>' +
+        '<div class="t-check">✓</div>';
+      el.addEventListener('click', function () {
+        currentTone = t;
+        statusText.textContent = '人生导师 · ' + t.name;
+        closeSheet(); renderTones();
+        setTimeout(function () {
+          addGap();
+          addRow('in', '（已切换对话风格：' + t.name + '，后续回复按此风格进行。）');
+        }, 250);
+      });
+      toneList.appendChild(el);
+    });
+  }
+  function openSheet() { renderTones(); sheet.classList.add('show'); mask.classList.add('show'); }
+  function closeSheet() { sheet.classList.remove('show'); mask.classList.remove('show'); }
+  mask.addEventListener('click', closeSheet);
+
+  setTimeout(function () { toast.classList.add('show'); }, 900);
+  setTimeout(function () { toast.classList.remove('show'); }, 5200);
+})();
+</script>
+</body>
+</html>
