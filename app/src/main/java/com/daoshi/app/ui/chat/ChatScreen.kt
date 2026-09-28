@@ -114,7 +114,9 @@ fun ChatScreen(
     val quickTasks by vm.quickCheckTasks.collectAsState()
     var showToneSheet by remember { mutableStateOf(false) }
     var showQuickCheck by remember { mutableStateOf(false) }
+    var messageMenu by remember { mutableStateOf<ChatMessage?>(null) }
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
 
     // 气泡最大宽度 = 版心的 76%（比例随版心自适应）
     val bubbleMaxWidth = LocalContentWidth.current * 0.76f
@@ -226,7 +228,12 @@ fun ChatScreen(
                             }
 
                             is ChatListItem.Msg -> Box(Modifier.animateItem()) {
-                                MessageBubble(item.message, bubbleMaxWidth, item.gapBefore)
+                                MessageBubble(
+                                    item.message,
+                                    bubbleMaxWidth,
+                                    item.gapBefore,
+                                    onLongPress = { messageMenu = item.message },
+                                )
                             }
                         }
                     }
@@ -329,6 +336,62 @@ fun ChatScreen(
             onDismiss = { showQuickCheck = false },
         )
     }
+
+    messageMenu?.let { message ->
+        MessageMenuSheet(
+            message = message,
+            canDelete = message.id > 0 && !uiState.isStreaming,
+            onCopy = {
+                copyToClipboard(context, message.content)
+                messageMenu = null
+            },
+            onDelete = {
+                vm.deleteMessage(message)
+                messageMenu = null
+            },
+            onDismiss = { messageMenu = null },
+        )
+    }
+}
+
+/** 长按气泡弹出：复制 / 删除（已落库消息才可删；种子演示消息仅可复制） */
+@Composable
+private fun MessageMenuSheet(
+    message: ChatMessage,
+    canDelete: Boolean,
+    onCopy: () -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    NeuSheetScaffold(
+        title = if (message.isFromUser) "我的消息" else "导师消息",
+        onDismiss = onDismiss,
+    ) {
+        Spacer(Modifier.height(14.dp))
+        NeuSheetRow(
+            icon = MIcons.Copy,
+            title = "复制全文",
+            subtitle = "以纯文本粘贴到任何地方",
+            onClick = onCopy,
+        )
+        Spacer(Modifier.height(10.dp))
+        if (canDelete) {
+            NeuSheetRow(
+                icon = MIcons.Delete,
+                title = "删除消息",
+                subtitle = "同时从导师的对话记忆中移除",
+                onClick = onDelete,
+            )
+        } else {
+            Text(
+                "演示消息不可删除",
+                modifier = Modifier.padding(horizontal = 4.dp),
+                fontSize = 12.sp,
+                color = MutedText,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+    }
 }
 
 /** 凹陷输入胶囊 */
@@ -395,6 +458,7 @@ private fun MessageBubble(
     message: ChatMessage,
     maxWidth: androidx.compose.ui.unit.Dp,
     gapBefore: Boolean,
+    onLongPress: () -> Unit,
 ) {
     val isUser = message.isFromUser
     val isHeart = message.content == "❤️"
@@ -406,18 +470,21 @@ private fun MessageBubble(
     ) {
         when {
             isHeart -> Text("❤️", fontSize = 44.sp)
-            isUser -> UserBubble(message.content, maxWidth)
-            else -> AiBubble(message.content, maxWidth)
+            isUser -> UserBubble(message.content, maxWidth, onLongPress)
+            else -> AiBubble(message.content, maxWidth, onLongPress)
         }
     }
 }
 
-/** AI 气泡：凹陷纸面；长按复制全文 */
+/** AI 气泡：凹陷纸面；长按弹操作菜单 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AiBubble(content: String, maxWidth: androidx.compose.ui.unit.Dp) {
+private fun AiBubble(
+    content: String,
+    maxWidth: androidx.compose.ui.unit.Dp,
+    onLongPress: () -> Unit,
+) {
     val haptic = LocalHapticFeedback.current
-    val context = LocalContext.current
     Box(
         Modifier
             .widthIn(max = maxWidth)
@@ -427,7 +494,7 @@ private fun AiBubble(content: String, maxWidth: androidx.compose.ui.unit.Dp) {
                 onClick = {},
                 onLongClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    copyToClipboard(context, content)
+                    onLongPress()
                 },
             )
             .neuSurface(
@@ -446,12 +513,15 @@ private fun AiBubble(content: String, maxWidth: androidx.compose.ui.unit.Dp) {
     }
 }
 
-/** 用户气泡：强调渐变 + 柔光投影；长按复制 */
+/** 用户气泡：强调渐变 + 柔光投影；长按弹操作菜单 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun UserBubble(content: String, maxWidth: androidx.compose.ui.unit.Dp) {
+private fun UserBubble(
+    content: String,
+    maxWidth: androidx.compose.ui.unit.Dp,
+    onLongPress: () -> Unit,
+) {
     val haptic = LocalHapticFeedback.current
-    val context = LocalContext.current
     Box(
         Modifier
             .widthIn(max = maxWidth)
@@ -461,7 +531,7 @@ private fun UserBubble(content: String, maxWidth: androidx.compose.ui.unit.Dp) {
                 onClick = {},
                 onLongClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    copyToClipboard(context, content)
+                    onLongPress()
                 },
             )
             .drawUserBubble()

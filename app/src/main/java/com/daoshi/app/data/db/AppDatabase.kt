@@ -64,6 +64,10 @@ interface MessageDao {
     )
     suspend fun searchMessages(query: String): List<ChatMessage>
 
+    /** 删除单条消息（长按气泡菜单；LLM 历史随 DB 实时变化） */
+    @Query("DELETE FROM messages WHERE id = :id")
+    suspend fun delete(id: Long)
+
     /** 数据与隐私面板：消息总数 */
     @Query("SELECT COUNT(*) FROM messages")
     fun observeCount(): Flow<Long>

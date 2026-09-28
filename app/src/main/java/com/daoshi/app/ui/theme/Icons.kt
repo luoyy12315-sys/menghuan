@@ -133,6 +133,17 @@ object MIcons {
 
     // ===== 列表 / 设置 =====
     val ChevronRight = strokes("ChevronRight", 1.8f, "M9.5 5.5L15.5 12L9.5 18.5")
+    val Copy = strokes(
+        "Copy", 1.8f,
+        "M9 9h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H11a2 2 0 0 1-2-2V9Z",
+        "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
+    )
+    val Delete = strokes(
+        "Delete", 1.8f,
+        "M3 6h18",
+        "M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2",
+        "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14Z",
+    )
     val Person = strokes(
         "Person", 1.6f,
         circleData(12f, 8f, 3.4f),

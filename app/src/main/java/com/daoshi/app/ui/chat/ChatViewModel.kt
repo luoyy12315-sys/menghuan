@@ -136,6 +136,12 @@ class ChatViewModel(
         }
     }
 
+    /** 删除单条已落库消息（长按气泡菜单）；观察者流会实时重发，UI 自动更新 */
+    fun deleteMessage(message: ChatMessage) = viewModelScope.launch {
+        if (message.id <= 0) return@launch // 种子演示消息不在 DB，不可删
+        runCatching { db.messageDao().delete(message.id) }
+    }
+
     /** 上次请求失败后重试（用户消息已在历史中） */
     fun retry() {
         if (_uiState.value.isStreaming) return

@@ -295,6 +295,7 @@
     var b = document.createElement('div');
     b.className = 'bubble' + (bare ? ' bare' : '');
     b.textContent = text;
+    b.oncontextmenu = e => { e.preventDefault(); toast('长按：复制全文 / 删除'); };
     attachHeart(b);
     r.appendChild(b);
     msgs.appendChild(r);
