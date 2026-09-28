@@ -162,6 +162,10 @@ private fun PersonaCard(persona: Persona, onClick: () -> Unit) {
                         fontWeight = FontWeight.SemiBold,
                         color = TextPrimary,
                     )
+                    if (persona.pinned) {
+                        Spacer(Modifier.width(6.dp))
+                        Text("📌", fontSize = 11.sp)
+                    }
                     if (persona.isBuiltIn) {
                         Spacer(Modifier.width(7.dp))
                         BuiltinTag()

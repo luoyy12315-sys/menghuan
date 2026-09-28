@@ -148,6 +148,8 @@
 - [x] AI 气泡轻量 Markdown 渲染（v0.5.0：`ui/common/MarkdownText.kt` 粗体/行内码/标题/列表/代码栅栏，无新依赖；行分类与栅栏切分为纯函数 + 单测）
 - [x] 通知「10 分钟后再提醒」action（v0.5.0：TaskSnoozeReceiver 取消通知并重排闹钟）
 - [x] 数据导出 JSON（v0.5.0：数据与隐私面板 → 全量导出走系统分享，密钥不含）
+- [x] 数据导入 JSON 合并（v0.8.0：GetContent 选文件 → 人设/档案/洞察同名跳过、消息按人设名映射追加、任务追加，绝不删除现有数据；行内结果反馈）
+- [x] 手动提炼统计反馈（v0.8.0：ExtractionEngine.ExtractSummary，数据页内联显示"新洞察 X 条 · 新档案 Y 项"，4 秒自动消失）
 - [x] 气泡长按复制 + 会话草稿保留（v0.5.0：ChatDrafts 进程内存级，切走再回输入还在）+ 数据页完成度附上周对比
 - [x] 会话置顶（v0.6.0：Room v5 personas.pinned + 长按会话行切换 + 📌 标识；编辑人设透传 pinned）
 - [x] 测试基建（v0.5.1：OpenAiClientTest 用 MockWebServer 验证 SSE 契约；ExtractionEngineTest 集成测试——提炼落库/去重/水位线；共 30 个测试）
