@@ -85,6 +85,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
     val facts by vm.facts.collectAsState()
     val weekProgress by vm.weekProgress.collectAsState()
     val weekDaily by vm.weekDaily.collectAsState()
+    val weekRates by vm.weekRates.collectAsState()
     val insights by vm.insights.collectAsState()
     val extracting by vm.extracting.collectAsState()
     val extractMessage by vm.extractMessage.collectAsState()
@@ -118,7 +119,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Spacer(Modifier.height(2.dp))
-            OverviewCard(progress = weekProgress, scrollProvider = { scrollState.value })
+            OverviewCard(progress = weekProgress, weekRates = weekRates, scrollProvider = { scrollState.value })
 
             // 基础档案：标题栏即编辑入口（点整行档案也能进编辑弹层）
             SectionHeader("基础档案", actionText = "编辑", onAction = { showEditSheet = true })
@@ -262,7 +263,7 @@ private fun HabitCard(weekDaily: List<DayCount>) {
 
 /** 本周目标完成度：英雄渐变卡（产品内容彩）+ 白色进度环扫入 + 数字滚动 + 轻微滚动视差 */
 @Composable
-private fun OverviewCard(progress: WeekProgress, scrollProvider: () -> Int) {
+private fun OverviewCard(progress: WeekProgress, weekRates: List<Float>, scrollProvider: () -> Int) {
     var revealed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { revealed = true }
     val sweep by animateFloatAsState(
@@ -278,58 +279,89 @@ private fun OverviewCard(progress: WeekProgress, scrollProvider: () -> Int) {
             .neuSurface(24.dp)
             .padding(18.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 视差：滚动位置延迟到渲染阶段读取（lambda 内读取 State），
-            // 滚动每一帧只更新图层属性，不再触发整个数据页重组
-            Box(
-                Modifier.graphicsLayer { translationY = scrollProvider() * 0.15f },
-                contentAlignment = Alignment.Center,
+        Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Canvas(Modifier.size(96.dp)) {
-                    val stroke = 10.dp.toPx()
-                    val inset = stroke / 2 + 4.dp.toPx()
-                    val diameter = size.minDimension - inset * 2
-                    // 黑 8% 轨道 + 纯黑进度弧（黑白骨架，进度即内容）
-                    drawCircle(
-                        color = Color.Black.copy(alpha = 0.08f),
-                        radius = diameter / 2 + stroke / 2,
-                        style = Stroke(width = stroke),
-                    )
-                    drawArc(
-                        color = Color.Black,
-                        startAngle = -90f,
-                        sweepAngle = 360f * sweep,
-                        useCenter = false,
-                        topLeft = Offset(inset, inset),
-                        size = Size(diameter, diameter),
-                        style = Stroke(width = stroke, cap = StrokeCap.Round),
+                // 视差：滚动位置延迟到渲染阶段读取（lambda 内读取 State），
+                // 滚动每一帧只更新图层属性，不再触发整个数据页重组
+                Box(
+                    Modifier.graphicsLayer { translationY = scrollProvider() * 0.15f },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Canvas(Modifier.size(96.dp)) {
+                        val stroke = 10.dp.toPx()
+                        val inset = stroke / 2 + 4.dp.toPx()
+                        val diameter = size.minDimension - inset * 2
+                        // 黑 8% 轨道 + 纯黑进度弧（黑白骨架，进度即内容）
+                        drawCircle(
+                            color = Color.Black.copy(alpha = 0.08f),
+                            radius = diameter / 2 + stroke / 2,
+                            style = Stroke(width = stroke),
+                        )
+                        drawArc(
+                            color = Color.Black,
+                            startAngle = -90f,
+                            sweepAngle = 360f * sweep,
+                            useCenter = false,
+                            topLeft = Offset(inset, inset),
+                            size = Size(diameter, diameter),
+                            style = Stroke(width = stroke, cap = StrokeCap.Round),
+                        )
+                    }
+                    Text(
+                        percentText,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = (-0.5).sp,
+                        color = TextPrimary,
                     )
                 }
-                Text(
-                    percentText,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = (-0.5).sp,
-                    color = TextPrimary,
-                )
+                Spacer(Modifier.width(20.dp))
+                Column {
+                    Text(
+                        "本周目标完成度",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = (-0.14).sp,
+                        color = TextPrimary,
+                    )
+                    if (subtitle.isNotEmpty()) {
+                        Spacer(Modifier.height(5.dp))
+                        Text(subtitle, fontSize = 12.sp, color = MutedText)
+                    }
+                }
             }
-            Spacer(Modifier.width(20.dp))
-            Column {
-                Text(
-                    "本周目标完成度",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    letterSpacing = (-0.14).sp,
-                    color = TextPrimary,
-                )
-                if (subtitle.isNotEmpty()) {
-                    Spacer(Modifier.height(5.dp))
-                    Text(subtitle, fontSize = 12.sp, color = MutedText)
-                }
+            // 7 天完成率趋势（每日任务口径）；无每日任务不渲染
+            if (weekRates.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                Sparkline(weekRates, Modifier.fillMaxWidth())
             }
         }
+    }
+}
+
+/** 7 天完成率 Sparkline：纯 Canvas 折线（黑 1.6dp 圆帽，末端实心圆点），左→右 = 6 天前 → 今天 */
+@Composable
+private fun Sparkline(rates: List<Float>, modifier: Modifier = Modifier) {
+    Canvas(modifier.height(36.dp)) {
+        if (rates.size < 2) return@Canvas
+        val padY = 5.dp.toPx()
+        val usable = size.height - padY * 2
+        val stepX = if (rates.size > 1) size.width / (rates.size - 1) else size.width
+        val points = rates.mapIndexed { i, rate ->
+            Offset(i * stepX, padY + (1f - rate) * usable)
+        }
+        for (i in 0 until points.lastIndex) {
+            drawLine(
+                color = Color.Black,
+                start = points[i],
+                end = points[i + 1],
+                strokeWidth = 1.6.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+        }
+        drawCircle(color = Color.Black, radius = 3.dp.toPx(), center = points.last())
     }
 }
 

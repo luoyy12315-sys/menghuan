@@ -92,6 +92,25 @@ class DataViewModel(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /**
+     * 近 7 天每日任务完成率（旧→新，0..1）= 当日完成数 / 每日任务总数。
+     * 空表 = 没有每日任务（Sparkline 不渲染）。
+     */
+    val weekRates: StateFlow<List<Float>> = combine(
+        db.taskCompletionDao().observeAll(),
+        db.taskDao().observeAll(),
+    ) { completions, tasks ->
+        val dailyIds = tasks.filter { it.repeatDaily }.map { it.id }.toSet()
+        if (dailyIds.isEmpty()) return@combine emptyList()
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val countPerDay = completions.filter { it.taskId in dailyIds }.groupBy { it.day }
+        (6 downTo 0).map { offset ->
+            val day = today.minusDays(offset.toLong()).toEpochDay()
+            (countPerDay[day].orEmpty().size.toFloat() / dailyIds.size).coerceIn(0f, 1f)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     /** AI 洞察真数据源（提炼引擎产出），最新两条 */
     val insights: StateFlow<List<AiInsight>> = db.aiInsightDao().observeLatest()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
