@@ -27,6 +27,9 @@ class PersonaRepository(private val db: AppDatabase) {
     /** 会话置顶（长按会话行切换） */
     suspend fun setPinned(id: Long, pinned: Boolean) = db.personaDao().setPinned(id, pinned)
 
+    /** 会话删除标记（微信式隐藏，重新打开/新消息即恢复） */
+    suspend fun setHidden(id: Long, hidden: Boolean) = db.personaDao().setHidden(id, hidden)
+
     /**
      * 种子只播一次。此前在 onStart 里"查空再插"没有并发保护：
      * 两个收集器（会话列表 + 数据统计）同时首次订阅时双双判空，种子重复插入，

@@ -32,6 +32,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
@@ -52,11 +54,8 @@ import com.daoshi.app.ui.common.NeuTextField
 import com.daoshi.app.ui.common.NeuTopBar
 import com.daoshi.app.ui.common.neuRowPress
 import com.daoshi.app.ui.common.neuSurface
-import com.daoshi.app.ui.theme.AccentBrush
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
-import com.daoshi.app.ui.theme.NeuBackground
-import com.daoshi.app.ui.theme.NeuTrack
 import com.daoshi.app.ui.theme.TextPrimary
 import com.daoshi.app.ui.theme.TextSecondary
 import java.time.Instant
@@ -105,11 +104,8 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        // 顶栏（设置入口只在会话列表页）
-        NeuTopBar(
-            title = "我的数据",
-            actions = { NeuTextButton("编辑", onClick = { showEditSheet = true }) },
-        )
+        // 顶栏（编辑入口在基础档案栏，页面骨架保持极简）
+        NeuTopBar(title = "我的数据")
 
         Column(
             Modifier
@@ -122,11 +118,25 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
             Spacer(Modifier.height(2.dp))
             OverviewCard(progress = weekProgress, scrollProvider = { scrollState.value })
 
-            NeuSectionTitle("基础档案", modifier = Modifier.padding(horizontal = 4.dp))
+            // 基础档案：标题栏即编辑入口（点整行也能进编辑弹层）
+            Row(
+                Modifier.padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "基础档案",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MutedText,
+                    letterSpacing = 0.8.sp,
+                )
+                Spacer(Modifier.weight(1f))
+                NeuTextButton("编辑", onClick = { showEditSheet = true })
+            }
             NeuCard(cornerRadius = 22.dp) {
                 if (facts.isEmpty()) {
                     Text(
-                        "暂无档案，点右上角「编辑」添加",
+                        "暂无档案",
                         modifier = Modifier.fillMaxWidth().padding(vertical = 13.dp),
                         fontSize = 14.sp,
                         color = MutedText,
@@ -161,19 +171,12 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                     color = MutedText,
                     letterSpacing = 0.8.sp,
                 )
-                if (insights.isEmpty()) {
-                    Spacer(Modifier.width(7.dp))
-                    Text("示例数据", fontSize = 10.sp, color = com.daoshi.app.ui.theme.FaintText)
-                }
                 Spacer(Modifier.weight(1f))
                 if (apiReady) {
                     NeuTextButton(
                         if (extracting) "提炼中…" else "提炼",
                         onClick = { vm.refreshInsights() },
                     )
-                } else if (insights.isEmpty()) {
-                    // 功能可发现性：告诉用户洞察从哪来（设置入口在会话列表页，按约定不在此跳转）
-                    Text("配置 API 后可自动提炼", fontSize = 10.sp, color = com.daoshi.app.ui.theme.FaintText)
                 }
             }
             extractMessage?.let { message ->
@@ -184,21 +187,8 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                     color = NeuAccent,
                 )
             }
-            if (insights.isEmpty()) {
-                InsightCard(
-                    "熬夜与短视频强相关",
-                    "过去 14 天，睡前刷短视频的日子平均晚睡 82 分钟。建议把「睡前刷手机」替换为固定的放松流程。",
-                    "今天",
-                )
-                InsightCard(
-                    "上午效率最高",
-                    "你的深度工作集中在 9:00–11:30，重要任务建议安排在这个时段，下午适合处理琐事。",
-                    "昨天",
-                )
-            } else {
-                insights.forEach { insight ->
-                    InsightCard(insight.title, insight.detail, insight.dateLabel())
-                }
+            insights.forEach { insight ->
+                InsightCard(insight.title, insight.detail, insight.dateLabel())
             }
         }
     }
@@ -219,11 +209,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
 @Composable
 private fun HabitCard(weekDaily: List<DayCount>) {
     val totalDone = weekDaily.sumOf { it.done }
-    val note = if (totalDone == 0) {
-        "暂无打卡记录 · 去任务页勾选完成"
-    } else {
-        "共完成 $totalDone 项 · 连续记录看你有多稳"
-    }
+    val note = if (totalDone == 0) "" else "共完成 $totalDone 项"
     NeuCard(cornerRadius = 22.dp) {
         Row(
             Modifier.fillMaxWidth(),
@@ -242,43 +228,39 @@ private fun HabitCard(weekDaily: List<DayCount>) {
                         .size(24.dp)
                         .then(
                             if (filled) {
-                                Modifier.background(AccentBrush, CircleShape)
+                                Modifier.background(NeuAccent, CircleShape)
                             } else {
-                                Modifier.neuSurface(
-                                    999.dp,
-                                    color = NeuBackground,
-                                    elevation = 4.dp,
-                                    inset = true,
-                                    shape = CircleShape,
-                                )
+                                Modifier.neuSurface(999.dp, inset = true, shape = CircleShape)
                             },
                         ),
                 )
             }
         }
-        Spacer(Modifier.height(12.dp))
-        Text(note, fontSize = 12.sp, color = MutedText)
+            if (note.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text(note, fontSize = 12.sp, color = MutedText)
+            }
     }
 }
 
-/** 本周目标完成度：凹陷轨道圆环 + 强调弧（扫入动画 + 数字滚动）+ 轻微滚动视差 */
+/** 本周目标完成度：英雄渐变卡（产品内容彩）+ 白色进度环扫入 + 数字滚动 + 轻微滚动视差 */
 @Composable
 private fun OverviewCard(progress: WeekProgress, scrollProvider: () -> Int) {
     var revealed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { revealed = true }
     val sweep by animateFloatAsState(
         if (revealed) progress.fraction else 0f,
-        tween(1000, easing = EaseOutExpo),
+        tween(1100, easing = EaseOutExpo),
     )
     val percentText = "${(sweep * 100).toInt()}%"
-    val subtitle = if (progress.total == 0) {
-        "本周暂无任务 · 去任务页新建"
-    } else {
-        "本周完成 ${progress.done}/${progress.total} 项" +
-            (progress.lastWeekFraction?.let { " · 上周 ${(it * 100).toInt()}%" } ?: "")
-    }
+    val subtitle = if (progress.total == 0) "" else "本周完成 ${progress.done}/${progress.total} 项"
 
-    NeuCard(cornerRadius = 24.dp, contentPadding = 18.dp) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .neuSurface(24.dp)
+            .padding(18.dp),
+    ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -292,29 +274,43 @@ private fun OverviewCard(progress: WeekProgress, scrollProvider: () -> Int) {
                     val stroke = 10.dp.toPx()
                     val inset = stroke / 2 + 4.dp.toPx()
                     val diameter = size.minDimension - inset * 2
-                    // 凹陷轨道：底色环 + 内缘暗线
+                    // 黑 8% 轨道 + 纯黑进度弧（黑白骨架，进度即内容）
                     drawCircle(
-                        color = NeuTrack,
+                        color = Color.Black.copy(alpha = 0.08f),
                         radius = diameter / 2 + stroke / 2,
                         style = Stroke(width = stroke),
                     )
                     drawArc(
-                        brush = AccentBrush,
+                        color = Color.Black,
                         startAngle = -90f,
                         sweepAngle = 360f * sweep,
                         useCenter = false,
                         topLeft = Offset(inset, inset),
                         size = Size(diameter, diameter),
-                        style = Stroke(width = stroke),
+                        style = Stroke(width = stroke, cap = StrokeCap.Round),
                     )
                 }
-                Text(percentText, fontSize = 24.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                Text(
+                    percentText,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = (-0.5).sp,
+                    color = TextPrimary,
+                )
             }
             Spacer(Modifier.width(20.dp))
             Column {
-                Text("本周目标完成度", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                Spacer(Modifier.height(5.dp))
-                Text(subtitle, fontSize = 12.sp, color = MutedText)
+                Text(
+                    "本周目标完成度",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = (-0.14).sp,
+                    color = TextPrimary,
+                )
+                if (subtitle.isNotEmpty()) {
+                    Spacer(Modifier.height(5.dp))
+                    Text(subtitle, fontSize = 12.sp, color = MutedText)
+                }
             }
         }
     }
@@ -323,7 +319,7 @@ private fun OverviewCard(progress: WeekProgress, scrollProvider: () -> Int) {
 @Composable
 private fun ProfileRow(label: String, value: String, aiSource: Boolean, onClick: () -> Unit = {}) {
     Row(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().neuRowPress(onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(Modifier.width(72.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -354,14 +350,6 @@ private fun ProfileRow(label: String, value: String, aiSource: Boolean, onClick:
             maxLines = 2,
         )
         Spacer(Modifier.width(6.dp))
-        // 紧凑文字按钮：与预览稿一致（行高由 14sp 文本决定，按钮自身不撑行高）
-        Box(
-            Modifier
-                .neuRowPress(onClick)
-                .padding(horizontal = 6.dp, vertical = 4.dp),
-        ) {
-            Text("改", fontSize = 13.sp, color = NeuAccent)
-        }
     }
 }
 
@@ -403,7 +391,7 @@ private fun ProfileEditSheet(
                 Box(
                     Modifier
                         .size(38.dp)
-                        .neuSurface(999.dp, color = NeuBackground, elevation = 4.dp, inset = true),
+                        .neuSurface(999.dp, inset = true),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -448,10 +436,10 @@ private fun InsightCard(title: String, desc: String, date: String) {
             Box(
                 Modifier
                     .size(30.dp)
-                    .background(AccentBrush, CircleShape),
+                    .background(NeuAccent, CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("✦", fontSize = 13.sp, color = androidx.compose.ui.graphics.Color.White)
+                Text("✦", fontSize = 13.sp, color = Color.White)
             }
             Spacer(Modifier.width(10.dp))
             Text(

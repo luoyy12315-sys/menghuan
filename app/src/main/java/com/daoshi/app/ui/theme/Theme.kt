@@ -10,27 +10,56 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 
-// ===== 新拟态（Neumorphism）设计令牌 =====
-// 定调：柔和灰蓝基底 + 深/浅双向软阴影 + 单一靛蓝点睛。浅色锁定（AGENTS §四）。
+// ===== Figma 设计系统令牌（2026-09-28 用户拍板，取代 Neumorphism） =====
+// 定调：界面层严格黑白（画廊白墙），品牌彩色只作为「产品内容」出现在
+// 渐变环 / 英雄卡 / 火花标上。药丸（999）与圆形（50%）几何，虚线选择手柄是签名。
 
-val NeuBackground = Color(0xFFE4E9F3)   // 页面基底
-val NeuSurface = Color(0xFFEDF1F9)      // 凸起面填充（比基底略亮，卡片/按钮）
-val NeuShadowDark = Color(0xFFBFC9DC)   // 右下深色投影
-val NeuShadowLight = Color(0xFFFFFFFF)  // 左上白色反光
-val NeuTrack = Color(0xFFD9DFEC)        // 凹陷轨道底（进度环/开关）
+val NeuBackground = Color(0xFFFFFFFF)   // 页面基底：画廊白
+val NeuSurface = Color(0xFFFFFFFF)      // 凸起面：白卡片
+val NeuTrack = Color(0xFFF2F3F5)        // 凹陷/输入面：浅灰纸（Figma 画布灰）
+val NeuHairline = Color(0x14000000)     // 发丝线：黑 8%
 
-val TextPrimary = Color(0xFF3D4557)
-val TextSecondary = Color(0xFF717A93)
-val MutedText = Color(0xFF99A1B6)
-val FaintText = Color(0xFFB9C0D0)
+val TextPrimary = Color(0xFF000000)     // 纯黑：所有文字
+val TextSecondary = Color(0xFF595959)
+val MutedText = Color(0xFF8C8C8C)
+val FaintText = Color(0xFFBFBFBF)
 
-val NeuAccent = Color(0xFF6C7DF0)       // 唯一强调色：发送/勾选/未读/进度
-val NeuAccentDeep = Color(0xFF5766DA)
-val NeuDanger = Color(0xFFE06078)
+// 强调色 = 纯黑（Figma 界面唯一"颜色"）：主按钮 / 勾选 / 未读点 / 指示器
+val NeuAccent = Color(0xFF000000)
+val NeuAccentDeep = Color(0xFF1A1A1A)
+val NeuDanger = Color(0xFFF24E1E)       // Figma 橙红：仅破坏性操作
 
-/** 强调渐变（竖直）：仅用于主按钮、发送键、完成勾选、进度环 */
+// ===== 品牌彩色（只做「产品内容」，禁止用于界面装饰） =====
+val BrandGreen = Color(0xFF0ACF83)
+val BrandYellow = Color(0xFFFFC700)
+val BrandPurple = Color(0xFFA259FF)
+val BrandBlue = Color(0xFF1ABCFE)
+val BrandSalmon = Color(0xFFFF7262)
+
+/** 英雄渐变：绿→黄→紫→蓝回环（进度环 / 头像环 / 英雄卡） */
+val HeroBrush: Brush
+    get() = Brush.sweepGradient(listOf(BrandGreen, BrandYellow, BrandPurple, BrandBlue, BrandGreen))
+
+/** 火花渐变（AI 洞察标）：紫→橙红 */
+val SparkBrush: Brush
+    get() = Brush.linearGradient(listOf(BrandPurple, BrandSalmon))
+
+/** 品牌彩渐变笔刷（按 id 稳定取色，头像环等「产品内容」用） */
+private val personaPalettes = listOf(
+    listOf(BrandGreen, BrandBlue),
+    listOf(BrandPurple, BrandSalmon),
+    listOf(BrandYellow, BrandSalmon),
+    listOf(BrandBlue, BrandPurple),
+)
+
+fun personaBrush(id: Long): Brush {
+    val pair = personaPalettes[(id.hashCode().toLong() and 0x7FFFFFFFL).toInt() % personaPalettes.size]
+    return Brush.linearGradient(pair)
+}
+
+/** 强调渐变：黑色微渐变（主按钮 / 勾选 / 用户气泡），比纯色多一层纸感 */
 val AccentBrush: Brush
-    get() = Brush.verticalGradient(listOf(NeuAccent, NeuAccentDeep))
+    get() = Brush.verticalGradient(listOf(Color(0xFF000000), Color(0xFF262626)))
 
 private val LightColors = lightColorScheme(
     primary = NeuAccent,
@@ -38,15 +67,15 @@ private val LightColors = lightColorScheme(
     secondary = MutedText,
     background = NeuBackground,
     surface = NeuSurface,
-    surfaceVariant = NeuBackground,
+    surfaceVariant = NeuTrack,
     onSurface = TextPrimary,
     error = NeuDanger,
-    outline = Color(0xFFC6CEDD),
+    outline = Color(0xFFD9D9D9),
 )
 
 @Composable
 fun MentorTheme(
-    // 新拟态锁定浅色：暗色阴影体系未建，跟系统深色会"黑底黑字"
+    // 浅色锁定：黑白界面不跟系统深色（v29 已退出 Force Dark）
     darkTheme: Boolean = false,
     content: @Composable () -> Unit,
 ) {

@@ -75,8 +75,10 @@ class ChatViewModel(
     init {
         viewModelScope.launch {
             runCatching {
+                // 重新打开即恢复：微信式删除的会话，从搜索/任意入口再进入时取消隐藏
+                personaRepository.setHidden(personaId, false)
                 val persona = personaRepository.getPersona(personaId)
-                    ?: personaRepository.observePersonas().first().firstOrNull()
+                ?: personaRepository.observePersonas().first().firstOrNull()
                 _activePersona.value = persona
                 if (persona != null) {
                     _tone.value = runCatching { ToneStyle.valueOf(persona.tone) }
@@ -108,6 +110,11 @@ class ChatViewModel(
         _tone.value = tone
         _activePersona.value = _activePersona.value?.copy(tone = tone.name)
         viewModelScope.launch { runCatching { personaRepository.updateTone(personaId, tone.name) } }
+    }
+
+    /** 兑现已读：会话可见期间每条新消息都刷新阅读时刻，会话列表未读点立即消除 */
+    fun markRead() = viewModelScope.launch {
+        runCatching { settingsRepository.markChatRead(personaId) }
     }
 
     fun send() {

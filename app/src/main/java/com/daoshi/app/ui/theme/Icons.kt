@@ -13,7 +13,7 @@ import androidx.compose.ui.unit.dp
  * 图标库：全部 path 直接照搬设计基准 preview/all.html 里的 SVG（viewBox 24×24）。
  * 设计约定：21–23dp 纯线条符号，stroke 1.6–1.8，圆头圆角，没有底色圆。
  */
-private val GlyphInk = Color(0xFF3D4557)
+private val GlyphInk = Color(0xFF000000)
 
 /** SVG path 字符串 -> PathNode 列表（Compose 1.7 的 PathData 工厂只收 DSL lambda，故走 PathParser） */
 private fun nodes(path: String): List<PathNode> = PathParser().parsePathString(path).toNodes()

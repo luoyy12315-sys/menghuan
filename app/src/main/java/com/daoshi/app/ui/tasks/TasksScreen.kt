@@ -23,8 +23,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDefaults
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -32,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
+import androidx.compose.material3.TimePickerDefaults
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
@@ -42,7 +45,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -66,9 +74,7 @@ import com.daoshi.app.ui.theme.FaintText
 import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
-import com.daoshi.app.ui.theme.NeuBackground
 import com.daoshi.app.ui.theme.NeuDanger
-import com.daoshi.app.ui.theme.NeuSurface
 import com.daoshi.app.ui.theme.TextPrimary
 import java.time.Instant
 import java.time.LocalDate
@@ -191,7 +197,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
     deleteTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
-            containerColor = NeuSurface,
+            containerColor = Color.White,
             title = { Text("删除任务", color = TextPrimary) },
             text = { Text("确定删除「${target.title}」吗？", color = TextPrimary) },
             confirmButton = {
@@ -208,14 +214,22 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
     }
 }
 
-/** 空态：凹陷圆井 + 提示 */
+/** 空态：虚线选中圆（Figma 编辑器手柄引用）+ 提示 */
 @Composable
 private fun EmptyTasksHint() {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             Modifier
                 .size(64.dp)
-                .neuSurface(999.dp, color = NeuBackground, elevation = 6.dp, inset = true),
+                .drawBehind {
+                    drawCircle(
+                        color = Color.Black,
+                        style = Stroke(
+                            width = 1.6.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f)),
+                        ),
+                    )
+                },
             contentAlignment = Alignment.Center,
         ) {
             Icon(MIcons.Checklist, contentDescription = null, tint = MutedText, modifier = Modifier.size(24.dp))
@@ -379,6 +393,10 @@ private fun TaskSheet(
         val pickerState = rememberDatePickerState(initialSelectedDateMillis = startOfDayMs(dueDate))
         DatePickerDialog(
             onDismissRequest = { showDatePicker = false },
+            // Figma 风：白底直角面板 + 黑色选中/边框，去 Material 默认紫蓝
+            shape = RoundedCornerShape(22.dp),
+            tonalElevation = 0.dp,
+            colors = DatePickerDefaults.colors(containerColor = Color.White),
             confirmButton = {
                 TextButton(onClick = {
                     pickerState.selectedDateMillis?.let { ms ->
@@ -386,13 +404,33 @@ private fun TaskSheet(
                         dueDate = Instant.ofEpochMilli(ms).atZone(ZoneId.of("UTC")).toLocalDate()
                     }
                     showDatePicker = false
-                }) { Text("确定", color = NeuAccent) }
+                }) { Text("确定", color = NeuAccent, fontWeight = FontWeight.SemiBold) }
             },
             dismissButton = {
                 TextButton(onClick = { showDatePicker = false }) { Text("取消", color = MutedText) }
             },
         ) {
-            DatePicker(state = pickerState)
+            DatePicker(
+                state = pickerState,
+                title = null,
+                headline = null,
+                showModeToggle = false,
+                colors = DatePickerDefaults.colors(
+                    containerColor = Color.White,
+                    headlineContentColor = TextPrimary,
+                    selectedDayContainerColor = NeuAccent,
+                    todayContentColor = NeuAccent,
+                    todayDateBorderColor = NeuAccent,
+                    dayContentColor = TextPrimary,
+                    weekdayContentColor = MutedText,
+                    subheadContentColor = TextPrimary,
+                    navigationContentColor = TextPrimary,
+                    yearContentColor = TextPrimary,
+                    selectedYearContainerColor = NeuAccent,
+                    currentYearContentColor = NeuAccent,
+                    dividerColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.08f),
+                ),
+            )
         }
     }
 
@@ -404,9 +442,20 @@ private fun TaskSheet(
         )
         AlertDialog(
             onDismissRequest = { showTimePicker = false },
-            containerColor = NeuSurface,
-            title = { Text("提醒时间", color = TextPrimary) },
-            text = { TimePicker(state = timeState) },
+            containerColor = Color.White,
+            shape = RoundedCornerShape(22.dp),
+            title = { Text("提醒时间", color = TextPrimary, fontWeight = FontWeight.SemiBold) },
+            text = {
+                TimePicker(
+                    state = timeState,
+                    colors = TimePickerDefaults.colors(
+                        clockDialColor = Color.White,
+                        selectorColor = NeuAccent,
+                        periodSelectorBorderColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.08f),
+                        timeSelectorSelectedContainerColor = NeuAccent,
+                    ),
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     remindTime = LocalTime.of(timeState.hour, timeState.minute)
@@ -469,8 +518,6 @@ private fun TaskTag(text: String, accent: Boolean) {
     Box(
         Modifier.neuSurface(
             999.dp,
-            color = NeuBackground,
-            elevation = 3.dp,
             inset = true,
         ).padding(horizontal = 9.dp, vertical = 4.dp),
     ) {

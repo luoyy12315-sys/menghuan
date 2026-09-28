@@ -22,6 +22,8 @@ data class Persona(
     val tone: String = ToneStyle.GENTLE.name,  // 该会话当前对话风格（持久化）
     @ColumnInfo(defaultValue = "0")
     val pinned: Boolean = false,    // 会话置顶（长按会话行切换）
+    @ColumnInfo(defaultValue = "0")
+    val hidden: Boolean = false,    // 已删除的会话（微信式：清空消息后从列表隐藏，新消息/重新打开即恢复）
     val createdAt: Long = System.currentTimeMillis(),
 )
 

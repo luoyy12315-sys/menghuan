@@ -50,6 +50,7 @@ import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
 import com.daoshi.app.ui.theme.TextPrimary
+import com.daoshi.app.ui.theme.personaBrush
 import kotlinx.coroutines.launch
 
 /**
@@ -152,7 +153,7 @@ private fun PersonaCard(persona: Persona, onClick: () -> Unit) {
         modifier = Modifier.fillMaxWidth().neuRowPress(onClick = onClick),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            NeuAvatar(persona.avatarEmoji, size = 44.dp)
+            NeuAvatar(persona.avatarEmoji, size = 44.dp, ringBrush = personaBrush(persona.id))
             Spacer(Modifier.width(13.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

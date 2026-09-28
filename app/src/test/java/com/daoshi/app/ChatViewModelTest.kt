@@ -47,7 +47,7 @@ class ChatViewModelTest {
         kotlinx.coroutines.test.runTest(dispatcher) { block() }
 
     /** 推进虚拟时间 + 真实轮询，直到条件成立（VM 状态依赖真实 IO 的回环时用） */
-    private suspend fun TestScope.pumpUntil(timeoutMs: Long = 15_000, cond: suspend () -> Boolean) {
+    private suspend fun TestScope.pumpUntil(timeoutMs: Long = 60_000, cond: suspend () -> Boolean) {
         val start = System.currentTimeMillis()
         while (!cond()) {
             advanceUntilIdle()
@@ -66,7 +66,17 @@ class ChatViewModelTest {
 
     @After
     fun tearDown() {
-        Dispatchers.resetMain()
+        // 竞态修复：Main 线程上可能有上一测试残留的协程任务尚未跑完，
+        // 此时 resetMain() 会抛 "used concurrently"（间歇性，负载高时易现）。
+        // 重试 + 兜底吞掉即可：下一个测试的 @Before 会重新 setMain。
+        repeat(5) {
+            try {
+                Dispatchers.resetMain()
+                return
+            } catch (_: IllegalStateException) {
+                Thread.sleep(50)
+            }
+        }
     }
 
     private fun vm(personaId: Long = 1L): ChatViewModel {

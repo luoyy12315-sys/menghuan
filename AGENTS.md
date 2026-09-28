@@ -27,7 +27,7 @@
 ```
 导师·/
 ├── AGENTS.md                    ← 本文件
-├── preview/all.html             ← 高保真交互预览（设计基准，见 §六）
+├── preview/all.html             ← 旧版交互预览（已弃用，仅供历史参考）
 ├── app/src/main/java/com/daoshi/app/
 │   ├── MainActivity.kt          # NavHost：chatList → chat/{personaId}，personas，data，tasks
 │   ├── MentorApp.kt             # Application + 服务容器（db / persona / profile / settings 仓库）
@@ -42,9 +42,9 @@
 │   ├── llm/OpenAiClient.kt      # OpenAI 兼容 SSE 流式客户端
 │   ├── notify/                  # AlarmScheduler + TaskReminderReceiver（含稍后提醒）+ TaskSnoozeReceiver + BootReceiver
 │   └── ui/
-│       ├── theme/Theme.kt       # 新拟态设计令牌：NeuBackground/NeuSurface/NeuAccent/AccentBrush…
-│       ├── theme/Icons.kt       # MIcons 纯线条图标（path 照搬 preview/all.html 的 SVG）
-│       ├── common/Neu.kt        # 新拟态核心：neuSurface 双向渐变阴影 / NeuButton / NeuTextField / NeuCheckCircle / NeuSheet*
+│       ├── theme/Theme.kt       # Figma 风设计令牌：NeuBackground/NeuTrack/NeuAccent/Brand*色/HeroBrush…
+│       ├── theme/Icons.kt       # MIcons 纯线条图标（stroke 1.6–1.8，墨色 #000000）
+│       ├── common/Neu.kt        # 组件核心：neuSurface 白面细线/纸叠阴影、figmaSelection 虚线选中框、NeuButton/NeuTextField/NeuSheet*
 │       ├── chat/                # ChatListScreen + ChatScreen（MarkdownText 渲染/按天分组/快捷打卡/失败重试）+ ChatViewModel + ChatDrafts
 │       ├── persona/             # PersonaManageScreen + PersonaEditorSheet（新增/编辑/删除人设）
 │       ├── data/DataScreen.kt   # 我的数据页（真实完成度圆环/打卡热力/档案 AI 徽标/洞察 + 编辑弹层）
@@ -53,25 +53,30 @@
 │       └── settings/SettingsSheet.kt  # 共享设置面板 + ApiConfigSheet + MoreSheets.kt（通知/隐私/关于）
 ```
 
-## 四、设计系统（Neumorphism 新拟态，不可擅自更改）
+## 四、设计系统（Figma 风，2026-09-28 用户拍板）
 
-定调：**柔和灰蓝纸面 + 双向软阴影 + 单一靛蓝点睛**（2026-09-27 用户拍板，取代此前 ins 风）。浅色锁定，不做深色。
+定调：**黑白界面骨架 + 鲜亮品牌色只作内容点缀**（取代 2026-09-27 的 Neumorphism 新拟态）。浅色锁定，不做深色。
 
 | 令牌 | 值 | 用途 |
 |---|---|---|
-| `NeuBackground` | `#E4E9F3` | 页面基底 / 凹陷面填充 |
-| `NeuSurface` | `#EDF1F9` | 凸起面（卡片 / 按钮 / 底栏） |
-| `NeuShadowDark` / `NeuShadowLight` | `#BFC9DC` / `#FFFFFF` | 右下投影 / 左上反光 |
-| `TextPrimary` | `#3D4557` | 主文字 |
-| `NeuAccent` / `NeuAccentDeep` | `#6C7DF0` / `#5766DA` | 唯一强调色：发送键 / 勾选 / 未读点 / 进度环 |
-| 气泡 | AI = 凹陷纸面；用户 = AccentBrush 竖渐变 | 聊天气泡（无尾巴、圆角 22dp、maxWidth = 版心 76%） |
-| 图标 | 21–23px **纯线条符号**（stroke 1.6–1.8），**无底色圆** | `ui/theme/Icons.kt` MIcons，与预览 SVG 1:1 |
-| 字体 | 系统字体栈（刻意选择） | 全局 |
+| `NeuBackground` / `NeuSurface` | `#FFFFFF` | 页面基底 / 凸起面（纯白画廊底） |
+| `NeuTrack` | `#F2F3F5` | 凹陷/输入面（Figma 画布灰） |
+| `NeuHairline` | 黑 8% | 唯一分隔手段：1dp 细线 + 细线描边 |
+| `TextPrimary` / `TextSecondary` / `MutedText` / `FaintText` | `#000000` / `#595959` / `#8C8C8C` / `#BFBFBF` | 四级灰阶文字 |
+| `NeuAccent` / `NeuAccentDeep` | `#000000` / `#1A1A1A` | 强调色=纯黑：主按钮 / 勾选 / 选中 chip / 底栏胶囊 |
+| `NeuDanger` | `#F24E1E` | 危险操作 |
+| 品牌色 | `BrandGreen #0ACF83` `BrandYellow #FFC700` `BrandPurple #A259FF` `BrandBlue #1ABCFE` `BrandSalmon #FF7262` | **只作内容点缀**：数据页 Hero 渐变卡、打卡热力、persona 渐变头像环、Spark 图标，绝不用于界面骨架 |
+| `HeroBrush` / `SparkBrush` / `AccentBrush` / `personaBrush(id)` | 见 Theme.kt | 绿→黄→紫→蓝扫掠 / 紫→橙线性 / 黑竖渐变 / 按人设 id 双色渐变环 |
+| 气泡 | AI = 白面细线；用户 = 黑底白字（圆角 22dp，maxWidth = 版心 76%） | 聊天气泡，无尾巴 |
+| 图标 | 21–23px 纯线条符号（stroke 1.6–1.8），墨色 `#000000`，无底色圆 | `ui/theme/Icons.kt` MIcons |
+| 字体 | 系统字体栈 + 负字距（标题 -0.2~-0.4sp）；小标签用 letterSpacing +1sp 的大写风格（`figmaMono` 习惯） | 全局 |
 
-**新拟态核心实现（`ui/common/Neu.kt`，勿绕过）：**
-- `Modifier.neuSurface(cornerRadius, color, elevation, intensity, inset)`：drawBehind 里先画两张膨胀圆角矩形的**方向线性渐变**（暗色贴右下、白色贴左上），再画面体填充；`inset=true` 时改画内缘双渐变描边（裁进面体）。**禁止 BlurMaskFilter（硬件加速下不生效）与 Modifier.blur（API 31+）**——minSdk 26 真机流畅全靠这个方案。
-- 按压反馈统一 `rememberNeuPressState()`：阴影收矮变淡 + scale 0.97（110ms）。
-- 动效令牌：`EaseOutExpo`（cubic-bezier(.16,1,.3,1)）；按压 110ms / 状态 220ms / 页面 340ms / 进场 460ms / 列表级联 45ms。
+**组件核心实现（`ui/common/Neu.kt`，勿绕过；组件名沿用旧 API，内部已全部换装）：**
+- `Modifier.neuSurface(cornerRadius, color, elevation, intensity, inset)`：`inset=true` 画 `NeuTrack` 灰平涂（输入框/凹陷胶囊）；否则白面 + 1dp hairline 描边 + 纸叠阴影（黑 7%·elevation，**无模糊**，paper-stack 风）。**禁止 BlurMaskFilter 与 Modifier.blur**（minSdk 26 真机流畅）。
+- `Modifier.figmaSelection(active)`：虚线 1.6dp 黑描边（dash 7/6）+ 四角 7dp 白底黑边手柄方块 —— Figma 选中框隐喻，用于选中 sheet 行/空状态描边。
+- 按钮统一药丸 999dp（Primary=黑底白字）、`NeuChip` 选中=黑药丸白字、`NeuCheckCircle` 选中=AccentBrush 黑渐变、`NeuSwitch` 黑轨白钮。
+- 按压反馈统一 `rememberNeuPressState()`：scale 0.96 + 阴影收矮（110ms）。
+- 动效：弹簧优先（`NeuSpring` MediumBouncy / `NeuSnappySpring`），状态色用 animateColorAsState；`EaseOutExpo`（cubic-bezier(.16,1,.3,1)）管进出场（340–460ms）；底栏指示器 animateDpAsState 弹簧滑移，进场 scaleIn 0.985→1。
 
 **交互语言（两条隐藏/可见入口规则，勿破坏）：**
 - 顶栏可见图标按钮 = 常规功能（＋ 新增人设｜滑杆 设置）
@@ -85,23 +90,22 @@
 - **底栏只在消息/数据/任务三个顶级 tab 显示**：单聊页/人设管理页是 push 层级，
   隐藏底栏让输入栏直达屏幕底部（否则输入栏与底栏叠在一起，v0.3.0 修的错乱）。
   隐藏底栏页面的手势条避让由 AdaptiveScreen 的 navigationBarsPadding 补足。
-- 底部导航**不要**用 Material `NavigationBar`（默认 80dp 高 + 胶囊指示器，与设计稿差一截），
-  用 `MainActivity` 里的 `NeuBottomBar`（浮起胶囊 + 凹陷选中圆井 + 22dp 图标 + 9.5sp 标签）。
+- 底部导航**不要**用 Material `NavigationBar`，用 `MainActivity` 里的 `NeuBottomBar`
+  （白色浮起药丸 + 黑色弹簧滑移选中胶囊 + 22dp 图标 + 9.5sp 标签，选中项图标翻白）。
 - 版心规则：手机（< 600dp）铺满；平板/折叠屏（>= 600dp）内容居中收窄到 **600dp**，两侧浅灰边槽。
 - 气泡等比例元素用**屏幕比例**（如气泡最大宽 = 版心 × 76%），不要写死 dp。
-- `preview/all.html` 在窄视口会自动缩放手机框，方便在任意窗口对比。
 
 **系统栏与深色模式（真机关键，勿破坏）：**
 - 浅色锁定 ≠ 高枕无忧：**必须退出系统 Force Dark**，`res/values-v29/themes.xml` 里
   `android:forceDarkAllowed=false` + `android:enforceNavigationBarContrast=false`。
-  不关的话，系统深色模式下 Android 10+ 会对整棵 View 树强制反色，新拟态的灰阶双向阴影
+  不关的话，系统深色模式下 Android 10+ 会对整棵 View 树强制反色，黑白的细线与纸叠阴影
   全被搅成糊色块（真机「全是乱码/UI 错乱」的根因，v0.2.1 修复）。
 - 系统栏图标用 `SystemBarStyle.light(...)` **锁定深色图标**，不要用 `auto`——auto 跟随系统
   深色模式会把图标翻成白色，浅色底上直接看不见。
-- 冷启动底色：`values/colors.xml` 的 `neu_background`(#E4E9F3) 挂在主题
-  `android:windowBackground` 上，消除启动白屏闪烁；改 NeuBackground 时两处要同步。
+- 冷启动底色：`values/colors.xml` 的 `neu_background`(#FFFFFF) 挂在主题
+  `android:windowBackground` 上，消除启动闪烁；改 NeuBackground 时两处要同步。
 - 启动图标 = 自适应图标（`mipmap-anydpi-v26`，前景 `drawable/ic_launcher_foreground.xml`
-  = 靛蓝气泡+三点），minSdk 26 全覆盖，无需 legacy PNG；monochrome 在 API<33 自动忽略。
+  = 黑色气泡+三点），minSdk 26 全覆盖，无需 legacy PNG；monochrome 在 API<33 自动忽略。
 
 **页面结构（标准 IM 习惯）：**
 - 聊天 tab 主页 = **会话列表**（搜索框整行、会话行=头像+名字+预览+时间+未读点，无身份标签）
@@ -120,8 +124,7 @@
 
 ## 六、工作流约定（重要）
 
-1. **预览即设计基准**：`preview/all.html` 是单文件高保真交互预览（单手机三页 + 会话进出）。
-   任何 UI 变更**先改预览 → 用户确认 → 再同步 Compose 代码**，两边保持一致。
+1. **UI 直接改 Compose**：不做预览确认环节（预览约束已废弃，2026-09-28 用户拍板）。
 2. **改动 Compose 后自查**：Kotlin 文件注意未使用的 import 要清理；ViewModel 用 `viewModelFactory`
    + `APPLICATION_KEY` 模式获取仓库（暂无 Hilt）。
 3. **种子数据**集中在：`PersonaRepository.seedIfEmpty()`（人设）与 `ChatViewModel.seedMessages()`（按 personaId 分会话）。
@@ -188,6 +191,11 @@ SDK="C:/Users/16621/.workbuddy/toolchains/android-sdk"
 
 **分发装真机用 release 包**（2026-09-27 已验证）：`assembleRelease` 已开 R8 混淆压缩 + 资源收缩 + debug 签名（与 debug 包同证书，可直接覆盖升级），体积 ≈1.5MB（debug 18MB）。规则在 `app/proguard-rules.pro`——Compose/Room/OkHttp/coroutines/DataStore 全自带 consumer rules，**不要手写多余 keep**；本 App 无反射取类，新增依赖若带反射序列化（Gson/Retrofit 等）需补规则。dex 抽查法：解出 classes.dex 后 `grep -aoE "Lcom/daoshi/app/[A-Za-z0-9/$]+;"`，Manifest 组件应原名保留。
 
+**产物 APK 命名硬性规定（2026-09-28 用户拍板，勿违反）**：产物复制到项目根目录，命名 `导师-v{versionName}-release.apk`。
+- **小版本（patch，如 0.11.0 → 0.11.1，纯修复/微调）**：**直接覆盖**根目录现有 APK 文件，不堆叠历史包。
+- **大版本（major/minor，如 0.11.x → 0.12.0 / 1.0.0，含新功能或大改）**：**新建**一个 APK 文件，保留旧版本包供回退。
+- 判定以 versionName 的 minor/patch 位为准；拿不准就问用户。
+
 **JVM 截图测试（无真机时"亲眼"验证 UI，2026-09-28 新增）**：`app/src/test/java/com/daoshi/app/UiRenderTest.kt` 启动真实 MainActivity、按用户路径点击导航各页，Roborazzi 用真机同款 Skia 管线出 PNG。用法：
 
 ```bash
@@ -197,11 +205,3 @@ subst X: "C:\Users\16621\Desktop\导师·"
 cd X:/
 gradle recordRoborazziDebug   # 产物 app/build/screenshots/*.png；镜像已在 gradle 配好（android-all ~150MB 首跑下载）
 ```
-
-## 九、不要做
-
-- 不要引入 Hilt/Dagger 等重 DI（保持手动容器，vibe coding 友好）
-- 不要改回 ins / iMessage / 微信风 UI（Neumorphism 新拟态是用户 2026-09-27 拍板方向）
-- 不要在单聊页/数据页/任务页加设置入口（只在会话列表）
-- 不要把人设写死成代码常量（走 Room 种子）
-- 不要上传用户数据到任何云端

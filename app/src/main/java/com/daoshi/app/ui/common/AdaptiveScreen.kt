@@ -135,15 +135,20 @@ fun NeuTopBar(
 }
 
 /**
- * 新拟态头像：凸起圆饼 + emoji。
- * accentRing = 一圈细强调渐变环（聊天气泡页顶栏用）。
+ * 头像：白底圆 + 发丝线 + emoji。
+ * accentRing = 一圈英雄品牌渐变环（聊天气泡页顶栏 / 编辑器预览用，「产品内容」彩色）。
  */
 @Composable
-fun NeuAvatar(emoji: String, size: Dp = 42.dp, accentRing: Boolean = false) {
+fun NeuAvatar(
+    emoji: String,
+    size: Dp = 42.dp,
+    accentRing: Boolean = false,
+    ringBrush: androidx.compose.ui.graphics.Brush? = null,
+) {
     Box(
         Modifier
             .size(size)
-            .neuSurface(size / 2, color = com.daoshi.app.ui.theme.NeuSurface, elevation = 5.dp),
+            .neuSurface(size / 2, color = com.daoshi.app.ui.theme.NeuSurface),
         contentAlignment = Alignment.Center,
     ) {
         if (accentRing) {
@@ -151,25 +156,32 @@ fun NeuAvatar(emoji: String, size: Dp = 42.dp, accentRing: Boolean = false) {
                 Modifier
                     .fillMaxSize()
                     .padding(2.5.dp)
-                    .drawRing(),
+                    .drawRing(com.daoshi.app.ui.theme.HeroBrush),
+            )
+        } else if (ringBrush != null) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(2.dp)
+                    .drawRing(ringBrush),
             )
         }
         Text(emoji, fontSize = (size.value * 0.42f).sp)
     }
 }
 
-/** 细渐变环（头像点缀） */
-private fun Modifier.drawRing(): Modifier = this.then(
+/** 渐变环（头像点缀：英雄渐变 / 人设专属品牌色） */
+private fun Modifier.drawRing(brush: androidx.compose.ui.graphics.Brush): Modifier = this.then(
     Modifier.drawBehind {
         drawCircle(
-            brush = com.daoshi.app.ui.theme.AccentBrush,
+            brush = brush,
             radius = (size.minDimension - 3.dp.toPx()) / 2,
             style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()),
         )
     },
 )
 
-/** 顶栏文字按钮（如"编辑"）：强调色文字 + 按压缩放 */
+/** 顶栏文字按钮（如"编辑"）：纯黑文字 + 按压缩放 */
 @Composable
 fun NeuTextButton(text: String, onClick: () -> Unit, color: Color = NeuAccent) {
     Box(
@@ -178,12 +190,24 @@ fun NeuTextButton(text: String, onClick: () -> Unit, color: Color = NeuAccent) {
             .neuRowPress(onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = color)
+        Text(
+            text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = (-0.14).sp,
+            color = color,
+        )
     }
 }
 
 /** 次级说明文字 */
 @Composable
 fun NeuMuted(modifier: Modifier = Modifier, text: String, fontSize: Float = 12f) {
-    Text(text, fontSize = fontSize.sp, color = MutedText, modifier = modifier)
+    Text(
+        text,
+        fontSize = fontSize.sp,
+        lineHeight = (fontSize * 1.5f).sp,
+        color = MutedText,
+        modifier = modifier,
+    )
 }

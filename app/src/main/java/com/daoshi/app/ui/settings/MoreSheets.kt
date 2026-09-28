@@ -38,7 +38,6 @@ import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
 import com.daoshi.app.ui.theme.NeuDanger
-import com.daoshi.app.ui.theme.NeuSurface
 import com.daoshi.app.ui.theme.TextPrimary
 
 /** 本机数据统计快照（数据与隐私面板展示） */
@@ -149,7 +148,7 @@ fun DataPrivacySheet(
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
-            containerColor = NeuSurface,
+            containerColor = androidx.compose.ui.graphics.Color.White,
             title = { Text("清除聊天记录", color = TextPrimary) },
             text = { Text("将删除全部会话消息（人设与任务保留），且不可恢复。确定继续吗？", color = TextPrimary) },
             confirmButton = {

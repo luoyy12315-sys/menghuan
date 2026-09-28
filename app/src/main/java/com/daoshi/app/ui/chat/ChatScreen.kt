@@ -34,7 +34,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -53,11 +52,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -82,12 +76,12 @@ import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.NeuTopBar
 import com.daoshi.app.ui.common.neuSurface
-import com.daoshi.app.ui.theme.AccentBrush
 import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
 import com.daoshi.app.ui.theme.NeuDanger
 import com.daoshi.app.ui.theme.TextPrimary
+import com.daoshi.app.ui.theme.personaBrush
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -121,6 +115,9 @@ fun ChatScreen(
     // 气泡最大宽度 = 版心的 76%（比例随版心自适应）
     val bubbleMaxWidth = LocalContentWidth.current * 0.76f
 
+    // 查看即已读：会话可见期间每条新消息到达都刷新阅读时刻，列表未读点立即消除
+    LaunchedEffect(uiState.messages.lastOrNull()?.id) { vm.markRead() }
+
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(Modifier.fillMaxSize()) {
             // 顶部导航：返回键（退出）+ 居中头像区（长按换风格）
@@ -133,6 +130,8 @@ fun ChatScreen(
                 center = {
                     Row(
                         Modifier.combinedClickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
                             onClick = {},
                             // 隐藏入口：长按头像（500ms），带触觉反馈确认触发
                             onLongClick = {
@@ -143,7 +142,11 @@ fun ChatScreen(
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        NeuAvatar(persona?.avatarEmoji ?: "🙂", size = 38.dp, accentRing = true)
+                        NeuAvatar(
+                            persona?.avatarEmoji ?: "🙂",
+                            size = 38.dp,
+                            ringBrush = personaBrush(personaId),
+                        )
                         Spacer(Modifier.width(10.dp))
                         Column {
                             Text(
@@ -215,15 +218,15 @@ fun ChatScreen(
                                 Box(
                                     Modifier
                                         .padding(vertical = 8.dp)
-                                        .neuSurface(
-                                            999.dp,
-                                            color = MaterialTheme.colorScheme.background,
-                                            elevation = 4.dp,
-                                            inset = true,
-                                        )
+                                        .neuSurface(999.dp, inset = true)
                                         .padding(horizontal = 14.dp, vertical = 5.dp),
                                 ) {
-                                    Text(item.label, fontSize = 11.sp, color = MutedText)
+                                    Text(
+                                        item.label,
+                                        fontSize = 10.sp,
+                                        letterSpacing = 1.sp,
+                                        color = MutedText,
+                                    )
                                 }
                             }
 
@@ -498,12 +501,7 @@ private fun AiBubble(
                     onLongPress()
                 },
             )
-            .neuSurface(
-                22.dp,
-                color = MaterialTheme.colorScheme.background,
-                elevation = 5.dp,
-                inset = true,
-            )
+            .neuSurface(18.dp, color = MaterialTheme.colorScheme.surface, elevation = 2.dp)
             .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
         if (content.isBlank()) {
@@ -514,7 +512,7 @@ private fun AiBubble(
     }
 }
 
-/** 用户气泡：强调渐变 + 柔光投影；长按弹操作菜单 */
+/** 用户气泡：纯黑药丸 + 纸叠影（Figma 界面唯一强调色） */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun UserBubble(
@@ -535,10 +533,10 @@ private fun UserBubble(
                     onLongPress()
                 },
             )
-            .drawUserBubble()
+            .neuSurface(22.dp, color = NeuAccent, elevation = 3.dp)
             .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
-        Text(content, color = Color.White, fontSize = 15.sp, lineHeight = 21.sp)
+        Text(content, color = Color.White, fontSize = 15.sp, lineHeight = 21.sp, letterSpacing = (-0.1).sp)
     }
 }
 
@@ -548,29 +546,6 @@ private fun copyToClipboard(context: android.content.Context, text: String) {
     cm.setPrimaryClip(android.content.ClipData.newPlainText("daoshi", text))
     Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
 }
-
-/** 用户气泡渐变填充 + 同色系柔光投影 */
-private fun Modifier.drawUserBubble(): Modifier = this.then(
-    Modifier.drawBehind {
-        val e = 5.dp.toPx()
-        drawRoundRect(
-            brush = Brush.verticalGradient(
-                listOf(
-                    NeuAccent.copy(alpha = 0.5f),
-                    NeuAccent.copy(alpha = 0.28f),
-                ),
-            ),
-            topLeft = Offset(e * 0.5f, e * 0.9f),
-            size = Size(size.width + e * 0.8f, size.height + e * 1.2f),
-            cornerRadius = CornerRadius(22.dp.toPx() + e),
-        )
-        drawRoundRect(
-            AccentBrush,
-            size = size,
-            cornerRadius = CornerRadius(22.dp.toPx()),
-        )
-    }.clip(RoundedCornerShape(22.dp)),
-)
 
 /** 流式等待三点：错落呼吸（alpha 走 graphicsLayer，渲染期更新不重组） */
 @Composable
@@ -582,19 +557,19 @@ private fun TypingDots() {
     ) {
         repeat(3) { i ->
             val pulse by transition.animateFloat(
-                initialValue = 0.35f,
+                initialValue = 0.3f,
                 targetValue = 1f,
                 animationSpec = infiniteRepeatable(
-                    tween(500, delayMillis = i * 160),
+                    tween(480, delayMillis = i * 150),
                     RepeatMode.Reverse,
                 ),
                 label = "dot$i",
             )
             Box(
                 Modifier
-                    .size(7.dp)
+                    .size(if (i == 1) 8.dp else 6.dp)
                     .graphicsLayer { alpha = pulse }
-                    .background(MutedText, CircleShape),
+                    .background(Color.Black, CircleShape),
             )
         }
     }

@@ -2,7 +2,7 @@ package com.daoshi.app.ui.chat
 
 import android.content.Context
 import android.content.Intent
-import android.widget.Toast
+import androidx.compose.material3.TextButton
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -26,7 +26,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -92,7 +96,9 @@ import com.daoshi.app.ui.theme.FaintText
 import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
+import com.daoshi.app.ui.theme.NeuDanger
 import com.daoshi.app.ui.theme.TextPrimary
+import com.daoshi.app.ui.theme.personaBrush
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -142,20 +148,29 @@ class ChatListViewModel(
             settingsRepository.readMarks,
         ) { personas, lastMessages, readMarks ->
             val byConversation = lastMessages.associateBy { it.conversationId }
-            personas.map { persona ->
-                val last = byConversation[persona.id]
-                ConversationRowUi(
-                    persona = persona,
-                    preview = previewOf(persona, last),
-                    time = timeOf(last?.timestamp),
-                    showDot = last != null && !last.isFromUser &&
-                        last.timestamp > (readMarks[persona.id] ?: 0L),
-                )
-            }
+            // 微信式已删除会话：清空消息后从列表隐藏；新消息到达（预览重现）即恢复显示
+            personas
+                .filter { !(it.hidden && byConversation[it.id] == null) }
+                .map { persona ->
+                    val last = byConversation[persona.id]
+                    ConversationRowUi(
+                        persona = persona,
+                        preview = previewOf(persona, last),
+                        time = timeOf(last?.timestamp),
+                        showDot = last != null && !last.isFromUser &&
+                            last.timestamp > (readMarks[persona.id] ?: 0L),
+                    )
+                }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun savePersona(persona: Persona) = viewModelScope.launch {
         personaRepository.save(persona)
+    }
+
+    /** 长按会话 → 删除会话：清空全部消息 + 从列表隐藏（微信式），重新打开或新消息即恢复 */
+    fun clearConversation(personaId: Long) = viewModelScope.launch {
+        db.messageDao().clearConversation(personaId)
+        personaRepository.setHidden(personaId, true)
     }
 
     // ===== 搜索：人设名/身份 + 消息内容。不做 delay 防抖：本地查询毫秒级，
@@ -485,6 +500,7 @@ fun ChatListScreen(
     var showDataPrivacy by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
     var searchMode by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<Persona?>(null) }
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
 
@@ -537,9 +553,10 @@ fun ChatListScreen(
                 }
             }
 
-            // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画；长按置顶
+            // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画；长按弹出微信式菜单
             LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(rows, key = { _, row -> row.persona.id }) { index, row ->
+                    var menuOpen by remember { mutableStateOf(false) }
                     Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 40).coerceAtMost(320)))) {
                         ConversationRow(
                             persona = row.persona,
@@ -549,15 +566,38 @@ fun ChatListScreen(
                             onClick = { onOpen(row.persona.id) },
                             onLongClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                val target = !row.persona.pinned
-                                vm.setPinned(row.persona.id, target)
-                                Toast.makeText(
-                                    context,
-                                    if (target) "已置顶，会话将排在最前" else "已取消置顶",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
+                                menuOpen = true
                             },
                         )
+                        // 微信式长按菜单：置顶 / 删除会话（菜单锚定在行内，弹出位置跟随）
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false },
+                            containerColor = androidx.compose.ui.graphics.Color.White,
+                            shape = RoundedCornerShape(14.dp),
+                            shadowElevation = 8.dp,
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (row.persona.pinned) "取消置顶" else "置顶该聊天",
+                                        fontSize = 15.sp,
+                                        color = TextPrimary,
+                                    )
+                                },
+                                onClick = {
+                                    menuOpen = false
+                                    vm.setPinned(row.persona.id, !row.persona.pinned)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("删除会话", fontSize = 15.sp, color = NeuDanger) },
+                                onClick = {
+                                    menuOpen = false
+                                    deleteTarget = row.persona
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -574,6 +614,32 @@ fun ChatListScreen(
                 },
             )
         }
+    }
+
+    // 删除会话二次确认：清空该会话消息，人设保留
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            containerColor = androidx.compose.ui.graphics.Color.White,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("删除会话", fontWeight = FontWeight.SemiBold, color = TextPrimary) },
+            text = {
+                Text(
+                    "将删除「${target.name}」的全部聊天消息，人设保留。此操作不可恢复。",
+                    color = MutedText,
+                    lineHeight = 20.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.clearConversation(target.id)
+                    deleteTarget = null
+                }) { Text("删除", color = NeuDanger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消", color = MutedText) }
+            },
+        )
     }
 
     if (showSettings) {
@@ -642,7 +708,7 @@ private fun SearchResultRow(result: SearchResultUi, query: String, onClick: () -
             .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        NeuAvatar(result.persona.avatarEmoji, size = 46.dp)
+        NeuAvatar(result.persona.avatarEmoji, size = 46.dp, ringBrush = personaBrush(result.persona.id))
         Spacer(Modifier.width(13.dp))
         Column(Modifier.weight(1f)) {
             Text(
@@ -787,7 +853,7 @@ private fun ConversationRow(
             .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        NeuAvatar(persona.avatarEmoji, size = 46.dp)
+        NeuAvatar(persona.avatarEmoji, size = 46.dp, ringBrush = personaBrush(persona.id))
         Spacer(Modifier.width(13.dp))
         Column(Modifier.weight(1f)) {
             Text(

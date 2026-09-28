@@ -40,6 +40,10 @@ interface PersonaDao {
     /** 会话置顶（长按会话行切换） */
     @Query("UPDATE personas SET pinned = :pinned WHERE id = :id")
     suspend fun setPinned(id: Long, pinned: Boolean)
+
+    /** 会话删除标记（清空消息后从列表隐藏，重新打开即恢复） */
+    @Query("UPDATE personas SET hidden = :hidden WHERE id = :id")
+    suspend fun setHidden(id: Long, hidden: Boolean)
 }
 
 @Dao
@@ -75,6 +79,10 @@ interface MessageDao {
     /** 清除全部聊天记录（数据与隐私面板，需确认） */
     @Query("DELETE FROM messages")
     suspend fun deleteAll()
+
+    /** 清空单个会话的消息（长按会话 → 删除会话；人设保留，LLM 历史随之清空） */
+    @Query("DELETE FROM messages WHERE conversationId = :conversationId")
+    suspend fun clearConversation(conversationId: Long)
 
     /** 提炼水位线之后的增量消息（只送新内容给 LLM，省 token） */
     @Query(
@@ -148,7 +156,7 @@ interface AiInsightDao {
 
 @Database(
     entities = [Persona::class, ChatMessage::class, TaskItem::class, ProfileFact::class, AiInsight::class],
-    version = 5,
+    version = 6,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -202,6 +210,13 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE personas ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v6：会话删除标记（微信式：删除会话 = 清空消息 + 列表隐藏，重新打开/新消息即恢复） */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE personas ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

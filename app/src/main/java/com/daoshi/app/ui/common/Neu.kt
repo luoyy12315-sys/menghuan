@@ -39,13 +39,11 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -55,26 +53,32 @@ import androidx.compose.ui.unit.sp
 import com.daoshi.app.ui.theme.AccentBrush
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
-import com.daoshi.app.ui.theme.NeuAccentDeep
 import com.daoshi.app.ui.theme.NeuBackground
 import com.daoshi.app.ui.theme.NeuDanger
-import com.daoshi.app.ui.theme.NeuShadowDark
-import com.daoshi.app.ui.theme.NeuShadowLight
+import com.daoshi.app.ui.theme.NeuHairline
 import com.daoshi.app.ui.theme.NeuSurface
+import com.daoshi.app.ui.theme.NeuTrack
 import com.daoshi.app.ui.theme.TextPrimary
 import com.daoshi.app.ui.theme.TextSecondary
 
-// ===== 动效令牌（新拟态微交互统一时序） =====
+// ===== 动效令牌（Figma 系统统一时序：状态走弹簧，层级走 expo） =====
 val EaseOutExpo = CubicBezierEasing(0.16f, 1f, 0.3f, 1f)
 val EaseOutQuart = CubicBezierEasing(0.25f, 1f, 0.5f, 1f)
 val NeuPressSpec = tween<Float>(110)
 val NeuStateSpec = tween<Float>(220, easing = EaseOutQuart)
 val NeuPressDpSpec = tween<Dp>(110)
-val NeuSpring = spring<Float>(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium)
+val NeuSpring = spring<Float>(
+    dampingRatio = Spring.DampingRatioMediumBouncy,
+    stiffness = Spring.StiffnessMediumLow,
+)
+val NeuSnappySpring = spring<Float>(
+    dampingRatio = Spring.DampingRatioLowBouncy,
+    stiffness = Spring.StiffnessMedium,
+)
 
 /**
- * 按压态参数：凸起元素被按下时"沉入纸面"——阴影收矮变淡、整体微缩。
- * 所有可点凸起组件统一走这一套，保证手感一致。
+ * 按压态参数：按下整体微缩（0.96）+ 弹簧回弹，Figma 式"按下去会弹回来"。
+ * 所有可点组件统一走这一套，保证手感一致。
  * 注意：直接持有 animateXxxAsState 的当前值，每次重组刷新，不要 remember 缓存旧值。
  */
 class NeuPressState internal constructor(
@@ -89,130 +93,113 @@ fun rememberNeuPressState(
     raised: Dp = 6.dp,
 ): NeuPressState {
     val pressed by interactionSource.collectIsPressedAsState()
-    val elevation by animateDpAsState(if (pressed) raised * 0.38f else raised, NeuPressDpSpec)
-    val scale by animateFloatAsState(if (pressed) 0.97f else 1f, NeuPressSpec)
+    val elevation by animateDpAsState(if (pressed) raised * 0.4f else raised, NeuPressDpSpec)
+    val scale by animateFloatAsState(if (pressed) 0.96f else 1f, NeuPressSpec)
     return NeuPressState(interactionSource, elevation, scale)
 }
 
 /**
- * 新拟态表面（核心）：在 drawBehind 里先画双向软阴影、再画面体填充。
- * 凸起（inset=false）：右下深色投影 + 左上白色反光；凹陷（inset=true）：内缘双渐变描边。
- * 全部走 GPU 渐变绘制，不用 BlurMaskFilter（硬件加速下不生效）/Modifier.blur（API31+），
- * minSdk 26 真机也流畅；阴影重绘只发生在参数变化时（按压动画帧）。
+ * 表面（核心）：白纸 + 发丝线 + 可选纸叠投影。
+ * - inset=false：color 填充 + 1px 发丝线描边；elevation>0 时向下画一层 7% 黑纸叠影（无模糊，
+ *   设计工具的"画板叠纸"质感，GPU 零开销）
+ * - inset=true：凹陷灰面（NeuTrack 平涂），输入框 / 轨道 / 搜索胶囊专用
+ * intensity：整体浓度（禁用态压淡用）
  */
 fun Modifier.neuSurface(
     cornerRadius: Dp,
     color: Color = NeuSurface,
-    elevation: Dp = 6.dp,
+    elevation: Dp = 0.dp,
     intensity: Float = 1f,
     inset: Boolean = false,
     shape: Shape = RoundedCornerShape(cornerRadius),
     clipContent: Boolean = true,
 ): Modifier {
-    val dark = NeuShadowDark
-    val light = NeuShadowLight
     return this
-        .drawBehindNeu(cornerRadius, color, elevation, intensity, inset, dark, light)
+        .drawBehindFg(cornerRadius, color, elevation, intensity, inset)
         .then(if (clipContent) Modifier.clip(shape) else Modifier)
 }
 
-/** 拆分出来只为让上面链式可读；真正的绘制在这里 */
-private fun Modifier.drawBehindNeu(
+private fun Modifier.drawBehindFg(
     cornerRadius: Dp,
     color: Color,
     elevation: Dp,
     intensity: Float,
     inset: Boolean,
-    dark: Color,
-    light: Color,
 ): Modifier = this.then(
     Modifier.drawBehind {
         val r = cornerRadius.toPx()
-        val e = elevation.toPx().coerceAtLeast(0.5f)
-        val w = size.width
-        val h = size.height
         if (inset) {
-            drawRoundRect(color, size = size, cornerRadius = CornerRadius(r))
-            drawInsetEdges(w, h, r, e, dark, light, intensity)
+            // 凹陷：平涂灰面（无边框，靠色差分区）
+            drawRoundRect(NeuTrack.copy(alpha = intensity.coerceIn(0f, 1f)), cornerRadius = CornerRadius(r))
         } else {
-            drawRaisedShadows(w, h, r, e, dark, light, intensity)
-            drawRoundRect(color, size = size, cornerRadius = CornerRadius(r))
+            // 纸叠投影：向下偏移的同形圆角矩形
+            val e = elevation.toPx()
+            if (e > 0.5f) {
+                drawRoundRect(
+                    color = Color.Black.copy(alpha = 0.07f * intensity.coerceIn(0f, 1f)),
+                    topLeft = Offset(0f, e * 0.55f),
+                    size = Size(size.width, size.height),
+                    cornerRadius = CornerRadius(r),
+                )
+            }
+            drawRoundRect(color.copy(alpha = intensity.coerceIn(0f, 1f)), cornerRadius = CornerRadius(r))
+            drawRoundRect(
+                color = NeuHairline,
+                cornerRadius = CornerRadius(r),
+                style = Stroke(width = 1.dp.toPx()),
+            )
         }
     },
 )
 
-/** 凸起双向软阴影：两张膨胀圆角矩形 + 方向线性渐变，越靠元素边缘越浓、向外淡出 */
-private fun DrawScope.drawRaisedShadows(
-    w: Float, h: Float, r: Float, e: Float,
-    dark: Color, light: Color, intensity: Float,
-) {
-    val blur = e * 2.6f
-    // 深色投影（右下）
-    drawRoundRect(
-        brush = Brush.linearGradient(
-            colors = listOf(dark.copy(alpha = 0.55f * intensity), dark.copy(alpha = 0f)),
-            start = Offset(w * 0.78f, h * 0.78f),
-            end = Offset(w + blur * 1.6f, h + blur * 1.6f),
-        ),
-        topLeft = Offset(e, e),
-        size = Size(w + blur, h + blur),
-        cornerRadius = CornerRadius(r + e),
-    )
-    // 白色反光（左上）
-    drawRoundRect(
-        brush = Brush.linearGradient(
-            colors = listOf(light.copy(alpha = 0.95f * intensity), light.copy(alpha = 0f)),
-            start = Offset(w * 0.22f, h * 0.22f),
-            end = Offset(-blur * 1.6f, -blur * 1.6f),
-        ),
-        topLeft = Offset(-blur, -blur),
-        size = Size(w + blur, h + blur),
-        cornerRadius = CornerRadius(r + blur),
-    )
-}
-
-/** 凹陷内缘：裁进面体后，沿内缘画两条渐变描边（深色贴左上、白色贴右下），模拟嵌入纸面 */
-private fun DrawScope.drawInsetEdges(
-    w: Float, h: Float, r: Float, e: Float,
-    dark: Color, light: Color, intensity: Float,
-) {
-    val path = androidx.compose.ui.graphics.Path().apply {
-        addRoundRect(androidx.compose.ui.geometry.RoundRect(0f, 0f, w, h, CornerRadius(r)))
-    }
-    val strokeWidth = e * 2.4f
-    clipPath(path) {
-        drawRoundRect(
-            brush = Brush.linearGradient(
-                colors = listOf(dark.copy(alpha = 0.5f * intensity), dark.copy(alpha = 0f)),
-                start = Offset(-e, -e),
-                end = Offset(w * 0.55f, h * 0.55f),
-            ),
-            topLeft = Offset(-e, -e),
-            size = Size(w + e * 2, h + e * 2),
-            cornerRadius = CornerRadius(r + e),
-            style = Stroke(width = strokeWidth),
+/** 虚线选择框 + 四角手柄（Figma 编辑器选中态的元设计引用） */
+fun Modifier.figmaSelection(active: Boolean, cornerRadius: Dp = 14.dp): Modifier = this.then(
+    if (!active) Modifier else Modifier.drawBehind {
+        val r = cornerRadius.toPx()
+        val dash = Stroke(
+            width = 1.6.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(7f, 6f)),
         )
+        val pad = 3.dp.toPx()
         drawRoundRect(
-            brush = Brush.linearGradient(
-                colors = listOf(light.copy(alpha = 0.95f * intensity), light.copy(alpha = 0f)),
-                start = Offset(w + e, h + e),
-                end = Offset(w * 0.45f, h * 0.45f),
-            ),
-            topLeft = Offset(-e, -e),
-            size = Size(w + e * 2, h + e * 2),
-            cornerRadius = CornerRadius(r + e),
-            style = Stroke(width = strokeWidth),
+            color = Color.Black,
+            topLeft = Offset(-pad, -pad),
+            size = Size(size.width + pad * 2, size.height + pad * 2),
+            cornerRadius = CornerRadius(r + pad),
+            style = dash,
         )
-    }
-}
+        // 四角手柄：白底黑描边小方块（选中手柄）
+        val hs = 7.dp.toPx()
+        val left = -pad - hs / 2
+        val top = -pad - hs / 2
+        val right = size.width + pad - hs / 2
+        val bottom = size.height + pad - hs / 2
+        listOf(Offset(left, top), Offset(right, top), Offset(left, bottom), Offset(right, bottom))
+            .forEach { corner ->
+                drawRect(
+                    color = Color.White,
+                    topLeft = corner,
+                    size = Size(hs, hs),
+                )
+                drawRect(
+                    color = Color.Black,
+                    topLeft = corner,
+                    size = Size(hs, hs),
+                    style = Stroke(width = 1.4.dp.toPx()),
+                )
+            }
+    },
+)
 
-/** 凸起卡片容器。content 为 **ColumnScope**：卡片内容纵向流式排列（与预览 HTML 一致）。
- *  注意不能用 BoxScope——多个子元素会被 Box 全部叠在同一位置，文字叠印成"乱码"（v0.2.2 修复）。 */
+/**
+ * 卡片容器。content 为 **ColumnScope**：卡片内容纵向流式排列。
+ * 注意不能用 BoxScope——多个子元素会被 Box 全部叠在同一位置，文字叠印成"乱码"（v0.2.2 修复）。
+ */
 @Composable
 fun NeuCard(
     modifier: Modifier = Modifier,
-    cornerRadius: Dp = 22.dp,
-    elevation: Dp = 6.dp,
+    cornerRadius: Dp = 16.dp,
+    elevation: Dp = 3.dp,
     color: Color = NeuSurface,
     contentPadding: Dp = 16.dp,
     content: @Composable ColumnScope.() -> Unit,
@@ -227,7 +214,7 @@ fun NeuCard(
     }
 }
 
-/** 圆形按压凸起按钮（顶栏/输入栏用）：42dp 命中区 + 阴影收缩反馈 */
+/** 圆形按压按钮（顶栏/输入栏用）：默认玻璃黑 5% 圆；accent = 纯黑实心圆 */
 @Composable
 fun NeuCircleButton(
     onClick: () -> Unit,
@@ -238,7 +225,7 @@ fun NeuCircleButton(
     content: @Composable () -> Unit,
 ) {
     val press = rememberNeuPressState()
-    val alpha by animateFloatAsState(if (enabled) 1f else 0.45f, NeuStateSpec)
+    val alpha by animateFloatAsState(if (enabled) 1f else 0.4f, NeuStateSpec)
     Box(
         modifier
             .scale(press.scale)
@@ -246,7 +233,7 @@ fun NeuCircleButton(
             .neuSurface(
                 size / 2,
                 color = if (accent) NeuAccent else NeuSurface,
-                elevation = press.elevation,
+                elevation = if (accent) 3.dp else 0.dp,
                 intensity = alpha,
             )
             .clickable(
@@ -261,7 +248,7 @@ fun NeuCircleButton(
     }
 }
 
-/** 主/次/危险 文字按钮：凸起胶囊，主按钮用强调渐变 */
+/** 主/次/危险 文字按钮：药丸（999 圆角），主按钮纯黑 */
 @Composable
 fun NeuButton(
     text: String,
@@ -271,7 +258,7 @@ fun NeuButton(
     enabled: Boolean = true,
 ) {
     val press = rememberNeuPressState()
-    val alpha by animateFloatAsState(if (enabled) 1f else 0.45f, NeuStateSpec)
+    val alpha by animateFloatAsState(if (enabled) 1f else 0.4f, NeuStateSpec)
     val contentColor = when (kind) {
         NeuButtonKind.Primary -> Color.White
         NeuButtonKind.Danger -> NeuDanger
@@ -282,17 +269,11 @@ fun NeuButton(
             .scale(press.scale)
             .fillMaxWidth()
             .height(52.dp)
-            .then(
-                if (kind == NeuButtonKind.Primary) {
-                    Modifier.drawAccentFill(press.elevation, alpha)
-                } else {
-                    Modifier.neuSurface(
-                        18.dp,
-                        color = NeuSurface,
-                        elevation = press.elevation,
-                        intensity = alpha,
-                    )
-                },
+            .neuSurface(
+                999.dp,
+                color = if (kind == NeuButtonKind.Primary) NeuAccent else NeuSurface,
+                elevation = if (kind == NeuButtonKind.Primary) 4.dp else 0.dp,
+                intensity = alpha,
             )
             .clickable(
                 interactionSource = press.interactionSource,
@@ -302,33 +283,19 @@ fun NeuButton(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = contentColor)
+        Text(
+            text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = (-0.14).sp,
+            color = contentColor,
+        )
     }
 }
 
 enum class NeuButtonKind { Primary, Secondary, Danger }
 
-/** 主按钮渐变填充 + 柔和投影（强调色专用的"发光下沉"质感） */
-private fun Modifier.drawAccentFill(elevation: Dp, alpha: Float): Modifier = this.then(
-    Modifier.drawBehind {
-        val e = elevation.toPx().coerceAtLeast(0.5f)
-        val blur = e * 3f
-        drawRoundRect(
-            brush = Brush.verticalGradient(
-                listOf(
-                    NeuAccent.copy(alpha = 0.55f * alpha),
-                    NeuAccentDeep.copy(alpha = 0.45f * alpha),
-                ),
-            ),
-            topLeft = Offset(e * 0.6f, e * 1.1f),
-            size = Size(size.width + blur * 0.4f, size.height + blur * 0.7f),
-            cornerRadius = CornerRadius(18.dp.toPx() + e),
-        )
-        drawRoundRect(AccentBrush, size = size, cornerRadius = CornerRadius(18.dp.toPx()))
-    }.clip(RoundedCornerShape(18.dp)),
-)
-
-/** 凹陷输入框：内嵌纸面 + 前景点缀光标，label 浮在上方 */
+/** 输入框：浅灰凹陷面 + 上方 mono 风 label，聚焦光标纯黑 */
 @Composable
 fun NeuTextField(
     value: String,
@@ -342,21 +309,28 @@ fun NeuTextField(
 ) {
     Column(modifier) {
         if (label != null) {
-            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Medium, color = TextSecondary)
+            Text(
+                label,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = TextSecondary,
+                letterSpacing = 0.6.sp,
+            )
             Spacer(Modifier.height(7.dp))
         }
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .neuSurface(16.dp, color = NeuBackground, elevation = 5.dp, inset = true),
-        ) {
+        Box(Modifier.fillMaxWidth().neuSurface(12.dp, inset = true)) {
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 14.dp),
-                textStyle = TextStyle(fontSize = 15.sp, lineHeight = 21.sp, color = TextPrimary),
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                textStyle = TextStyle(
+                    fontSize = 15.sp,
+                    lineHeight = 21.sp,
+                    color = TextPrimary,
+                    letterSpacing = (-0.14).sp,
+                ),
                 singleLine = singleLine,
                 maxLines = maxLines,
                 minLines = minLines,
@@ -374,7 +348,7 @@ fun NeuTextField(
     }
 }
 
-/** 筛选胶囊（任务日期等）：选中=凹陷强调底，未选=凸起 */
+/** 筛选胶囊：选中 = 纯黑药丸白字（弹簧色变），未选 = 白纸药丸 */
 @Composable
 fun NeuChip(
     text: String,
@@ -388,10 +362,8 @@ fun NeuChip(
             .scale(press.scale)
             .neuSurface(
                 999.dp,
-                color = if (selected) NeuBackground else NeuSurface,
-                elevation = if (selected) 4.dp else press.elevation,
-                inset = selected,
-                shape = RoundedCornerShape(999.dp),
+                color = if (selected) NeuAccent else NeuSurface,
+                elevation = if (selected) 3.dp else 0.dp,
             )
             .clickable(
                 interactionSource = press.interactionSource,
@@ -404,13 +376,14 @@ fun NeuChip(
         Text(
             text,
             fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (selected) NeuAccent else TextPrimary,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+            letterSpacing = (-0.1).sp,
+            color = if (selected) Color.White else TextPrimary,
         )
     }
 }
 
-/** 圆形勾选框：未选=凹陷圆点，已选=渐变强调填充 + 对勾弹出 */
+/** 圆形勾选框：未选 = 白底发丝线圈；已选 = 纯黑填充 + 对勾弹簧弹出 */
 @Composable
 fun NeuCheckCircle(
     checked: Boolean,
@@ -427,28 +400,15 @@ fun NeuCheckCircle(
             .then(
                 if (checked) {
                     Modifier.drawBehind {
-                        val e = press.elevation.toPx()
-                        drawRoundRect(
-                            brush = Brush.verticalGradient(
-                                listOf(
-                                    NeuAccent.copy(alpha = 0.5f),
-                                    NeuAccentDeep.copy(alpha = 0.4f),
-                                ),
-                            ),
-                            topLeft = Offset(e * 0.5f, e * 0.9f),
-                            size = Size(size.width + e, size.height + e * 1.4f),
-                            cornerRadius = CornerRadius(size.width / 2 + e),
-                        )
                         drawCircle(AccentBrush)
                     }.clip(CircleShape)
                 } else {
-                    Modifier.neuSurface(
-                        boxSize / 2,
-                        color = NeuBackground,
-                        elevation = press.elevation,
-                        inset = true,
-                        shape = CircleShape,
-                    )
+                    Modifier.drawBehind {
+                        drawCircle(
+                            color = NeuHairline,
+                            style = Stroke(width = 1.4.dp.toPx()),
+                        )
+                    }.clip(CircleShape)
                 },
             )
             .clickable(
@@ -468,7 +428,7 @@ fun NeuCheckCircle(
     }
 }
 
-/** 新拟态开关：凹陷轨道 + 凸起滑块，滑块位移用弹簧 */
+/** 开关：灰轨 + 白钮，选中纯黑轨（位移走 expo） */
 @Composable
 fun NeuSwitch(
     checked: Boolean,
@@ -481,11 +441,12 @@ fun NeuSwitch(
         animationSpec = tween(220, easing = EaseOutQuart),
         label = "knobOffset",
     )
+    val trackColor by animateColorAsStateFast(checked)
     Box(
         modifier
             .width(46.dp)
             .height(27.dp)
-            .neuSurface(999.dp, color = NeuBackground, elevation = 4.dp, inset = true)
+            .background(trackColor, CircleShape)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
@@ -495,17 +456,25 @@ fun NeuSwitch(
             Modifier
                 .offset(x = knobOffset, y = 3.dp)
                 .size(21.dp)
-                .neuSurface(
-                    999.dp,
-                    color = if (checked) NeuAccent else NeuSurface,
-                    elevation = 4.dp,
-                    shape = CircleShape,
-                ),
+                .background(Color.White, CircleShape)
+                .drawBehind {
+                    drawCircle(
+                        color = NeuHairline,
+                        style = Stroke(width = 1.dp.toPx()),
+                    )
+                },
         )
     }
 }
 
-/** 设置/风格面板里的选项行：图标凹陷圆 + 标题/副题 + 右箭头或选中钩 */
+@Composable
+private fun animateColorAsStateFast(checked: Boolean) = androidx.compose.animation.animateColorAsState(
+    targetValue = if (checked) NeuAccent else NeuTrack,
+    animationSpec = tween(220, easing = EaseOutQuart),
+    label = "switchTrack",
+)
+
+/** 面板选项行：图标灰圆 + 标题/副题 + 右箭头或选中钩；选中态 = 虚线选择框手柄 */
 @Composable
 fun NeuSheetRow(
     icon: ImageVector,
@@ -520,7 +489,8 @@ fun NeuSheetRow(
         modifier
             .scale(press.scale)
             .fillMaxWidth()
-            .neuSurface(18.dp, color = NeuSurface, elevation = press.elevation)
+            .figmaSelection(selected, 14.dp)
+            .neuSurface(14.dp, color = NeuSurface, elevation = if (selected) 2.dp else 0.dp)
             .clickable(
                 interactionSource = press.interactionSource,
                 indication = null,
@@ -532,7 +502,7 @@ fun NeuSheetRow(
         Box(
             Modifier
                 .size(38.dp)
-                .neuSurface(999.dp, color = NeuBackground, elevation = 4.dp, inset = true),
+                .neuSurface(999.dp, color = NeuTrack, inset = true),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -544,7 +514,13 @@ fun NeuSheetRow(
         }
         Spacer(Modifier.width(13.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+            Text(
+                title,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = (-0.14).sp,
+                color = TextPrimary,
+            )
             if (subtitle.isNotBlank()) {
                 Text(subtitle, fontSize = 12.sp, color = MutedText, maxLines = 1)
             }
@@ -562,9 +538,9 @@ fun NeuSheetRow(
     }
 }
 
-private val FaintLocal = Color(0xFFB9C0D0)
+private val FaintLocal = Color(0xFFBFBFBF)
 
-/** 弹层通用容器：新拟态底 + 顶部抓握手柄 + 统一标题 */
+/** 弹层通用容器：白底 + 顶部抓握手柄 + 统一标题 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NeuSheetScaffold(
@@ -575,17 +551,23 @@ fun NeuSheetScaffold(
     androidx.compose.material3.ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = NeuBackground,
-        shape = RoundedCornerShape(topStart = 30.dp, topEnd = 30.dp),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         dragHandle = {
             Column(Modifier.padding(top = 12.dp, bottom = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
                     Modifier
-                        .width(40.dp)
+                        .width(36.dp)
                         .height(4.5.dp)
-                        .neuSurface(999.dp, color = NeuBackground, elevation = 3.dp, inset = true),
+                        .background(Color(0xFFE0E0E0), RoundedCornerShape(999.dp)),
                 )
                 Spacer(Modifier.height(14.dp))
-                Text(title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                Text(
+                    title,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Medium,
+                    letterSpacing = (-0.2).sp,
+                    color = TextPrimary,
+                )
             }
         },
     ) {
@@ -595,20 +577,20 @@ fun NeuSheetScaffold(
     }
 }
 
-/** 分组小标题（凹陷字感：灰蓝小字 + 字距） */
+/** 分组小标题：mono 技术路标风格（字距拉开，全大写由文案层控制） */
 @Composable
 fun NeuSectionTitle(title: String, modifier: Modifier = Modifier, accent: Boolean = false) {
     Text(
         title,
         modifier = modifier.padding(horizontal = 4.dp),
-        fontSize = 12.sp,
-        fontWeight = FontWeight.SemiBold,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.Medium,
         color = if (accent) NeuDanger else MutedText,
-        letterSpacing = 0.8.sp,
+        letterSpacing = 1.1.sp,
     )
 }
 
-/** 列表行通用按压包装：只缩不放阴影（IM 行不需要凸起） */
+/** 列表行通用按压包装：只缩不放（IM 行不需要凸起） */
 @Composable
 fun Modifier.neuRowPress(onClick: () -> Unit): Modifier {
     val interactionSource = remember { MutableInteractionSource() }

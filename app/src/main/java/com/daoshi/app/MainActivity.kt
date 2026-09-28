@@ -7,13 +7,19 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.StringRes
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -26,18 +32,23 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -65,7 +76,6 @@ import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
 import com.daoshi.app.ui.theme.NeuSurface
 import com.daoshi.app.ui.theme.TextPrimary
-
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -129,10 +139,11 @@ private fun MentorAppRoot() {
             startDestination = "chatList",
             // consumeWindowInsets：让页面内 imePadding 扣除底栏已占的高度
             modifier = Modifier.padding(innerPadding).consumeWindowInsets(innerPadding),
-            // tab 间切换：方向感知的小幅滑入 + 淡入
+            // tab 间切换：方向感知滑入 + 淡入 + 微缩弹出（弹簧收敛）
             enterTransition = {
                 val forward = topLevelIndexOf(targetState.destination.route) >= topLevelIndexOf(initialState.destination.route)
                 slideInHorizontally(tween(340, easing = EaseOutExpo)) { if (forward) it / 4 else -it / 4 } +
+                    scaleIn(tween(340, easing = EaseOutExpo), initialScale = 0.985f) +
                     fadeIn(tween(280))
             },
             exitTransition = {
@@ -197,9 +208,8 @@ private fun MentorAppRoot() {
 }
 
 /**
- * 浮起胶囊底栏：整块从纸面凸起（圆角 26dp + 双向软阴影），
- * 选中项 = 图标沉进凹陷圆井并染强调色，井的弹出用弹簧缩放。
- * 刻意不用 Material NavigationBar（默认 80dp 高 + 胶囊指示器，与新拟态语言不符）。
+ * 浮起胶囊底栏：白纸 + 发丝线 + 纸叠影；选中项 = 黑色胶囊指示器滑入（弹簧过冲）+
+ * 图标/文字反白。刻意不用 Material NavigationBar（默认 80dp 高 + 胶囊指示器，与设计语言不符）。
  */
 @Composable
 private fun NeuBottomBar(currentRoute: String?, onSelect: (String) -> Unit) {
@@ -210,66 +220,77 @@ private fun NeuBottomBar(currentRoute: String?, onSelect: (String) -> Unit) {
                 .fillMaxWidth()
                 .then(if (wide) Modifier.widthIn(max = ContentMaxWidth) else Modifier)
                 .padding(horizontal = 14.dp)
-                .padding(top = 6.dp, bottom = 10.dp)
+                .padding(top = 4.dp, bottom = 8.dp)
                 .navigationBarsPadding(),
         ) {
+            val barInset = 8.dp
+            val tabIndex = topLevelRoutes.indexOfFirst { it.route == currentRoute }.coerceAtLeast(0)
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .neuSurface(26.dp, color = NeuSurface, elevation = 8.dp),
+                    .neuSurface(26.dp, color = NeuSurface, elevation = 5.dp),
             ) {
+                // 滑动指示器：黑色胶囊按 tab 序号平移，弹簧带轻微过冲
+                BoxWithConstraints(Modifier.matchParentSize()) {
+                    val track = maxWidth - barInset * 2
+                    val cell = track / topLevelRoutes.size
+                    val x by animateDpAsState(
+                        targetValue = barInset + cell * tabIndex,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                        label = "tabIndicator",
+                    )
+                    Box(
+                        Modifier
+                            .offset(x = x)
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                            .width(cell - 16.dp)
+                            .height(40.dp)
+                            .background(NeuAccent, RoundedCornerShape(999.dp)),
+                    )
+                }
                 Row(
-                    Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 8.dp),
+                    Modifier.fillMaxWidth().height(52.dp).padding(horizontal = barInset),
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     topLevelRoutes.forEach { route ->
                         val selected = currentRoute == route.route
-                        val iconScale by animateFloatAsState(
-                            if (selected) 1f else 0f,
-                            tween(240, easing = EaseOutExpo),
-                        )
                         Box(
                             Modifier
                                 .weight(1f)
-                                .clickable { if (!selected) onSelect(route.route) },
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { if (!selected) onSelect(route.route) },
                             contentAlignment = Alignment.Center,
                         ) {
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.Center,
                             ) {
-                                Box(
-                                    Modifier.size(38.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    // 选中井：凹陷圆，弹簧感弹出
-                                    if (iconScale > 0.01f) {
-                                        Box(
-                                            Modifier
-                                                .scale(iconScale)
-                                                .size(38.dp)
-                                                .neuSurface(
-                                                    999.dp,
-                                                    color = MaterialTheme.colorScheme.background,
-                                                    elevation = 4.dp,
-                                                    inset = true,
-                                                ),
-                                        )
-                                    }
-                                    Icon(
-                                        route.icon,
-                                        contentDescription = null,
-                                        tint = if (selected) NeuAccent else MutedText,
-                                        modifier = Modifier.size(21.dp),
-                                    )
-                                }
+                                val iconScale by animateFloatAsState(
+                                    if (selected) 1.08f else 1f,
+                                    spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMedium,
+                                    ),
+                                )
+                                Icon(
+                                    route.icon,
+                                    contentDescription = null,
+                                    tint = if (selected) Color.White else MutedText,
+                                    modifier = Modifier.size(20.dp).scale(iconScale),
+                                )
                                 Spacer(Modifier.height(1.dp))
                                 Text(
                                     stringResource(route.labelRes),
-                                    fontSize = 9.5.sp,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (selected) NeuAccent else MutedText,
+                                    fontSize = 9.sp,
+                                    lineHeight = 11.sp,
+                                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                                    color = if (selected) Color.White else MutedText,
                                 )
                             }
                         }
