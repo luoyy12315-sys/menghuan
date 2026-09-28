@@ -11,15 +11,17 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * AI 提炼流水线（AGENTS 路线图「conversation → 洞察 → 档案」）：
+ * AI 提炼流水线（AGENTS 路线图「conversation → 洞察 → 档案/任务」）：
  * - 增量：每个会话维护消息 id 水位线，只把新消息送给 LLM（攒够 [extractEvery] 条触发一次）
  * - 产出：ProfileFact（按 key 覆盖，manual 条目不被 AI 改 source）+ AiInsight（按标题去重，留最近 20 条）
+ *        + TaskSuggestion（进程内存分发到聊天页卡片，确认后才写 tasks；同 title 当日不重复建议）
  * - 运行在应用级作用域：聊天页退出不打断；失败静默（提炼是尽力而为的旁路，绝不影响聊天）
  * - 数据页提供手动「提炼」入口（extractAll 返回统计摘要，用于结果反馈）
  */
 class ExtractionEngine(
     private val db: AppDatabase,
     private val settingsRepository: SettingsRepository,
+    private val suggestionHub: TaskSuggestionHub,
     private val scope: CoroutineScope,
 ) {
 
@@ -29,9 +31,10 @@ class ExtractionEngine(
         val newFacts: Int = 0,
         val updatedFacts: Int = 0,
         val newInsights: Int = 0,
+        val newSuggestions: Int = 0,
         val skippedNoApi: Boolean = false,
     ) {
-        val hasChanges: Boolean get() = newFacts + updatedFacts + newInsights > 0
+        val hasChanges: Boolean get() = newFacts + updatedFacts + newInsights + newSuggestions > 0
     }
 
     /** 攒够多少条新消息触发一次自动提炼 */
@@ -73,9 +76,26 @@ class ExtractionEngine(
         val extracted = ProfileExtractor.parse(sb.toString())
         val (newFacts, updatedFacts) = mergeFacts(extracted.facts)
         val newInsights = saveInsights(extracted.insights)
+        val newSuggestions = saveSuggestions(personaId, extracted.taskSuggestions)
         // 水位线推进到最后一条已处理消息；即便模型这次没产出，也不重复送同一段
         settingsRepository.setExtractionWatermark(personaId, newMessages.last().id)
-        return ExtractSummary(newFacts = newFacts, updatedFacts = updatedFacts, newInsights = newInsights)
+        return ExtractSummary(
+            newFacts = newFacts,
+            updatedFacts = updatedFacts,
+            newInsights = newInsights,
+            newSuggestions = newSuggestions,
+        )
+    }
+
+    /** 任务建议：去重（同名任务/当日已建议）后经 hub 分发到聊天页卡片；返回新建议数 */
+    private suspend fun saveSuggestions(personaId: Long, suggestions: List<TaskSuggestion>): Int {
+        if (suggestions.isEmpty()) return 0
+        val existingTitles = runCatching { db.taskDao().observeAll().first().map { it.title } }
+            .getOrDefault(emptyList())
+            .toSet()
+        val fresh = suggestionHub.filterAndRecord(suggestions, existingTitles)
+        suggestionHub.publish(personaId, fresh)
+        return fresh.size
     }
 
     /** @return 新增数 to 更新数 */
@@ -116,6 +136,7 @@ class ExtractionEngine(
         newFacts = newFacts + other.newFacts,
         updatedFacts = updatedFacts + other.updatedFacts,
         newInsights = newInsights + other.newInsights,
+        newSuggestions = newSuggestions + other.newSuggestions,
         skippedNoApi = skippedNoApi && other.skippedNoApi,
     )
 

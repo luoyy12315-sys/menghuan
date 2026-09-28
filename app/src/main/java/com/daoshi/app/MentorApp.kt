@@ -6,6 +6,7 @@ import com.daoshi.app.data.ExtractionEngine
 import com.daoshi.app.data.PersonaRepository
 import com.daoshi.app.data.ProfileRepository
 import com.daoshi.app.data.SettingsRepository
+import com.daoshi.app.data.TaskSuggestionHub
 import com.daoshi.app.data.db.AppDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +26,9 @@ class MentorApp : Application() {
     /** 提炼等后台工作的作用域：不随页面退出而取消（监督者作业，单个失败不拖垮其他） */
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** AI 任务建议中心：提炼引擎产出 → 聊天页卡片确认后落库 */
+    val taskSuggestionHub = TaskSuggestionHub()
+
     lateinit var extractionEngine: ExtractionEngine
         private set
 
@@ -43,6 +47,6 @@ class MentorApp : Application() {
         personaRepository = PersonaRepository(db)
         profileRepository = ProfileRepository(db)
         settingsRepository = SettingsRepository(this)
-        extractionEngine = ExtractionEngine(db, settingsRepository, applicationScope)
+        extractionEngine = ExtractionEngine(db, settingsRepository, taskSuggestionHub, applicationScope)
     }
 }

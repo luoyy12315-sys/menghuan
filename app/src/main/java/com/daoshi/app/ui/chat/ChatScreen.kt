@@ -70,6 +70,7 @@ import com.daoshi.app.data.model.ToneStyle
 import com.daoshi.app.ui.common.LocalContentWidth
 import com.daoshi.app.ui.common.MarkdownText
 import com.daoshi.app.ui.common.NeuAvatar
+import com.daoshi.app.ui.common.NeuChip
 import com.daoshi.app.ui.common.NeuCircleButton
 import com.daoshi.app.ui.common.NeuSheetRow
 import com.daoshi.app.ui.common.NeuSheetScaffold
@@ -106,6 +107,7 @@ fun ChatScreen(
     val persona by vm.activePersona.collectAsState()
     val tone by vm.tone.collectAsState()
     val quickTasks by vm.quickCheckTasks.collectAsState()
+    val taskSuggestions by vm.taskSuggestions.collectAsState()
     var showToneSheet by remember { mutableStateOf(false) }
     var showQuickCheck by remember { mutableStateOf(false) }
     var messageMenu by remember { mutableStateOf<ChatMessage?>(null) }
@@ -237,6 +239,26 @@ fun ChatScreen(
                                     item.gapBefore,
                                     onLongPress = { messageMenu = item.message },
                                 )
+                            }
+                        }
+                    }
+
+                    // AI 任务建议卡片：提炼引擎产出，确认「添加任务」后消失（API 未配置时引擎不产出，自然不出现）
+                    if (taskSuggestions.isNotEmpty()) {
+                        item(key = "taskSuggestions") {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp)
+                                    .animateItem(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                taskSuggestions.forEach { suggestion ->
+                                    TaskSuggestionCard(
+                                        suggestion = suggestion,
+                                        onAdd = { vm.addSuggestedTask(suggestion) },
+                                    )
+                                }
                             }
                         }
                     }
@@ -388,6 +410,33 @@ private fun MessageMenuSheet(
             )
         }
         Spacer(Modifier.height(4.dp))
+    }
+}
+
+/** AI 任务建议卡：白面细线 + 标题/备注 +「添加任务」胶囊，点击写入任务后整卡消失 */
+@Composable
+private fun TaskSuggestionCard(suggestion: com.daoshi.app.data.TaskSuggestion, onAdd: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .neuSurface(18.dp, elevation = 2.dp)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                suggestion.title,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
+            )
+            if (suggestion.note.isNotBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Text(suggestion.note, fontSize = 12.sp, color = MutedText, maxLines = 2)
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        NeuChip(text = "添加任务", selected = false, onClick = onAdd)
     }
 }
 

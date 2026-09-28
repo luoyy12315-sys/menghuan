@@ -124,6 +124,7 @@ class DataViewModel(
                     if (summary.newInsights > 0) parts.add("新洞察 ${summary.newInsights} 条")
                     if (summary.newFacts > 0) parts.add("新档案 ${summary.newFacts} 项")
                     if (summary.updatedFacts > 0) parts.add("更新档案 ${summary.updatedFacts} 项")
+                    if (summary.newSuggestions > 0) parts.add("新任务建议 ${summary.newSuggestions} 条")
                     append(parts.joinToString(" · "))
                 }
             }

@@ -52,4 +52,48 @@ class ProfileExtractorParseTest {
         val result = ProfileExtractor.parse(raw)
         assertEquals(listOf("工作" to "带内容"), result.facts)
     }
+
+    @Test
+    fun `taskSuggestions 解析出标题备注与 daily 标记`() {
+        val raw = """
+            {"facts":[],"insights":[],"taskSuggestions":[
+              {"title":"23:00 前放下手机","note":"卧室不带手机","daily":true},
+              {"title":"周末复盘一周支出"}]}
+        """.trimIndent()
+        val result = ProfileExtractor.parse(raw)
+        assertEquals(2, result.taskSuggestions.size)
+        assertEquals("23:00 前放下手机", result.taskSuggestions[0].title)
+        assertEquals("卧室不带手机", result.taskSuggestions[0].note)
+        assertTrue(result.taskSuggestions[0].daily)
+        // daily 缺省 = false
+        assertEquals("周末复盘一周支出", result.taskSuggestions[1].title)
+        assertTrue(!result.taskSuggestions[1].daily)
+    }
+
+    @Test
+    fun `taskSuggestions 畸形条目跳过且最多保留两条`() {
+        val raw = """
+            {"facts":[],"insights":[],"taskSuggestions":[
+              {},{"note":"缺标题"},{"title":"有效任务"},{"这":1},
+              {"title":"甲"},{"title":"乙"},{"title":"丙"}]}
+        """.trimIndent()
+        val result = ProfileExtractor.parse(raw)
+        assertEquals(listOf("有效任务", "甲"), result.taskSuggestions.map { it.title })
+    }
+
+    @Test
+    fun `filterSuggestions 跳过同名任务与当日已建议并按标题去重`() {
+        val incoming = listOf(
+            com.daoshi.app.data.TaskSuggestion("已存在的任务"),
+            com.daoshi.app.data.TaskSuggestion("今天建议过了"),
+            com.daoshi.app.data.TaskSuggestion("新建议"),
+            com.daoshi.app.data.TaskSuggestion("新建议"),
+        )
+        val fresh = ProfileExtractor.filterSuggestions(
+            incoming,
+            existingTaskTitles = setOf("已存在的任务"),
+            suggestedToday = setOf("今天建议过了"),
+        )
+        assertEquals(listOf("新建议"), fresh.map { it.title })
+    }
 }

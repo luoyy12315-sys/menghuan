@@ -75,6 +75,14 @@ class ExtractionEngineTest {
         server.enqueue(MockResponse().setBody(payload))
     }
 
+    private fun enqueueExtractionWithSuggestion(title: String, daily: Boolean = true) {
+        val json = "{\"facts\":[],\"insights\":[]," +
+            "\"taskSuggestions\":[{\"title\":\"$title\",\"note\":\"由对话提炼\",\"daily\":$daily}]}"
+        val payload = "data: {\"choices\":[{\"delta\":{\"content\":" +
+            JSONObject.quote(json) + "}}]}\n\ndata: [DONE]\n\n"
+        server.enqueue(MockResponse().setBody(payload))
+    }
+
     @Test
     fun `force 提炼落库 facts 与 insights 并推进水位线`() = runBlocking {
         insertTurn()
@@ -119,5 +127,38 @@ class ExtractionEngineTest {
 
         val insights = app.db.aiInsightDao().observeLatest().first()
         assertEquals("同标题 insight 去重", 1, insights.count { it.title == "作息趋于规律" })
+    }
+
+    @Test
+    fun `提炼产出任务建议进 hub 且同标题当日不重复建议`() = runBlocking {
+        insertTurn()
+        enqueueExtractionWithSuggestion("睡前把手机放客厅")
+        app.extractionEngine.extractAll()
+
+        val suggestions = app.taskSuggestionHub.suggestions.value[1L].orEmpty()
+        assertEquals(listOf("睡前把手机放客厅"), suggestions.map { it.title })
+        assertTrue("daily=true 应透传", suggestions.first().daily)
+
+        // 第二轮：同 title 建议 → 当日已记录，不再重复出现
+        app.db.messageDao().insert(
+            ChatMessage(conversationId = 1, isFromUser = true, content = "我再想想手机放哪儿的事。")
+        )
+        enqueueExtractionWithSuggestion("睡前把手机放客厅")
+        app.extractionEngine.extractAll()
+
+        assertEquals("同 title 当日不重复建议", 1, app.taskSuggestionHub.suggestions.value[1L].orEmpty().size)
+    }
+
+    @Test
+    fun `同名任务已存在时建议被过滤`() = runBlocking {
+        // 用户已有同名任务：LLM 再建议同标题不应进 hub
+        app.db.taskDao().upsert(
+            com.daoshi.app.data.model.TaskItem(title = "睡前把手机放客厅")
+        )
+        insertTurn()
+        enqueueExtractionWithSuggestion("睡前把手机放客厅")
+        app.extractionEngine.extractAll()
+
+        assertTrue(app.taskSuggestionHub.suggestions.value[1L].orEmpty().isEmpty())
     }
 }

@@ -9,6 +9,8 @@ import com.daoshi.app.MentorApp
 import com.daoshi.app.data.ExtractionEngine
 import com.daoshi.app.data.PersonaRepository
 import com.daoshi.app.data.SettingsRepository
+import com.daoshi.app.data.TaskSuggestion
+import com.daoshi.app.data.TaskSuggestionHub
 import com.daoshi.app.data.db.AppDatabase
 import com.daoshi.app.data.model.ChatMessage
 import com.daoshi.app.data.model.Persona
@@ -50,6 +52,7 @@ class ChatViewModel(
     private val settingsRepository: SettingsRepository,
     private val db: AppDatabase,
     private val extractionEngine: ExtractionEngine,
+    private val taskSuggestionHub: TaskSuggestionHub,
     private val personaId: Long,
 ) : ViewModel() {
 
@@ -72,6 +75,25 @@ class ChatViewModel(
             tasks.filter { !it.isEffectivelyDone() }.sortedBy { if (it.dueAt == 0L) today else it.dueAt }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** AI 任务建议（提炼产出，进程内存）：AI 气泡下方卡片展示，确认后消失 */
+    val taskSuggestions: StateFlow<List<TaskSuggestion>> = taskSuggestionHub.forPersona(personaId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** AI 建议 → 写入任务（repeatDaily 取 daily，来源标记 ai），卡片随之消失 */
+    fun addSuggestedTask(suggestion: TaskSuggestion) = viewModelScope.launch {
+        runCatching {
+            db.taskDao().upsert(
+                TaskItem(
+                    title = suggestion.title,
+                    note = suggestion.note,
+                    repeatDaily = suggestion.daily,
+                    createdBy = "ai",
+                )
+            )
+            taskSuggestionHub.consume(personaId, suggestion)
+        }
+    }
 
     init {
         viewModelScope.launch {
@@ -314,6 +336,7 @@ class ChatViewModel(
                     app.settingsRepository,
                     app.db,
                     app.extractionEngine,
+                    app.taskSuggestionHub,
                     personaId,
                 )
             }

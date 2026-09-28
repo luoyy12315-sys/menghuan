@@ -257,4 +257,24 @@ class UiRenderTest {
         awaitText("自由职业") // 档案种子也已上屏（首个 DB 打开+种子的异步时序）
         snap("8-data-real")
     }
+
+    /** AI 任务建议卡：提炼引擎产出（测试直接注入 hub）→ AI 气泡下方白面细线卡 +「添加任务」 */
+    @Test
+    fun render8TaskSuggestions() {
+        val app = compose.activity.application as MentorApp
+        app.taskSuggestionHub.publish(
+            1L,
+            listOf(
+                com.daoshi.app.data.TaskSuggestion(
+                    title = "23:00 前把手机放客厅充电",
+                    note = "卧室不带手机，闹钟用实体钟",
+                    daily = true,
+                ),
+            ),
+        )
+        awaitText("阿布")
+        clickText("阿布")
+        awaitText("添加任务") // 建议卡上屏
+        snap("9-chat-suggestion")
+    }
 }

@@ -123,6 +123,7 @@ class ChatViewModelTest {
             settings,
             app.db,
             app.extractionEngine,
+            com.daoshi.app.data.TaskSuggestionHub(),
             personaId,
         )
     }
