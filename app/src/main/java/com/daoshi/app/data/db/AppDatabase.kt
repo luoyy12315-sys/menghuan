@@ -167,6 +167,10 @@ interface AiInsightDao {
     @Query("SELECT * FROM ai_insights WHERE title = :title LIMIT 1")
     suspend fun getByTitle(title: String): AiInsight?
 
+    /** 周报导出用：最近 20 条全量快照 */
+    @Query("SELECT * FROM ai_insights ORDER BY createdAt DESC LIMIT 20")
+    suspend fun latest(): List<AiInsight>
+
     @Insert
     suspend fun insert(insight: AiInsight): Long
 

@@ -271,6 +271,78 @@ class ChatListViewModel(
         }
     }
 
+    /** 导出 Markdown 周报：本周任务完成 + 档案更新 + 洞察，走系统分享 */
+    fun exportWeeklyReport(context: Context) = viewModelScope.launch {
+        runCatching {
+            val markdown = buildWeeklyReport()
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "导师 · 周报")
+                putExtra(Intent.EXTRA_TEXT, markdown)
+            }
+            context.startActivity(Intent.createChooser(send, "导出周报"))
+        }
+    }
+
+    private suspend fun buildWeeklyReport(): String {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val monday = today.with(DayOfWeek.MONDAY)
+        val mondayDay = monday.toEpochDay()
+        val todayDay = today.toEpochDay()
+        val weekStartMs = monday.atStartOfDay(zone).toInstant().toEpochMilli()
+
+        val tasks = db.taskDao().observeAll().first()
+        val completions = db.taskCompletionDao().observeAll().first()
+        val facts = db.profileFactDao().observeAll().first()
+        val insights = db.aiInsightDao().latest()
+
+        fun dueDayOf(dueAt: Long): Long =
+            if (dueAt == 0L) todayDay
+            else Instant.ofEpochMilli(dueAt).atZone(zone).toLocalDate().toEpochDay()
+
+        val basic = tasks.filter { !it.repeatDaily }
+        val weekBasic = basic.filter { dueDayOf(it.dueAt) in mondayDay..todayDay }
+        val weekCompletions = completions.filter { it.day in mondayDay..todayDay }
+        val titleById = tasks.associate { it.id to it.title }
+
+        return buildString {
+            append("# 导师 · 周报\n\n")
+            append("统计周期：${monday.monthValue}月${monday.dayOfMonth}日 – ${today.monthValue}月${today.dayOfMonth}日\n\n")
+
+            append("## 任务完成\n\n")
+            append("- 基础任务：完成 ${weekBasic.count { it.isDone }}/${weekBasic.size} 项\n")
+            append("- 每日任务打卡：${weekCompletions.size} 次\n")
+            weekCompletions
+                .groupBy { titleById[it.taskId] }
+                .filterKeys { it != null }
+                .map { (title, list) -> "    - $title（${list.size} 次）" }
+                .sorted()
+                .forEach { appendLine(it) }
+            append("\n")
+
+            val changedFacts = facts.filter { it.updatedAt >= weekStartMs }
+            if (changedFacts.isNotEmpty()) {
+                append("## 档案更新\n\n")
+                changedFacts.forEach { fact ->
+                    append("- ${fact.key}：${fact.value}${if (fact.source == "ai") "（AI）" else ""}\n")
+                }
+                append("\n")
+            }
+
+            if (insights.isNotEmpty()) {
+                append("## AI 洞察\n\n")
+                insights.forEach { insight ->
+                    val date = Instant.ofEpochMilli(insight.createdAt).atZone(zone).toLocalDate()
+                    append("- ${insight.title}：${insight.detail}（${date.monthValue}月${date.dayOfMonth}日）\n")
+                }
+                append("\n")
+            }
+
+            append("---\n\n由「导师」App 生成 · 数据仅存本机\n")
+        }
+    }
+
     private val _importMessage = MutableStateFlow<String?>(null)
     val importMessage: StateFlow<String?> = _importMessage.asStateFlow()
 
@@ -731,6 +803,7 @@ fun ChatListScreen(
             stats = dataStats,
             onClearChats = { vm.clearAllChats() },
             onExport = { vm.exportData(context) },
+            onExportWeekly = { vm.exportWeeklyReport(context) },
             onImport = { uri -> vm.importData(context, uri) },
             importMessage = importMessage,
             onDismiss = { showDataPrivacy = false },

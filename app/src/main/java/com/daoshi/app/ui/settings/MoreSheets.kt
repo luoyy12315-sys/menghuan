@@ -93,12 +93,13 @@ fun NotificationSettingsSheet(
     }
 }
 
-/** 设置 · 数据与隐私：本机数据统计 + 导出/清除聊天记录（二次确认） */
+/** 设置 · 数据与隐私：本机数据统计 + 导出/导入/清除聊天记录（二次确认） */
 @Composable
 fun DataPrivacySheet(
     stats: DataStats,
     onClearChats: () -> Unit,
     onExport: () -> Unit,
+    onExportWeekly: () -> Unit = {},
     onImport: (android.net.Uri) -> Unit,
     importMessage: String?,
     onDismiss: () -> Unit,
@@ -114,6 +115,12 @@ fun DataPrivacySheet(
         StatRow("人设", "${stats.personas} 个")
         StatRow("档案条目", "${stats.facts} 项")
         Spacer(Modifier.height(16.dp))
+        NeuButton(
+            text = "导出周报（Markdown）",
+            kind = NeuButtonKind.Secondary,
+            onClick = onExportWeekly,
+        )
+        Spacer(Modifier.height(10.dp))
         NeuButton(
             text = "导出全部数据（JSON）",
             kind = NeuButtonKind.Secondary,
