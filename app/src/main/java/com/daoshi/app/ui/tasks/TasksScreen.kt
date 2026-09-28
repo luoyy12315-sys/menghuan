@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -132,26 +133,34 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
         ) {
             if (overdue.isNotEmpty()) {
                 item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(top = 10.dp)) }
-                itemsIndexed(overdue, key = { _, t -> t.id }) { _, task ->
-                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                    }
                 }
             }
             if (todayTasks.isNotEmpty()) {
                 item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(top = 10.dp)) }
-                itemsIndexed(todayTasks, key = { _, t -> t.id }) { _, task ->
-                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                    }
                 }
             }
             if (tomorrowTasks.isNotEmpty()) {
                 item { NeuSectionTitle("明天", modifier = Modifier.padding(top = 10.dp)) }
-                itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { _, task ->
-                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                    }
                 }
             }
             if (laterTasks.isNotEmpty()) {
                 item { NeuSectionTitle("以后", modifier = Modifier.padding(top = 10.dp)) }
-                itemsIndexed(laterTasks, key = { _, t -> t.id }) { _, task ->
-                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                    }
                 }
             }
             item { Spacer(Modifier.height(18.dp)) }

@@ -428,7 +428,7 @@ class ChatListViewModel(
     }
 
     private fun previewOf(persona: Persona, last: ChatMessage?): String {
-        val content = last?.content?.replace('\n', ' ') ?: return persona.title
+        val content = last?.content?.replace('\n', ' ') ?: return "开始对话 →"
         return if (last.isFromUser) "你：$content" else content
     }
 

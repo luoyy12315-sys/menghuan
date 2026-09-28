@@ -704,7 +704,7 @@ function rebuildRow(p) {
     <div class="avatar" style="width:46px;height:46px;font-size:19px;">${p.emoji}</div>
     <div class="body">
       <div class="name">${p.name}</div>
-      <div class="preview">${p.pinned ? '📌 ' : ''}${p.preview || p.title}</div>
+      <div class="preview">${p.pinned ? '📌 ' : ''}${p.preview || '开始对话 →'}</div>
     </div>
     <div class="meta"><span class="time">${p.time || ''}</span>${p.id === 1 ? '<span class="dot"></span>' : '<span style="width:9px;height:9px;"></span>'}</div>`;
   row.onclick = () => openChat(p);

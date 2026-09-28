@@ -309,7 +309,8 @@ fun ChatScreen(
                     onClick = { vm.send() },
                     accent = true,
                     size = 38.dp,
-                    enabled = !uiState.isStreaming,
+                    // 空输入时禁用并弱化（阴影收缩），给出"没东西可发"的直觉
+                    enabled = !uiState.isStreaming && uiState.input.isNotBlank(),
                 ) {
                     Icon(MIcons.Plane, contentDescription = "发送", tint = Color.White, modifier = Modifier.size(16.dp))
                 }

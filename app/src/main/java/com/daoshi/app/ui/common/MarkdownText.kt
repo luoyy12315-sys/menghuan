@@ -100,7 +100,20 @@ private fun ColumnScope.LineText(raw: String, color: Color) {
             color = color,
         )
         LineKind.Bullet -> Text(
-            "•  " + inline(content),
+            // 悬挂缩进：折行与圆点后的首字对齐，而不是顶到圆点下方
+            buildAnnotatedString {
+                pushStyle(
+                    androidx.compose.ui.text.ParagraphStyle(
+                        textIndent = androidx.compose.ui.text.style.TextIndent(
+                            firstLine = 0.sp,
+                            restLine = 13.sp,
+                        ),
+                    )
+                )
+                append("•  ")
+                append(inline(content))
+                pop()
+            },
             fontSize = 15.sp,
             lineHeight = 21.sp,
             color = color,
