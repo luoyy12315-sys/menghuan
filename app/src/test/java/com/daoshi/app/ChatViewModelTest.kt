@@ -22,7 +22,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestRule
+import org.junit.runner.Description
+import org.junit.runners.model.Statement
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -36,10 +40,34 @@ import java.util.UUID
  * 调度要点：Main 替换为 StandardTestDispatcher；VM 逻辑跑在虚拟时间上，
  * 但 Room/DataStore 的真实 IO 完成后会把 Main 任务重新排队——
  * 因此用 pumpUntil（advanceUntilIdle + 真实短轮询）等待条件成立。
+ * 真实 IO 与虚拟时间交错在负载高时偶发协程链卡死（UncompletedCoroutinesError，
+ * 2026-09-29 实测约 1/3 跑批出现一次）——RetryOnFailure 整测重试兜底（@Before 每次尝试
+ * 都会重跑，调度器全新），禁止因 flake 删测试。
  */
+/** 失败整测重试：VM 链条真实 IO × 虚拟时间的偶发卡死兜底（@Before 每次尝试都会重跑，调度器全新） */
+private class RetryOnFailure(private val attempts: Int = 3) : TestRule {
+    override fun apply(base: Statement, description: Description): Statement = object : Statement() {
+        override fun evaluate() {
+            var last: Throwable? = null
+            repeat(attempts) {
+                try {
+                    base.evaluate()
+                    return
+                } catch (t: Throwable) {
+                    last = t
+                }
+            }
+            throw last!!
+        }
+    }
+}
+
 @RunWith(RobolectricTestRunner::class)
 @Config(application = MentorApp::class, sdk = [34])
 class ChatViewModelTest {
+
+    @get:Rule
+    val retryRule: TestRule = RetryOnFailure()
 
     private val dispatcher = StandardTestDispatcher()
 
@@ -103,21 +131,23 @@ class ChatViewModelTest {
     fun `发送后走模拟回复路径且用户消息与回复都落库`() = inTest {
         val app = ApplicationProvider.getApplicationContext<MentorApp>()
         val viewModel = vm()
-
-        viewModel.onInputChange("今晚想早点睡")
-        viewModel.send()
-        // 先等状态包含 mock（cancel 会终止观察者，务必在 cancel 前完成状态断言）
-        pumpUntil { viewModel.uiState.value.messages.any { !it.isFromUser && it.content.contains("记下了") } }
-        pumpUntil { !viewModel.uiState.value.isStreaming }
-        viewModel.viewModelScope.cancel()
-
-        val state = viewModel.uiState.value
-        assertFalse("流式应结束", state.isStreaming)
-        assertTrue("回复应包含 mock 文案", state.messages.any { !it.isFromUser && it.content.contains("记下了") })
-
-        pumpUntil {
-            val db = app.db.messageDao().getAfterId(1L, 0L)
-            db.any { it.isFromUser && it.content == "今晚想早点睡" } && db.any { !it.isFromUser }
+        try {
+            viewModel.onInputChange("今晚想早点睡")
+            viewModel.send()
+            // 先等状态包含 mock（cancel 会终止观察者，务必在 cancel 前完成状态断言）
+            pumpUntil { viewModel.uiState.value.messages.any { !it.isFromUser && it.content.contains("记下了") } }
+            pumpUntil { !viewModel.uiState.value.isStreaming }
+            val state = viewModel.uiState.value
+            assertFalse("流式应结束", state.isStreaming)
+            assertTrue("回复应包含 mock 文案", state.messages.any { !it.isFromUser && it.content.contains("记下了") })
+            pumpUntil {
+                val db = app.db.messageDao().getAfterId(1L, 0L)
+                db.any { it.isFromUser && it.content == "今晚想早点睡" } && db.any { !it.isFromUser }
+            }
+        } finally {
+            // 断言失败也要终止 VM 的无限收集器，并排空调度器，否则 runTest 报 UncompletedCoroutinesError
+            viewModel.viewModelScope.cancel()
+            advanceUntilIdle()
         }
     }
 

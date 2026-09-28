@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.daoshi.app.data.model.TaskItem
+import com.daoshi.app.data.model.isEffectivelyDone
 import com.daoshi.app.ui.common.NeuButton
 import com.daoshi.app.ui.common.NeuButtonKind
 import com.daoshi.app.ui.common.NeuCard
@@ -84,8 +85,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 /**
- * 任务清单页（新拟态）：Room 真数据 + 分组（已逾期/今天/明天/以后）+ 勾选打卡。
- * 新建任务走右上角 ＋ → 底部弹层；长按任务行删除；设提醒时申请通知权限。
+ * 任务清单页：Room 真数据 + 双板块（每日任务 / 基础任务）+ 勾选打卡。
+ * 新建任务走右上角 ＋ → 底部弹层（可开「每日重复」）；长按任务行进编辑弹层；设提醒时申请通知权限。
  */
 private fun dueDateOf(task: TaskItem): LocalDate =
     if (task.dueAt == 0L) LocalDate.now()
@@ -104,10 +105,14 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
 
     val today = LocalDate.now()
     val tomorrow = today.plusDays(1)
-    val overdue = tasks.filter { dueDateOf(it) < today }
-    val todayTasks = tasks.filter { dueDateOf(it) == today }
-    val tomorrowTasks = tasks.filter { dueDateOf(it) == tomorrow }
-    val laterTasks = tasks.filter { dueDateOf(it) > tomorrow }
+    // 每日任务板块：无日期概念，当天未完成的排前面
+    val dailyTasks = tasks.filter { it.repeatDaily }.sortedBy { it.isEffectivelyDone() }
+    // 基础任务板块：一次性，按日期分组（现有逻辑）
+    val basicTasks = tasks.filter { !it.repeatDaily }
+    val overdue = basicTasks.filter { dueDateOf(it) < today }
+    val todayTasks = basicTasks.filter { dueDateOf(it) == today }
+    val tomorrowTasks = basicTasks.filter { dueDateOf(it) == tomorrow }
+    val laterTasks = basicTasks.filter { dueDateOf(it) > tomorrow }
 
     Column(
         Modifier
@@ -137,8 +142,21 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // 板块一：每日任务（无日期，每天重置；当天完成的排后面）
+            if (dailyTasks.isNotEmpty()) {
+                item { NeuSectionTitle("每日任务", modifier = Modifier.padding(top = 10.dp)) }
+                itemsIndexed(dailyTasks, key = { _, t -> t.id }) { index, task ->
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                    }
+                }
+            }
+            // 板块二：基础任务（一次性，按日期分组）
+            if (basicTasks.isNotEmpty()) {
+                item { NeuSectionTitle("基础任务", modifier = Modifier.padding(top = 10.dp)) }
+            }
             if (overdue.isNotEmpty()) {
-                item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(top = 10.dp)) }
+                item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
@@ -146,7 +164,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 }
             }
             if (todayTasks.isNotEmpty()) {
-                item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(top = 10.dp)) }
+                item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
@@ -154,7 +172,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 }
             }
             if (tomorrowTasks.isNotEmpty()) {
-                item { NeuSectionTitle("明天", modifier = Modifier.padding(top = 10.dp)) }
+                item { NeuSectionTitle("明天", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
@@ -162,7 +180,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 }
             }
             if (laterTasks.isNotEmpty()) {
-                item { NeuSectionTitle("以后", modifier = Modifier.padding(top = 10.dp)) }
+                item { NeuSectionTitle("以后", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
@@ -178,7 +196,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             task = editingTask,
             onSaved = { item ->
                 if (editingTask == null) {
-                    vm.addTask(item.title, item.note, item.dueAt, item.remindAt)
+                    vm.addTask(item.title, item.note, item.dueAt, item.remindAt, item.repeatDaily)
                 } else {
                     vm.updateTask(item)
                 }
@@ -261,6 +279,7 @@ private fun TaskSheet(
     val zone = ZoneId.systemDefault()
     var title by remember { mutableStateOf(task?.title ?: "") }
     var note by remember { mutableStateOf(task?.note ?: "") }
+    var repeatDaily by remember { mutableStateOf(task?.repeatDaily ?: false) }
     var dueDate by remember { mutableStateOf(task?.let { dueDateOf(it) } ?: LocalDate.now()) }
     var remindTime by remember {
         mutableStateOf(task?.remindAt?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalTime() })
@@ -269,11 +288,13 @@ private fun TaskSheet(
     var showTimePicker by remember { mutableStateOf(false) }
 
     fun commit() {
+        // 每日任务：提醒只取时刻，排下一次出现（今天已过则明天）；基础任务：绑定期限日
         val remindAt = remindTime?.let { time ->
-            var at = LocalDateTime.of(dueDate, time)
+            val anchor = if (repeatDaily) LocalDate.now() else dueDate
+            var at = LocalDateTime.of(anchor, time)
                 .atZone(zone).toInstant().toEpochMilli()
             if (at <= System.currentTimeMillis()) {
-                at = LocalDateTime.of(dueDate.plusDays(1), time)
+                at = LocalDateTime.of(anchor.plusDays(1), time)
                     .atZone(zone).toInstant().toEpochMilli()
             }
             at
@@ -283,10 +304,12 @@ private fun TaskSheet(
                 id = task?.id ?: 0,
                 title = title.trim(),
                 note = note.trim(),
-                dueAt = startOfDayMs(dueDate),
+                dueAt = if (repeatDaily) 0L else startOfDayMs(dueDate),
                 remindAt = remindAt,
                 isDone = task?.isDone ?: false,
                 createdBy = task?.createdBy ?: "user",
+                repeatDaily = repeatDaily,
+                completionDate = task?.completionDate ?: 0L,
                 createdAt = task?.createdAt ?: System.currentTimeMillis(),
             )
         )
@@ -315,18 +338,29 @@ private fun TaskSheet(
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(16.dp))
-        com.daoshi.app.ui.common.NeuMuted(text = "日期")
-        Spacer(Modifier.height(9.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            NeuChip("今天", selected = dueDate == LocalDate.now()) { dueDate = LocalDate.now() }
-            NeuChip("明天", selected = dueDate == LocalDate.now().plusDays(1)) {
-                dueDate = LocalDate.now().plusDays(1)
+        // 每日重复：开启后任务进入「每日任务」板块（无日期，每天重置）
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("每日重复", fontSize = 14.sp, color = TextPrimary, modifier = Modifier.weight(1f))
+            com.daoshi.app.ui.common.NeuSwitch(checked = repeatDaily, onToggle = { repeatDaily = it })
+        }
+        if (!repeatDaily) {
+            Spacer(Modifier.height(16.dp))
+            com.daoshi.app.ui.common.NeuMuted(text = "日期")
+            Spacer(Modifier.height(9.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                NeuChip("今天", selected = dueDate == LocalDate.now()) { dueDate = LocalDate.now() }
+                NeuChip("明天", selected = dueDate == LocalDate.now().plusDays(1)) {
+                    dueDate = LocalDate.now().plusDays(1)
+                }
+                NeuChip(
+                    text = if (dueDate == LocalDate.now() || dueDate == LocalDate.now().plusDays(1))
+                        "选日期…" else "${dueDate.monthValue}月${dueDate.dayOfMonth}日",
+                    selected = dueDate != LocalDate.now() && dueDate != LocalDate.now().plusDays(1),
+                ) { showDatePicker = true }
             }
-            NeuChip(
-                text = if (dueDate == LocalDate.now() || dueDate == LocalDate.now().plusDays(1))
-                    "选日期…" else "${dueDate.monthValue}月${dueDate.dayOfMonth}日",
-                selected = dueDate != LocalDate.now() && dueDate != LocalDate.now().plusDays(1),
-            ) { showDatePicker = true }
         }
         Spacer(Modifier.height(16.dp))
         Row(
@@ -477,8 +511,10 @@ private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Uni
         haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
         onToggle()
     }
+    val done = task.isEffectivelyDone()
     val tag = when {
-        task.isDone -> "已完成"
+        task.repeatDaily -> if (done) "已完成" else "每日"
+        done -> "已完成"
         dueDateOf(task) < LocalDate.now() -> "未打卡"
         task.createdBy == "ai" -> "导师安排"
         else -> "自建"
@@ -493,14 +529,14 @@ private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Uni
             Modifier.combinedClickable(onClick = toggleWithHaptic, onLongClick = onLongPress),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            NeuCheckCircle(checked = task.isDone, onToggle = toggleWithHaptic)
+            NeuCheckCircle(checked = done, onToggle = toggleWithHaptic)
             Spacer(Modifier.width(13.dp))
             Column(Modifier.weight(1f)) {
                 Text(
                     task.title,
                     fontSize = 15.sp,
-                    color = if (task.isDone) FaintText else TextPrimary,
-                    textDecoration = if (task.isDone) TextDecoration.LineThrough else TextDecoration.None,
+                    color = if (done) FaintText else TextPrimary,
+                    textDecoration = if (done) TextDecoration.LineThrough else TextDecoration.None,
                 )
                 task.note.takeIf { it.isNotBlank() }?.let {
                     Text(it, fontSize = 12.sp, color = MutedText, maxLines = 1)

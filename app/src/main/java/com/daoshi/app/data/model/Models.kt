@@ -62,12 +62,27 @@ data class TaskItem(
     val title: String,
     val note: String = "",
     @ColumnInfo(defaultValue = "0")
-    val dueAt: Long = 0,            // 归属日期（当天 0 点毫秒值），0 = 视为今天
-    val remindAt: Long? = null,     // 到点弹通知督促
+    val dueAt: Long = 0,            // 归属日期（当天 0 点毫秒值），0 = 视为今天；每日任务不使用
+    val remindAt: Long? = null,     // 到点弹通知督促；每日任务 = 每日重复提醒的时刻锚点（只取时刻）
     val isDone: Boolean = false,
     @ColumnInfo(defaultValue = "user")
-    val createdBy: String = "user", // user = 用户自建 / ai = 导师安排（二期）
+    val createdBy: String = "user", // user = 用户自建 / ai = 导师安排（AI 建议落库也标记 ai）
+    @ColumnInfo(defaultValue = "0")
+    val repeatDaily: Boolean = false, // 每日任务：无日期概念，每天重置未完成，提醒走每日重复闹钟
+    @ColumnInfo(defaultValue = "0")
+    val completionDate: Long = 0,   // 完成归属日（epochDay）：每日任务跨天即视为未完成
     val createdAt: Long = System.currentTimeMillis(),
+)
+
+/** 当天有效完成状态：每日任务跨天自动回到未完成（展示层判定，不等 BootReceiver 归一化） */
+fun TaskItem.isEffectivelyDone(todayEpochDay: Long = java.time.LocalDate.now().toEpochDay()): Boolean =
+    if (repeatDaily) isDone && completionDate == todayEpochDay else isDone
+
+/** 打卡完成记录：每次勾选完成写一行（近 7 天热力 / 打卡小圆点 / AI 提炼任务上下文的数据源） */
+@Entity(tableName = "task_completions", primaryKeys = ["taskId", "day"])
+data class TaskCompletion(
+    val taskId: Long,
+    val day: Long, // epochDay
 )
 
 /** 用户档案：手动填写 + AI 从对话中提炼，注入人设上下文 */

@@ -14,8 +14,8 @@ android {
         applicationId = "com.daoshi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 27
-        versionName = "0.11.3"
+        versionCode = 28
+        versionName = "0.12.0"
         // 只保留中英文资源，去掉依赖库里几十种语言的 strings/日期符号
         resourceConfigurations.addAll(listOf("zh", "zh-rCN", "en"))
     }

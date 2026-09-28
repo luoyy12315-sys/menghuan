@@ -26,6 +26,20 @@ object AlarmScheduler {
         }
     }
 
+    /**
+     * 每日重复提醒：remindAt 只取其中的时刻，排下一次出现（今天的已过则排明天）。
+     * 到点后由 TaskReminderReceiver 再次调用本方法实现逐日滚动。
+     */
+    fun scheduleDaily(context: Context, taskId: Long, title: String, remindAt: Long) {
+        val zone = java.time.ZoneId.systemDefault()
+        val time = java.time.Instant.ofEpochMilli(remindAt).atZone(zone).toLocalTime()
+        var next = java.time.LocalDate.now(zone).atTime(time)
+        if (next.atZone(zone).toInstant().toEpochMilli() <= System.currentTimeMillis()) {
+            next = next.plusDays(1)
+        }
+        schedule(context, taskId, title, next.atZone(zone).toInstant().toEpochMilli())
+    }
+
     fun cancel(context: Context, taskId: Long, title: String) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         am.cancel(pendingIntent(context, taskId, title))

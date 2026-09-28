@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -61,38 +62,35 @@ class DataViewModel(
             val weekEnd = monday.plusDays(7).atStartOfDay(zone).toInstant().toEpochMilli()
             val lastWeekStart = monday.minusDays(7).atStartOfDay(zone).toInstant().toEpochMilli()
             val todayStart = today.atStartOfDay(zone).toInstant().toEpochMilli()
+            // 周目标完成度只统计基础任务（一次性、带日期）；每日任务进打卡热力
+            val basic = tasks.filter { !it.repeatDaily }
             // dueAt = 0 视为今天
             fun dueOf(task: com.daoshi.app.data.model.TaskItem): Long =
                 if (task.dueAt == 0L) todayStart else task.dueAt
-            val inWeek = tasks.filter { val due = dueOf(it); due >= weekStart && due < weekEnd }
-            val lastWeek = tasks.filter { val due = dueOf(it); due >= lastWeekStart && due < weekStart }
+            val inWeek = basic.filter { val due = dueOf(it); due >= weekStart && due < weekEnd }
+            val lastWeek = basic.filter { val due = dueOf(it); due >= lastWeekStart && due < weekStart }
             val lastFraction = if (lastWeek.isEmpty()) null
             else lastWeek.count { it.isDone }.toFloat() / lastWeek.size
             WeekProgress(inWeek.count { it.isDone }, inWeek.size, lastFraction)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeekProgress(0, 0))
 
-    /** 近 7 天（含今天）每日完成任务数，旧→新 */
-    val weekDaily: StateFlow<List<DayCount>> = db.taskDao().observeAll()
-        .map { tasks ->
-            val zone = ZoneId.systemDefault()
-            val today = LocalDate.now(zone)
-            (6 downTo 0).map { offset ->
-                val day = today.minusDays(offset.toLong())
-                val dayStart = day.atStartOfDay(zone).toInstant().toEpochMilli()
-                val dayEnd = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-                val done = tasks.count { task ->
-                    val due = if (task.dueAt == 0L) {
-                        LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
-                    } else {
-                        task.dueAt
-                    }
-                    task.isDone && due >= dayStart && due < dayEnd
-                }
-                DayCount(day, done)
-            }
+    /**
+     * 近 7 天（含今天）每日完成任务数，旧→新。
+     * 只统计每日任务（repeatDaily）的打卡记录（task_completions），基础任务不计入热力。
+     */
+    val weekDaily: StateFlow<List<DayCount>> = combine(
+        db.taskCompletionDao().observeAll(),
+        db.taskDao().observeAll(),
+    ) { completions, tasks ->
+        val dailyIds = tasks.filter { it.repeatDaily }.map { it.id }.toSet()
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        (6 downTo 0).map { offset ->
+            val day = today.minusDays(offset.toLong())
+            DayCount(day, completions.count { it.day == day.toEpochDay() && it.taskId in dailyIds })
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** AI 洞察真数据源（提炼引擎产出），最新两条 */
     val insights: StateFlow<List<AiInsight>> = db.aiInsightDao().observeLatest()

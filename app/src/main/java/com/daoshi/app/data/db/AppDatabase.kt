@@ -13,6 +13,7 @@ import com.daoshi.app.data.model.AiInsight
 import com.daoshi.app.data.model.ChatMessage
 import com.daoshi.app.data.model.Persona
 import com.daoshi.app.data.model.ProfileFact
+import com.daoshi.app.data.model.TaskCompletion
 import com.daoshi.app.data.model.TaskItem
 import kotlinx.coroutines.flow.Flow
 
@@ -112,6 +113,21 @@ interface TaskDao {
 }
 
 @Dao
+interface TaskCompletionDao {
+    @Query("SELECT * FROM task_completions ORDER BY day ASC")
+    fun observeAll(): Flow<List<TaskCompletion>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(completion: TaskCompletion)
+
+    @Query("DELETE FROM task_completions WHERE taskId = :taskId AND day = :day")
+    suspend fun delete(taskId: Long, day: Long)
+
+    @Query("DELETE FROM task_completions WHERE taskId = :taskId")
+    suspend fun deleteAllForTask(taskId: Long)
+}
+
+@Dao
 interface ProfileFactDao {
     // 按录入顺序稳定排列：档案卡是固定条目视图，按 updatedAt 排会在每次编辑后整体跳动
     @Query("SELECT * FROM profile_facts ORDER BY id ASC")
@@ -155,8 +171,15 @@ interface AiInsightDao {
 }
 
 @Database(
-    entities = [Persona::class, ChatMessage::class, TaskItem::class, ProfileFact::class, AiInsight::class],
-    version = 6,
+    entities = [
+        Persona::class,
+        ChatMessage::class,
+        TaskItem::class,
+        TaskCompletion::class,
+        ProfileFact::class,
+        AiInsight::class,
+    ],
+    version = 7,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -164,6 +187,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun personaDao(): PersonaDao
     abstract fun messageDao(): MessageDao
     abstract fun taskDao(): TaskDao
+    abstract fun taskCompletionDao(): TaskCompletionDao
     abstract fun profileFactDao(): ProfileFactDao
     abstract fun aiInsightDao(): AiInsightDao
 
@@ -217,6 +241,20 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE personas ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v7：每日任务（repeatDaily + completionDate）+ 打卡完成记录表（近 7 天热力/小圆点数据源） */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tasks ADD COLUMN repeatDaily INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE tasks ADD COLUMN completionDate INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `task_completions` (" +
+                        "`taskId` INTEGER NOT NULL, " +
+                        "`day` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`taskId`, `day`))"
+                )
             }
         }
     }

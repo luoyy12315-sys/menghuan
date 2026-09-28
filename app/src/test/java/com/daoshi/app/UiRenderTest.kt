@@ -144,6 +144,18 @@ class UiRenderTest {
             app.db.taskDao().upsert(
                 com.daoshi.app.data.model.TaskItem(title = "08:00 起床 + 晨跑 20 分钟", dueAt = today + 86_400_000, createdBy = "ai")
             )
+            // 每日任务板块：一条未完成 + 一条今天已完成（划线 +「已完成」标签）
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(title = "背 20 个单词", repeatDaily = true, createdBy = "ai")
+            )
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(
+                    title = "阅读 30 分钟",
+                    repeatDaily = true,
+                    isDone = true,
+                    completionDate = java.time.LocalDate.now(zone).toEpochDay(),
+                )
+            )
             // 置顶严格教练（id=2）：列表行排到首位，时间前带 📌 标识
             app.db.personaDao().setPinned(2L, true)
         }
@@ -209,16 +221,30 @@ class UiRenderTest {
                     createdAt = System.currentTimeMillis() - 86_400_000,
                 )
             )
-            // 近 7 天里 5 天有打卡（各 1 项完成），另有 1 项今天未完成
+            // 近 7 天打卡热力：每日任务 + 5 天完成记录（热力只统计每日任务的 task_completions）
+            val dailyId = app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(
+                    title = "每日阅读 30 分钟",
+                    repeatDaily = true,
+                    isDone = true,
+                    completionDate = today.toEpochDay(),
+                )
+            )
             listOf(0L, 1L, 3L, 4L, 6L).forEach { offset ->
-                app.db.taskDao().upsert(
-                    com.daoshi.app.data.model.TaskItem(
-                        title = "打卡 D$offset",
-                        dueAt = dayStart(offset),
-                        isDone = true,
+                app.db.taskCompletionDao().insert(
+                    com.daoshi.app.data.model.TaskCompletion(
+                        taskId = dailyId,
+                        day = today.minusDays(offset).toEpochDay(),
                     )
                 )
             }
+            // 周目标完成度只统计基础任务：本周 3 项完成 2 项（66%）
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(title = "整理作品集主页", dueAt = dayStart(0), isDone = true)
+            )
+            app.db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(title = "回复合作邮件", dueAt = dayStart(0), isDone = true)
+            )
             app.db.taskDao().upsert(
                 com.daoshi.app.data.model.TaskItem(title = "今日未完成的任务", dueAt = dayStart(0))
             )

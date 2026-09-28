@@ -14,6 +14,7 @@ import com.daoshi.app.data.model.ChatMessage
 import com.daoshi.app.data.model.Persona
 import com.daoshi.app.data.model.TaskItem
 import com.daoshi.app.data.model.ToneStyle
+import com.daoshi.app.data.model.isEffectivelyDone
 import com.daoshi.app.llm.ApiException
 import com.daoshi.app.llm.OpenAiClient
 import kotlinx.coroutines.CancellationException
@@ -64,11 +65,11 @@ class ChatViewModel(
     )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
-    /** 快捷打卡候选：未完成任务，逾期/今天在前 */
+    /** 快捷打卡候选：当天未完成任务（每日任务按 completionDate 判定），逾期/今天在前 */
     val quickCheckTasks: StateFlow<List<TaskItem>> = db.taskDao().observeAll()
         .map { tasks ->
             val today = startOfToday()
-            tasks.filter { !it.isDone }.sortedBy { if (it.dueAt == 0L) today else it.dueAt }
+            tasks.filter { !it.isEffectivelyDone() }.sortedBy { if (it.dueAt == 0L) today else it.dueAt }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 

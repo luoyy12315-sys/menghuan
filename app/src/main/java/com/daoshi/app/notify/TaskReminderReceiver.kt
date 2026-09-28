@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.daoshi.app.MainActivity
 import com.daoshi.app.MentorApp
+import com.daoshi.app.data.model.isEffectivelyDone
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -33,6 +34,16 @@ class TaskReminderReceiver : BroadcastReceiver() {
                 val enabled = runCatching { app.settingsRepository.notificationsEnabled.first() }
                     .getOrDefault(true)
                 if (!enabled) return@launch // 设置里关掉了提醒：闹钟仍到点，但不打扰
+
+                // 每日任务：无论本次是否提示，先排明天的闹钟（逐日滚动）；当天已完成则不再打扰
+                val task = runCatching { app.db.taskDao().observeAll().first().firstOrNull { it.id == taskId } }
+                    .getOrNull()
+                if (task?.repeatDaily == true) {
+                    task.remindAt?.let {
+                        AlarmScheduler.scheduleDaily(context, taskId, task.title, it)
+                    }
+                    if (task.isEffectivelyDone()) return@launch
+                }
 
                 val manager = NotificationManagerCompat.from(context)
                 if (Build.VERSION.SDK_INT >= 33 &&
@@ -114,9 +125,25 @@ class BootReceiver : BroadcastReceiver() {
             try {
                 val app = context.applicationContext as MentorApp
                 val now = System.currentTimeMillis()
-                app.db.taskDao().observeAll().first()
-                    .filter { !it.isDone && (it.remindAt ?: 0L) > now }
-                    .forEach { AlarmScheduler.schedule(context, it.id, it.title, it.remindAt!!) }
+                val tasks = app.db.taskDao().observeAll().first()
+                // 每日任务跨天重置：完成记录不是今天的一律回到未完成
+                val todayEpochDay = java.time.LocalDate.now().toEpochDay()
+                tasks
+                    .filter { it.repeatDaily && it.isDone && it.completionDate != todayEpochDay }
+                    .forEach { task ->
+                        runCatching {
+                            app.db.taskDao().update(task.copy(isDone = false, completionDate = 0))
+                        }
+                    }
+                // 重排闹钟：每日任务按每日重复滚动；基础任务只排未来提醒
+                tasks.forEach { task ->
+                    when {
+                        task.repeatDaily && task.remindAt != null ->
+                            AlarmScheduler.scheduleDaily(context, task.id, task.title, task.remindAt!!)
+                        !task.isDone && (task.remindAt ?: 0L) > now ->
+                            AlarmScheduler.schedule(context, task.id, task.title, task.remindAt!!)
+                    }
+                }
             } finally {
                 pending.finish()
             }

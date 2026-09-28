@@ -323,6 +323,7 @@ class ChatListViewModel(
                             dueAt = o.optLong("dueAt", 0L),
                             remindAt = if (remindAt > 0) remindAt else null,
                             isDone = o.optBoolean("isDone", false),
+                            repeatDaily = o.optBoolean("repeatDaily", false),
                             createdBy = o.optString("createdBy", "user"),
                         )
                     )
@@ -408,6 +409,7 @@ class ChatListViewModel(
                             .put("dueAt", it.dueAt)
                             .put("remindAt", it.remindAt ?: JSONObject.NULL)
                             .put("isDone", it.isDone)
+                            .put("repeatDaily", it.repeatDaily)
                             .put("createdBy", it.createdBy)
                     )
                 }
