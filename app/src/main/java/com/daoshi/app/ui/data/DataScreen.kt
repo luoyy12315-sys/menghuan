@@ -87,9 +87,18 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
     val weekDaily by vm.weekDaily.collectAsState()
     val insights by vm.insights.collectAsState()
     val extracting by vm.extracting.collectAsState()
+    val extractMessage by vm.extractMessage.collectAsState()
     val apiReady by vm.apiReady.collectAsState()
     var showEditSheet by remember { mutableStateOf(false) }
     val scrollState = rememberScrollState()
+
+    // 提炼结果反馈：展示数秒后自动清除
+    LaunchedEffect(extractMessage) {
+        if (extractMessage != null) {
+            kotlinx.coroutines.delay(4000)
+            vm.clearExtractMessage()
+        }
+    }
 
     Column(
         Modifier
@@ -166,6 +175,14 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                     // 功能可发现性：告诉用户洞察从哪来（设置入口在会话列表页，按约定不在此跳转）
                     Text("配置 API 后可自动提炼", fontSize = 10.sp, color = com.daoshi.app.ui.theme.FaintText)
                 }
+            }
+            extractMessage?.let { message ->
+                Text(
+                    message,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                    fontSize = 11.sp,
+                    color = NeuAccent,
+                )
             }
             if (insights.isEmpty()) {
                 InsightCard(

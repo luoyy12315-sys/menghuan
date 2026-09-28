@@ -12,16 +12,27 @@ import kotlinx.coroutines.launch
 
 /**
  * AI 提炼流水线（AGENTS 路线图「conversation → 洞察 → 档案」）：
- * - 增量：每个会话维护消息 id 水位线，只把新消息送给 LLM（攒够 [EXTRACT_EVERY] 条触发一次）
+ * - 增量：每个会话维护消息 id 水位线，只把新消息送给 LLM（攒够 [extractEvery] 条触发一次）
  * - 产出：ProfileFact（按 key 覆盖，manual 条目不被 AI 改 source）+ AiInsight（按标题去重，留最近 20 条）
  * - 运行在应用级作用域：聊天页退出不打断；失败静默（提炼是尽力而为的旁路，绝不影响聊天）
- * - 数据页提供手动「提炼」入口（extractAll，跳过水位线阈值但仍只送增量）
+ * - 数据页提供手动「提炼」入口（extractAll 返回统计摘要，用于结果反馈）
  */
 class ExtractionEngine(
     private val db: AppDatabase,
     private val settingsRepository: SettingsRepository,
     private val scope: CoroutineScope,
 ) {
+
+    /** 提炼统计摘要（手动提炼的结果反馈用） */
+    data class ExtractSummary(
+        val personasScanned: Int = 0,
+        val newFacts: Int = 0,
+        val updatedFacts: Int = 0,
+        val newInsights: Int = 0,
+        val skippedNoApi: Boolean = false,
+    ) {
+        val hasChanges: Boolean get() = newFacts + updatedFacts + newInsights > 0
+    }
 
     /** 攒够多少条新消息触发一次自动提炼 */
     private val extractEvery = 8
@@ -31,23 +42,25 @@ class ExtractionEngine(
         scope.launch { runCatching { runExtract(personaId, force = false) } }
     }
 
-    /** 数据页手动触发：所有会话立即提炼一次（仍只送增量消息）；挂起直到完成 */
-    suspend fun extractAll() {
+    /** 数据页手动触发：所有会话立即提炼一次（仍只送增量消息）；挂起直到完成并返回摘要 */
+    suspend fun extractAll(): ExtractSummary {
         val personaIds = db.personaDao().observeAll().first().map { it.id }
+        var summary = ExtractSummary(personasScanned = personaIds.size)
         personaIds.forEach { personaId ->
             runCatching { runExtract(personaId, force = true) }
+                .onSuccess { summary += it }
                 .onFailure { Log.w(TAG, "extraction failed for persona=$personaId", it) }
         }
+        return summary
     }
 
-    private suspend fun runExtract(personaId: Long, force: Boolean) {
+    private suspend fun runExtract(personaId: Long, force: Boolean): ExtractSummary {
         val config = settingsRepository.apiConfig.first()
-        if (!config.isComplete) return // 未配置 API：提炼不可用，静默跳过
+        if (!config.isComplete) return ExtractSummary(skippedNoApi = true) // 未配置 API：静默跳过
 
         val watermark = settingsRepository.extractionWatermark(personaId)
         val newMessages = db.messageDao().getAfterId(personaId, watermark)
-        if (newMessages.isEmpty()) return
-        if (!force && newMessages.size < extractEvery) return
+        if (newMessages.isEmpty()) return ExtractSummary()
 
         val transcript = newMessages.joinToString("\n\n") { message ->
             (if (message.isFromUser) "用户：" else "导师：") + message.content
@@ -58,17 +71,17 @@ class ExtractionEngine(
             .collect { token -> sb.append(token) }
 
         val extracted = ProfileExtractor.parse(sb.toString())
-        mergeFacts(extracted.facts)
-        saveInsights(extracted.insights)
+        val (newFacts, updatedFacts) = mergeFacts(extracted.facts)
+        val newInsights = saveInsights(extracted.insights)
         // 水位线推进到最后一条已处理消息；即便模型这次没产出，也不重复送同一段
         settingsRepository.setExtractionWatermark(personaId, newMessages.last().id)
+        return ExtractSummary(newFacts = newFacts, updatedFacts = updatedFacts, newInsights = newInsights)
     }
 
-    private companion object {
-        const val TAG = "ExtractionEngine"
-    }
-
-    private suspend fun mergeFacts(facts: List<Pair<String, String>>) {
+    /** @return 新增数 to 更新数 */
+    private suspend fun mergeFacts(facts: List<Pair<String, String>>): Pair<Int, Int> {
+        var newCount = 0
+        var updatedCount = 0
         facts.forEach { (key, value) ->
             val existing = db.profileFactDao().getByKey(key)
             db.profileFactDao().upsert(
@@ -81,15 +94,32 @@ class ExtractionEngine(
                     updatedAt = System.currentTimeMillis(),
                 )
             )
+            if (existing == null) newCount++ else updatedCount++
         }
+        return newCount to updatedCount
     }
 
-    private suspend fun saveInsights(insights: List<Pair<String, String>>) {
+    private suspend fun saveInsights(insights: List<Pair<String, String>>): Int {
+        var inserted = 0
         insights.forEach { (title, detail) ->
             if (db.aiInsightDao().getByTitle(title) == null) {
                 db.aiInsightDao().insert(AiInsight(title = title, detail = detail))
+                inserted++
             }
         }
         db.aiInsightDao().prune()
+        return inserted
+    }
+
+    private operator fun ExtractSummary.plus(other: ExtractSummary) = ExtractSummary(
+        personasScanned = personasScanned,
+        newFacts = newFacts + other.newFacts,
+        updatedFacts = updatedFacts + other.updatedFacts,
+        newInsights = newInsights + other.newInsights,
+        skippedNoApi = skippedNoApi && other.skippedNoApi,
+    )
+
+    private companion object {
+        const val TAG = "ExtractionEngine"
     }
 }

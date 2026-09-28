@@ -2,6 +2,7 @@ package com.daoshi.app.ui.settings
 
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -95,9 +96,14 @@ fun DataPrivacySheet(
     stats: DataStats,
     onClearChats: () -> Unit,
     onExport: () -> Unit,
+    onImport: (android.net.Uri) -> Unit,
+    importMessage: String?,
     onDismiss: () -> Unit,
 ) {
     var confirmClear by remember { mutableStateOf(false) }
+    val filePicker = rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri -> uri?.let(onImport) }
     NeuSheetScaffold(title = "数据与隐私", onDismiss = onDismiss) {
         Spacer(Modifier.height(14.dp))
         StatRow("聊天消息", "${stats.messages} 条")
@@ -112,6 +118,21 @@ fun DataPrivacySheet(
         )
         Spacer(Modifier.height(10.dp))
         NeuButton(
+            text = "导入数据（JSON 合并）",
+            kind = NeuButtonKind.Secondary,
+            onClick = { filePicker.launch("*/*") },
+        )
+        importMessage?.let { message ->
+            Spacer(Modifier.height(8.dp))
+            Text(
+                message,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                color = if (message.startsWith("导入失败")) NeuDanger else MutedText,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        NeuButton(
             text = "清除全部聊天记录",
             kind = NeuButtonKind.Danger,
             onClick = { confirmClear = true },
@@ -119,7 +140,7 @@ fun DataPrivacySheet(
         Spacer(Modifier.height(12.dp))
         Text(
             "全部数据仅存于本机应用私有目录，不上传云端；导出走系统分享，选哪里存由你决定。" +
-                "API 密钥经系统 Keystore 加密存储，不包含在导出中。",
+                "合并导入只新增、同名跳过，绝不删除现有数据。API 密钥经系统 Keystore 加密存储，不包含在导出中。",
             fontSize = 12.sp,
             lineHeight = 19.sp,
             color = MutedText,

@@ -101,13 +101,34 @@ class DataViewModel(
     private val _extracting = MutableStateFlow(false)
     val extracting: StateFlow<Boolean> = _extracting.asStateFlow()
 
-    /** 手动「提炼」：所有会话立即补跑一次（仍只送增量）；期间按钮转"提炼中…" */
+    /** 手动提炼的结果反馈（展示数秒后自动清除） */
+    private val _extractMessage = MutableStateFlow<String?>(null)
+    val extractMessage: StateFlow<String?> = _extractMessage.asStateFlow()
+
+    fun clearExtractMessage() {
+        _extractMessage.value = null
+    }
+
+    /** 手动「提炼」：所有会话立即补跑一次（仍只送增量）；期间按钮转"提炼中…"，完成后给统计反馈 */
     fun refreshInsights() {
         if (_extracting.value) return
         viewModelScope.launch {
             _extracting.value = true
-            runCatching { extractionEngine.extractAll() }
+            val summary = runCatching { extractionEngine.extractAll() }.getOrNull()
             _extracting.value = false
+            _extractMessage.value = when {
+                summary == null -> "提炼失败，稍后再试"
+                summary.skippedNoApi && !summary.hasChanges -> "未配置 API，提炼不可用"
+                !summary.hasChanges -> "提炼完成：暂无新的洞察与档案更新"
+                else -> buildString {
+                    append("提炼完成：")
+                    val parts = mutableListOf<String>()
+                    if (summary.newInsights > 0) parts.add("新洞察 ${summary.newInsights} 条")
+                    if (summary.newFacts > 0) parts.add("新档案 ${summary.newFacts} 项")
+                    if (summary.updatedFacts > 0) parts.add("更新档案 ${summary.updatedFacts} 项")
+                    append(parts.joinToString(" · "))
+                }
+            }
         }
     }
 

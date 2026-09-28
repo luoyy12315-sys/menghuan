@@ -64,8 +64,13 @@ import com.daoshi.app.MentorApp
 import com.daoshi.app.data.PersonaRepository
 import com.daoshi.app.data.SettingsRepository
 import com.daoshi.app.data.db.AppDatabase
+import android.net.Uri
+import com.daoshi.app.data.model.AiInsight
 import com.daoshi.app.data.model.ChatMessage
+import com.daoshi.app.data.model.TaskItem
+import com.daoshi.app.data.model.ToneStyle
 import com.daoshi.app.data.model.Persona
+import com.daoshi.app.data.model.ProfileFact
 import com.daoshi.app.ui.common.EaseOutQuart
 import com.daoshi.app.ui.common.NeuAvatar
 import com.daoshi.app.ui.common.NeuCircleButton
@@ -232,6 +237,113 @@ class ChatListViewModel(
         }
     }
 
+    private val _importMessage = MutableStateFlow<String?>(null)
+    val importMessage: StateFlow<String?> = _importMessage.asStateFlow()
+
+    /**
+     * 合并导入（非破坏性）：人设/档案/洞察同名跳过，消息与任务追加，绝不删除现有数据。
+     * 消息按人设名映射到现有/新建会话，未知人设的消息跳过。
+     */
+    fun importData(context: Context, uri: Uri) = viewModelScope.launch {
+        runCatching {
+            val text = context.contentResolver.openInputStream(uri)
+                ?.bufferedReader()?.use { it.readText() }
+                ?: throw IllegalStateException("无法读取文件")
+            val root = JSONObject(text)
+            var personaCount = 0
+            var msgCount = 0
+            var taskCount = 0
+            var factCount = 0
+            var insightCount = 0
+            val nameToId = personaRepository.observePersonas().first()
+                .associate { it.name to it.id }.toMutableMap()
+
+            root.optJSONArray("personas")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val name = o.optString("name").trim()
+                    if (name.isEmpty() || nameToId.containsKey(name)) continue
+                    val id = personaRepository.save(
+                        Persona(
+                            name = name,
+                            title = o.optString("title").ifBlank { name },
+                            avatarEmoji = o.optString("avatarEmoji").ifBlank { "🙂" },
+                            systemPrompt = o.optString("systemPrompt"),
+                            tone = o.optString("tone").ifBlank { ToneStyle.GENTLE.name },
+                        )
+                    )
+                    nameToId[name] = id
+                    personaCount++
+                }
+            }
+
+            root.optJSONArray("messages")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val conversationId = nameToId[o.optString("persona")] ?: continue
+                    val content = o.optString("content")
+                    if (content.isBlank()) continue
+                    db.messageDao().insert(
+                        ChatMessage(
+                            conversationId = conversationId,
+                            isFromUser = o.optString("from") == "user",
+                            content = content,
+                            timestamp = o.optLong("timestamp", System.currentTimeMillis()),
+                        )
+                    )
+                    msgCount++
+                }
+            }
+
+            root.optJSONArray("tasks")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val title = o.optString("title").trim()
+                    if (title.isEmpty()) continue
+                    val remindAt = o.optLong("remindAt", 0L)
+                    db.taskDao().upsert(
+                        TaskItem(
+                            title = title,
+                            note = o.optString("note"),
+                            dueAt = o.optLong("dueAt", 0L),
+                            remindAt = if (remindAt > 0) remindAt else null,
+                            isDone = o.optBoolean("isDone", false),
+                            createdBy = o.optString("createdBy", "user"),
+                        )
+                    )
+                    taskCount++
+                }
+            }
+
+            root.optJSONArray("profileFacts")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val key = o.optString("key").trim()
+                    val value = o.optString("value")
+                    if (key.isEmpty() || value.isEmpty() || db.profileFactDao().getByKey(key) != null) continue
+                    db.profileFactDao().upsert(ProfileFact(key = key, value = value))
+                    factCount++
+                }
+            }
+
+            root.optJSONArray("aiInsights")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val title = o.optString("title").trim()
+                    val detail = o.optString("detail")
+                    if (title.isEmpty() || detail.isEmpty() || db.aiInsightDao().getByTitle(title) != null) continue
+                    db.aiInsightDao().insert(AiInsight(title = title, detail = detail))
+                    insightCount++
+                }
+            }
+
+            _importMessage.value =
+                "导入完成：人设 $personaCount · 消息 $msgCount · 任务 $taskCount · 档案 $factCount · 洞察 $insightCount"
+        }.onFailure {
+            _importMessage.value = "导入失败：${it.message ?: "文件格式无效"}"
+        }
+    }
+
     private suspend fun buildExportJson(): String {
         val personas = personaRepository.observePersonas().first()
         val messages = db.messageDao().getAll()
@@ -365,6 +477,7 @@ fun ChatListScreen(
     val searchResults by vm.searchResults.collectAsState()
     val notificationsEnabled by vm.notificationsEnabled.collectAsState()
     val dataStats by vm.dataStats.collectAsState()
+    val importMessage by vm.importMessage.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
     var showApiConfig by remember { mutableStateOf(false) }
     var showNewPersona by remember { mutableStateOf(false) }
@@ -500,6 +613,8 @@ fun ChatListScreen(
             stats = dataStats,
             onClearChats = { vm.clearAllChats() },
             onExport = { vm.exportData(context) },
+            onImport = { uri -> vm.importData(context, uri) },
+            importMessage = importMessage,
             onDismiss = { showDataPrivacy = false },
         )
     }
