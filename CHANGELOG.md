@@ -45,3 +45,7 @@
 ## v0.6.3（versionCode 15）
 - 修复：Lint 清理——NeuMuted 签名规范（modifier 前置）、NeuSwitch 用 lambda 重载动画、新增 dataExtractionRules（Android 12+ 备份排除，与 allowBackup=false 配套）；0 errors
 - 文档：AGENTS 目录树同步新文件
+
+## v0.7.0（versionCode 16）
+- 新增：任务编辑——长按任务行打开编辑弹层（预填标题/备注/日期/提醒），保存即更新并重排提醒闹钟；删除入口移入编辑弹层（保留二次确认）
+- 新建/编辑共用 TaskSheet，按钮文案随模式切换（添加/保存）

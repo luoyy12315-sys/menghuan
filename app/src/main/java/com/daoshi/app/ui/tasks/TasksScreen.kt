@@ -58,6 +58,7 @@ import com.daoshi.app.ui.common.NeuCircleButton
 import com.daoshi.app.ui.common.NeuSectionTitle
 import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.common.NeuTextField
+import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.NeuTopBar
 import com.daoshi.app.ui.common.neuSurface
 import com.daoshi.app.ui.theme.FaintText
@@ -90,7 +91,8 @@ private fun startOfDayMs(date: LocalDate): Long =
 @Composable
 fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)) {
     val tasks by vm.tasks.collectAsState()
-    var showNewTask by remember { mutableStateOf(false) }
+    var showTaskSheet by remember { mutableStateOf(false) }
+    var editingTask by remember { mutableStateOf<TaskItem?>(null) }
     var deleteTarget by remember { mutableStateOf<TaskItem?>(null) }
 
     val today = LocalDate.now()
@@ -108,7 +110,10 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
         NeuTopBar(
             title = "任务",
             actions = {
-                NeuCircleButton(onClick = { showNewTask = true }, size = 38.dp) {
+                NeuCircleButton(
+                    onClick = { editingTask = null; showTaskSheet = true },
+                    size = 38.dp,
+                ) {
                     Icon(MIcons.Plus, contentDescription = "新建任务", tint = TextPrimary, modifier = Modifier.size(19.dp))
                 }
             },
@@ -128,38 +133,49 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (overdue.isNotEmpty()) {
                 item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(top = 10.dp)) }
                 itemsIndexed(overdue, key = { _, t -> t.id }) { _, task ->
-                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { deleteTarget = task })
+                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                 }
             }
             if (todayTasks.isNotEmpty()) {
                 item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(top = 10.dp)) }
                 itemsIndexed(todayTasks, key = { _, t -> t.id }) { _, task ->
-                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { deleteTarget = task })
+                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                 }
             }
             if (tomorrowTasks.isNotEmpty()) {
                 item { NeuSectionTitle("明天", modifier = Modifier.padding(top = 10.dp)) }
                 itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { _, task ->
-                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { deleteTarget = task })
+                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                 }
             }
             if (laterTasks.isNotEmpty()) {
                 item { NeuSectionTitle("以后", modifier = Modifier.padding(top = 10.dp)) }
                 itemsIndexed(laterTasks, key = { _, t -> t.id }) { _, task ->
-                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { deleteTarget = task })
+                    TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                 }
             }
             item { Spacer(Modifier.height(18.dp)) }
         }
     }
 
-    if (showNewTask) {
-        NewTaskSheet(
-            onAdd = { title, note, dueAt, remindAt ->
-                vm.addTask(title, note, dueAt, remindAt)
-                showNewTask = false
+    if (showTaskSheet) {
+        TaskSheet(
+            task = editingTask,
+            onSaved = { item ->
+                if (editingTask == null) {
+                    vm.addTask(item.title, item.note, item.dueAt, item.remindAt)
+                } else {
+                    vm.updateTask(item)
+                }
+                showTaskSheet = false
             },
-            onDismiss = { showNewTask = false },
+            onDelete = editingTask?.let { task ->
+                {
+                    showTaskSheet = false
+                    deleteTarget = task
+                }
+            },
+            onDismiss = { showTaskSheet = false },
         )
     }
 
@@ -206,32 +222,51 @@ private fun EmptyTasksHint() {
     }
 }
 
-/** 新建任务弹层：内容 / 备注 / 日期（今天·明天·自选）/ 提醒时间（可选） */
+/**
+ * 新建/编辑共用弹层：内容 / 备注 / 日期（今天·明天·自选）/ 提醒时间（可选）。
+ * 编辑模式（task != null）额外提供「删除任务」入口（外部走确认对话框）。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NewTaskSheet(
-    onAdd: (title: String, note: String, dueAt: Long, remindAt: Long?) -> Unit,
+private fun TaskSheet(
+    task: TaskItem?,
+    onSaved: (TaskItem) -> Unit,
+    onDelete: (() -> Unit)?,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    var title by remember { mutableStateOf("") }
-    var note by remember { mutableStateOf("") }
-    var dueDate by remember { mutableStateOf(LocalDate.now()) }
-    var remindTime by remember { mutableStateOf<LocalTime?>(null) }
+    val zone = ZoneId.systemDefault()
+    var title by remember { mutableStateOf(task?.title ?: "") }
+    var note by remember { mutableStateOf(task?.note ?: "") }
+    var dueDate by remember { mutableStateOf(task?.let { dueDateOf(it) } ?: LocalDate.now()) }
+    var remindTime by remember {
+        mutableStateOf(task?.remindAt?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalTime() })
+    }
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
 
     fun commit() {
         val remindAt = remindTime?.let { time ->
             var at = LocalDateTime.of(dueDate, time)
-                .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                .atZone(zone).toInstant().toEpochMilli()
             if (at <= System.currentTimeMillis()) {
                 at = LocalDateTime.of(dueDate.plusDays(1), time)
-                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                    .atZone(zone).toInstant().toEpochMilli()
             }
             at
         }
-        onAdd(title.trim(), note.trim(), startOfDayMs(dueDate), remindAt)
+        onSaved(
+            TaskItem(
+                id = task?.id ?: 0,
+                title = title.trim(),
+                note = note.trim(),
+                dueAt = startOfDayMs(dueDate),
+                remindAt = remindAt,
+                isDone = task?.isDone ?: false,
+                createdBy = task?.createdBy ?: "user",
+                createdAt = task?.createdAt ?: System.currentTimeMillis(),
+            )
+        )
     }
 
     // Android 13+ 需要运行时通知权限：授权回调里再真正保存
@@ -239,7 +274,7 @@ private fun NewTaskSheet(
         ActivityResultContracts.RequestPermission(),
     ) { commit() }
 
-    NeuSheetScaffold(title = "新建任务", onDismiss = onDismiss) {
+    NeuSheetScaffold(title = if (task == null) "新建任务" else "编辑任务", onDismiss = onDismiss) {
         Spacer(Modifier.height(16.dp))
         NeuTextField(
             value = title,
@@ -305,7 +340,7 @@ private fun NewTaskSheet(
             )
             Spacer(Modifier.width(10.dp))
             NeuButton(
-                text = "添加",
+                text = if (task == null) "添加" else "保存",
                 onClick = {
                     if (title.isBlank()) return@NeuButton
                     val needsPermission = remindTime != null && Build.VERSION.SDK_INT >= 33 &&
@@ -323,6 +358,10 @@ private fun NewTaskSheet(
                 enabled = title.isNotBlank(),
                 modifier = Modifier.weight(1f),
             )
+        }
+        if (onDelete != null) {
+            Spacer(Modifier.height(12.dp))
+            NeuTextButton("删除任务", onClick = onDelete, color = NeuDanger)
         }
         Spacer(Modifier.height(6.dp))
     }

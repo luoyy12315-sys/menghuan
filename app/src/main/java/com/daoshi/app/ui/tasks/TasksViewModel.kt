@@ -39,6 +39,19 @@ class TasksViewModel(
             }
         }
 
+    /** 编辑任务：标题/备注/日期/提醒均可改，提醒在未来则重排闹钟 */
+    fun updateTask(task: TaskItem) = viewModelScope.launch {
+        runCatching {
+            db.taskDao().update(task)
+            val remindAt = task.remindAt
+            if (!task.isDone && remindAt != null && remindAt > System.currentTimeMillis()) {
+                AlarmScheduler.schedule(appContext, task.id, task.title, remindAt)
+            } else {
+                AlarmScheduler.cancel(appContext, task.id, task.title)
+            }
+        }
+    }
+
     fun toggle(task: TaskItem) = viewModelScope.launch {
         val updated = task.copy(isDone = !task.isDone)
         val saved = runCatching { db.taskDao().update(updated) }

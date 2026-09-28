@@ -734,7 +734,7 @@ taskGroups.forEach(g => {
       ck.className = 'check ' + (item.done ? 'on' : 'off');
       ck.textContent = item.done ? '✓' : '';
     };
-    el.oncontextmenu = e => { e.preventDefault(); toast('长按删除（真机）'); };
+    el.oncontextmenu = e => { e.preventDefault(); toast('长按编辑任务 / 弹层内删除'); };
     taskList.appendChild(el);
   });
 });
