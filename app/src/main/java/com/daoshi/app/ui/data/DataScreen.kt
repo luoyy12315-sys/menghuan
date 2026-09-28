@@ -162,6 +162,9 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                         if (extracting) "提炼中…" else "提炼",
                         onClick = { vm.refreshInsights() },
                     )
+                } else if (insights.isEmpty()) {
+                    // 功能可发现性：告诉用户洞察从哪来（设置入口在会话列表页，按约定不在此跳转）
+                    Text("配置 API 后可自动提炼", fontSize = 10.sp, color = com.daoshi.app.ui.theme.FaintText)
                 }
             }
             if (insights.isEmpty()) {

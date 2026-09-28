@@ -622,8 +622,19 @@ private fun SearchOverlay(
             query.isBlank() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("搜索人设名字或聊天内容", fontSize = 13.sp, color = FaintText)
             }
-            results.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            results.isEmpty() -> Column(
+                Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
                 Text("没有匹配结果", fontSize = 13.sp, color = FaintText)
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "清除搜索",
+                    fontSize = 13.sp,
+                    color = NeuAccent,
+                    modifier = Modifier.clickable { onQueryChange("") },
+                )
             }
             else -> LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(results, key = { _, r -> r.persona.id }) { _, result ->
