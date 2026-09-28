@@ -128,6 +128,11 @@ class SettingsRepository(
         store.edit { it[longPreferencesKey(readPrefix + personaId)] = System.currentTimeMillis() }
     }
 
+    /** 人设删除的级联清理：移除未读标记 */
+    suspend fun removeReadMark(personaId: Long) {
+        store.edit { it.remove(longPreferencesKey(readPrefix + personaId)) }
+    }
+
     /** 任务到点通知总开关（设置 · 通知与提醒） */
     val notificationsEnabled: Flow<Boolean> = store.data.map { it[keyNotifyEnabled] ?: true }
 
@@ -141,6 +146,11 @@ class SettingsRepository(
 
     suspend fun setExtractionWatermark(personaId: Long, messageId: Long) {
         store.edit { it[longPreferencesKey(watermarkPrefix + personaId)] = messageId }
+    }
+
+    /** 人设删除的级联清理：移除提炼水位线 */
+    suspend fun removeExtractionWatermark(personaId: Long) {
+        store.edit { it.remove(longPreferencesKey(watermarkPrefix + personaId)) }
     }
 
     private fun decrypt(sealed: String): String {

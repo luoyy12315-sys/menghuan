@@ -277,4 +277,15 @@ class UiRenderTest {
         awaitText("添加任务") // 建议卡上屏
         snap("9-chat-suggestion")
     }
+
+    /** 人设物理删除后的空状态：全部删光 → 虚线选中框「＋ 新建人设」 */
+    @Test
+    fun render9EmptyAfterPersonaDelete() {
+        val app = compose.activity.application as MentorApp
+        kotlinx.coroutines.runBlocking {
+            app.db.personaDao().observeAll().first().forEach { app.personaRepository.delete(it.id) }
+        }
+        awaitText("新建人设") // 虚线框空状态上屏（种子不再回填：seedOnce 已消耗）
+        snap("10-chatlist-empty")
+    }
 }

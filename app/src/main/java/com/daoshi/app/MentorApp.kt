@@ -22,7 +22,6 @@ class MentorApp : Application() {
         private set
     lateinit var settingsRepository: SettingsRepository
         private set
-
     /** 提炼等后台工作的作用域：不随页面退出而取消（监督者作业，单个失败不拖垮其他） */
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -44,9 +43,9 @@ class MentorApp : Application() {
                 AppDatabase.MIGRATION_6_7,
             )
             .build()
-        personaRepository = PersonaRepository(db)
-        profileRepository = ProfileRepository(db)
         settingsRepository = SettingsRepository(this)
+        personaRepository = PersonaRepository(db, settingsRepository)
+        profileRepository = ProfileRepository(db)
         extractionEngine = ExtractionEngine(db, settingsRepository, taskSuggestionHub, applicationScope)
     }
 }

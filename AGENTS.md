@@ -33,9 +33,10 @@
 │   ├── MentorApp.kt             # Application + 服务容器（db / persona / profile / settings 仓库）
 │   ├── data/
 │   │   ├── model/Models.kt      # Persona(含 tone/pinned) / ToneStyle / ChatMessage / TaskItem / ProfileFact / AiInsight
-│   │   ├── db/AppDatabase.kt    # Room v6 + 正式 Migration（5 DAO，messages 有联合索引；schema 导出到 app/schemas，禁破坏性重建）
-│   │   ├── ExtractionEngine.kt  # AI 提炼流水线（水位线增量 → LLM → facts/insights 落库）
-│   │   ├── ProfileExtractor.kt  # 提炼 prompt + 宽容 JSON 解析（纯函数，JVM 单测）
+│   │   ├── db/AppDatabase.kt    # Room v7 + 正式 Migration（6 DAO，messages 有联合索引；schema 导出到 app/schemas，禁破坏性重建）
+│   │   ├── ExtractionEngine.kt  # AI 提炼流水线（水位线增量 + 近 7 天任务上下文 → LLM → facts/insights/taskSuggestions 落库/分发）
+│   │   ├── ProfileExtractor.kt  # 提炼 prompt + 宽容 JSON 解析（facts/insights/taskSuggestions，纯函数，JVM 单测）
+│   │   ├── TaskSuggestionHub.kt # AI 任务建议中心（进程内存按 personaId 分发，确认后落库；同 title 当日去重）
 │   │   ├── PersonaRepository.kt # 人设仓库（3 个种子均 isBuiltIn；updateTone/setPinned）
 │   │   ├── ProfileRepository.kt # 用户档案仓库（ProfileFact 种子 + 增删改）
 │   │   └── SettingsRepository.kt# DataStore（API Key 经 ApiKeyCipher/AndroidKeyStore 加密；DataStore 可注入供测试）
@@ -116,11 +117,19 @@
 
 1. **人设（Persona）不写死**：用户可增、删、改，不限于"导师"。只预置 3 个种子
    （id 1 阿布/人生导师 🖋️，id 2 严格教练 🎯，id 3 苏格拉底 💭）。`conversationId = personaId`，
-   一设一会话，消息互不混淆。
+   一设一会话，消息互不混淆。**v0.12.0 起预置人设也可物理删除**（级联清理消息/未读键/水位线；
+   删光后会话列表显示虚线框「＋ 新建人设」，设置面板有「恢复预置人设」= 空表时重播种子）。
 2. **对话风格（ToneStyle）**是叠加在人设上的语气维度：GENTLE / STRICT / SOCRATIC，
    实现 = 换 `promptSnippet`，成本为零。风格切换**不是换人设**。
 3. system prompt 组装顺序（接 LLM 时）：`persona.systemPrompt` + `tone.promptSnippet` + 用户档案（ProfileFact）。
 4. API 密钥走 Android Keystore / EncryptedSharedPreferences，**不允许明文落盘**。
+5. **任务双板块（v0.12.0）**：`TaskItem.repeatDaily` = 每日任务（无日期、跨天经
+   `completionDate` 自动回未完成、提醒走每日重复闹钟）；基础任务一次性带日期。
+   勾选完成写 `task_completions`（taskId+day 主键）——打卡热力只统计每日任务、
+   周目标完成度只统计基础任务、快捷打卡 7 天圆点同源。
+6. **AI 任务建议（v0.12.0）**：提炼 LLM 同产出 `taskSuggestions`（宽容解析），
+   经 `TaskSuggestionHub`（进程内存）分发到聊天页卡片，用户确认才写 tasks（createdBy=ai）；
+   同 title 当日不重复建议、同名任务已存在则过滤。
 
 ## 六、工作流约定（重要）
 
@@ -162,6 +171,11 @@
 - [x] 数据页习惯/洞察接真实数据（v0.4.0：ai_insights 表（Room v4 + MIGRATION_3_4）驱动洞察卡，空时回退示例并标注「示例数据」；习惯卡改为「近 7 天打卡」每日完成热力（真数据）；档案条目 source=ai 带小徽标）
 - [x] 启动图标 + 底栏修正 + 数据页极简化 + 微信式会话删除（v0.10.0–v0.11.2：黑底白气泡启动图标；底栏 clickable 必须 indication=null；会话长按菜单=置顶/删除会话，删除=清空消息+personas.hidden（Room v6 + MIGRATION_5_6），重开/新消息即恢复；数据页移除全部解释性文字与示例数据，编辑入口只留基础档案栏）
 - [x] 数据页区块头统一 + 全局清理解释性文字（v0.11.3：SectionHeader(title, actionText, onAction) 私有组件，基础档案/近 7 天打卡/AI 洞察三处同一规格（标题 13sp SemiBold 黑、动作 13sp Medium、基线对齐）；移除聊天/任务/人设/设置面板的解释与引导文案，空状态只留事实短语）
+- [x] 任务双板块：每日任务 / 基础任务（v0.12.0：Room v7 repeatDaily/completionDate + task_completions 表 + MIGRATION_6_7；新建弹层「每日重复」开关；每日重复闹钟 + BootReceiver 跨天重置；周完成度只算基础任务、打卡热力只算每日任务）
+- [x] AI 自动建议任务（v0.12.0：提炼 prompt 产出 taskSuggestions → TaskSuggestionHub 分发 → 聊天页 AI 气泡下方建议卡「添加任务」一键落库；同 title 当日去重 + 同名任务过滤；解析容错/去重/集成测试 + 建议卡截图）
+- [x] 提炼接入任务数据 + 洞察转任务（v0.12.0：prompt 注入近 7 天任务完成情况；洞察卡长按「转为任务」）
+- [x] 人设可删除（v0.12.0：取消预置不可删限制；物理删除级联清理消息/未读键/水位线；管理页卡片长按与编辑弹层删除均走二次确认；删光后会话列表虚线框「＋ 新建人设」空状态；设置面板「恢复预置人设」= 空表重播种子）
+- [x] 人设头像渐变环统一（v0.12.0：PersonaEditorSheet 预览改 personaBrush(id) 环，与会话列表/聊天顶栏一致；AboutSheet 为 App 徽标保留 Hero 环）
 
 ## 八、本地构建（已验证可用）
 

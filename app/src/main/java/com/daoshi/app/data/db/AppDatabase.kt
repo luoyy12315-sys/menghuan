@@ -32,8 +32,9 @@ interface PersonaDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(persona: Persona): Long
 
-    @Query("DELETE FROM personas WHERE id = :id AND isBuiltIn = 0")
-    suspend fun deleteCustom(id: Long)
+    /** 物理删除人设（v0.12.0 起预置也可删；消息级联清理在仓库层） */
+    @Query("DELETE FROM personas WHERE id = :id")
+    suspend fun deleteById(id: Long)
 
     @Query("UPDATE personas SET tone = :tone WHERE id = :id")
     suspend fun updateTone(id: Long, tone: String)

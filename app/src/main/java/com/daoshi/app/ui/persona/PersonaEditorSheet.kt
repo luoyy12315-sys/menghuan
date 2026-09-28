@@ -55,9 +55,13 @@ fun PersonaEditorSheet(
     ) {
         Spacer(Modifier.height(16.dp))
 
-        // 头像预览 + emoji 输入
+        // 头像预览 + emoji 输入（环 = personaBrush(id)，与会话列表/聊天顶栏同一渐变）
         Row(verticalAlignment = Alignment.CenterVertically) {
-            NeuAvatar(emoji.trim().ifBlank { "🙂" }, size = 52.dp, accentRing = true)
+            NeuAvatar(
+                emoji.trim().ifBlank { "🙂" },
+                size = 52.dp,
+                ringBrush = com.daoshi.app.ui.theme.personaBrush(persona?.id ?: 0L),
+            )
             Spacer(Modifier.width(14.dp))
             NeuTextField(
                 value = emoji,

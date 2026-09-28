@@ -2,6 +2,7 @@ package com.daoshi.app.ui.persona
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,9 +16,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -43,12 +47,12 @@ import com.daoshi.app.ui.common.NeuAvatar
 import com.daoshi.app.ui.common.NeuCard
 import com.daoshi.app.ui.common.NeuCircleButton
 import com.daoshi.app.ui.common.NeuTopBar
-import com.daoshi.app.ui.common.neuRowPress
 import com.daoshi.app.ui.common.neuSurface
 import com.daoshi.app.ui.theme.FaintText
 import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
+import com.daoshi.app.ui.theme.NeuDanger
 import com.daoshi.app.ui.theme.TextPrimary
 import com.daoshi.app.ui.theme.personaBrush
 import kotlinx.coroutines.launch
@@ -83,6 +87,7 @@ fun PersonaManageScreen(
     val personas by vm.personas.collectAsState(initial = emptyList())
     var editing by remember { mutableStateOf<Persona?>(null) }
     var showEditor by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<Persona?>(null) }
 
     Column(
         Modifier
@@ -103,6 +108,12 @@ fun PersonaManageScreen(
             },
         )
 
+        if (personas.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("暂无人设", fontSize = 14.sp, color = MutedText)
+            }
+        }
+
         LazyColumn(
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -115,6 +126,7 @@ fun PersonaManageScreen(
                             editing = persona
                             showEditor = true
                         },
+                        onLongClick = { deleteTarget = persona },
                     )
                 }
             }
@@ -127,23 +139,57 @@ fun PersonaManageScreen(
         PersonaEditorSheet(
             persona = target,
             onSave = { vm.save(it); showEditor = false },
-            onDelete = if (target?.isBuiltIn == true) null else {
+            // v0.12.0 起预置人设也可删：弹层「删除」→ 关弹层 → 二次确认
+            onDelete = target?.let { persona ->
                 {
-                    target?.let { vm.delete(it) }
                     showEditor = false
+                    deleteTarget = persona
                 }
             },
             onDismiss = { showEditor = false },
         )
     }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            containerColor = androidx.compose.ui.graphics.Color.White,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("删除人设", fontWeight = FontWeight.SemiBold, color = TextPrimary) },
+            text = {
+                Text(
+                    "将删除「${target.name}」及其全部聊天消息，此操作不可恢复。",
+                    color = MutedText,
+                    lineHeight = 20.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.delete(target)
+                    deleteTarget = null
+                }) { Text("删除", color = NeuDanger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) { Text("取消", color = MutedText) }
+            },
+        )
+    }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun PersonaCard(persona: Persona, onClick: () -> Unit) {
+private fun PersonaCard(persona: Persona, onClick: () -> Unit, onLongClick: () -> Unit) {
     NeuCard(
         cornerRadius = 22.dp,
         contentPadding = 14.dp,
-        modifier = Modifier.fillMaxWidth().neuRowPress(onClick = onClick),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             NeuAvatar(persona.avatarEmoji, size = 44.dp, ringBrush = personaBrush(persona.id))

@@ -81,6 +81,7 @@ import com.daoshi.app.ui.common.NeuCircleButton
 import com.daoshi.app.ui.common.NeuTopBar
 import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.NeuPressSpec
+import com.daoshi.app.ui.common.figmaSelection
 import com.daoshi.app.ui.common.neuRowPress
 import org.json.JSONArray
 import org.json.JSONObject
@@ -171,6 +172,16 @@ class ChatListViewModel(
     fun clearConversation(personaId: Long) = viewModelScope.launch {
         db.messageDao().clearConversation(personaId)
         personaRepository.setHidden(personaId, true)
+    }
+
+    /** 人设物理删除（级联清理消息/未读/水位线），从列表与设置页均可触发 */
+    fun deletePersona(persona: Persona) = viewModelScope.launch {
+        runCatching { personaRepository.delete(persona.id) }
+    }
+
+    /** 设置 · 恢复预置人设：人设表为空时重播种子 */
+    fun restoreBuiltIns() = viewModelScope.launch {
+        runCatching { personaRepository.restoreBuiltIns() }
     }
 
     // ===== 搜索：人设名/身份 + 消息内容。不做 delay 防抖：本地查询毫秒级，
@@ -556,49 +567,69 @@ fun ChatListScreen(
             }
 
             // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画；长按弹出微信式菜单
-            LazyColumn(Modifier.fillMaxSize()) {
-                itemsIndexed(rows, key = { _, row -> row.persona.id }) { index, row ->
-                    var menuOpen by remember { mutableStateOf(false) }
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 40).coerceAtMost(320)))) {
-                        ConversationRow(
-                            persona = row.persona,
-                            preview = row.preview,
-                            time = row.time,
-                            unread = row.showDot,
-                            onClick = { onOpen(row.persona.id) },
-                            onLongClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                menuOpen = true
-                            },
-                        )
-                        // 微信式长按菜单：置顶 / 删除会话（菜单锚定在行内，弹出位置跟随）
-                        DropdownMenu(
-                            expanded = menuOpen,
-                            onDismissRequest = { menuOpen = false },
-                            containerColor = androidx.compose.ui.graphics.Color.White,
-                            shape = RoundedCornerShape(14.dp),
-                            shadowElevation = 8.dp,
-                        ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        if (row.persona.pinned) "取消置顶" else "置顶该聊天",
-                                        fontSize = 15.sp,
-                                        color = TextPrimary,
-                                    )
-                                },
-                                onClick = {
-                                    menuOpen = false
-                                    vm.setPinned(row.persona.id, !row.persona.pinned)
+            if (rows.isEmpty()) {
+                // 人设删光后的极简空状态：虚线选中框 + 新建入口
+                Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .figmaSelection(active = true, cornerRadius = 14.dp)
+                            .neuRowPress { showNewPersona = true }
+                            .padding(vertical = 26.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(MIcons.Plus, contentDescription = "新增人设", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("新建人设", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    itemsIndexed(rows, key = { _, row -> row.persona.id }) { index, row ->
+                        var menuOpen by remember { mutableStateOf(false) }
+                        Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 40).coerceAtMost(320)))) {
+                            ConversationRow(
+                                persona = row.persona,
+                                preview = row.preview,
+                                time = row.time,
+                                unread = row.showDot,
+                                onClick = { onOpen(row.persona.id) },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    menuOpen = true
                                 },
                             )
-                            DropdownMenuItem(
-                                text = { Text("删除会话", fontSize = 15.sp, color = NeuDanger) },
-                                onClick = {
-                                    menuOpen = false
-                                    deleteTarget = row.persona
-                                },
-                            )
+                            // 微信式长按菜单：置顶 / 删除会话（菜单锚定在行内，弹出位置跟随）
+                            DropdownMenu(
+                                expanded = menuOpen,
+                                onDismissRequest = { menuOpen = false },
+                                containerColor = androidx.compose.ui.graphics.Color.White,
+                                shape = RoundedCornerShape(14.dp),
+                                shadowElevation = 8.dp,
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (row.persona.pinned) "取消置顶" else "置顶该聊天",
+                                            fontSize = 15.sp,
+                                            color = TextPrimary,
+                                        )
+                                    },
+                                    onClick = {
+                                        menuOpen = false
+                                        vm.setPinned(row.persona.id, !row.persona.pinned)
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("删除会话", fontSize = 15.sp, color = NeuDanger) },
+                                    onClick = {
+                                        menuOpen = false
+                                        deleteTarget = row.persona
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -667,6 +698,7 @@ fun ChatListScreen(
                 showSettings = false
                 showAbout = true
             },
+            onRestorePersonas = { vm.restoreBuiltIns() },
         )
     }
     if (showNotifications) {

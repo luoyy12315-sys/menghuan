@@ -8,9 +8,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * 人设仓库：默认种子仅为示例，全部可编辑。
+ * 人设仓库：默认种子仅为示例，全部可编辑、可删除（v0.12.0 起预置也可删）。
  */
-class PersonaRepository(private val db: AppDatabase) {
+class PersonaRepository(
+    private val db: AppDatabase,
+    private val settingsRepository: SettingsRepository? = null,
+) {
 
     fun observePersonas(): Flow<List<Persona>> =
         db.personaDao().observeAll().onStart { seedOnce() }
@@ -19,7 +22,16 @@ class PersonaRepository(private val db: AppDatabase) {
 
     suspend fun save(persona: Persona): Long = db.personaDao().upsert(persona)
 
-    suspend fun delete(id: Long) = db.personaDao().deleteCustom(id)
+    /**
+     * 物理删除人设 = 级联清理：该会话全部消息 + 未读标记 + 提炼水位线。
+     * （人设无独立闹钟；任务闹钟按任务独立，不受影响。）
+     */
+    suspend fun delete(id: Long) {
+        db.messageDao().clearConversation(id)
+        db.personaDao().deleteById(id)
+        settingsRepository?.removeReadMark(id)
+        settingsRepository?.removeExtractionWatermark(id)
+    }
 
     /** 对话风格按 persona 持久化（长按头像切换后保存） */
     suspend fun updateTone(id: Long, tone: String) = db.personaDao().updateTone(id, tone)
@@ -43,6 +55,16 @@ class PersonaRepository(private val db: AppDatabase) {
         if (seeded) return
         seedMutex.withLock {
             if (seeded) return
+            if (db.personaDao().count() == 0) {
+                seed()
+            }
+            seeded = true
+        }
+    }
+
+    /** 恢复预置人设（设置面板入口）：仅当人设表为空时重播种子，绝不覆盖用户数据 */
+    suspend fun restoreBuiltIns() {
+        seedMutex.withLock {
             if (db.personaDao().count() == 0) {
                 seed()
             }

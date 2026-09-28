@@ -11,8 +11,8 @@ import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.theme.MIcons
 
 /**
- * 共享设置面板（新拟态）：入口在会话列表页右上角（仅此一处）。
- * 五项全部可用：人设管理 / API 配置 / 通知与提醒 / 数据与隐私 / 关于。
+ * 共享设置面板：入口在会话列表页右上角（仅此一处）。
+ * 五项全部可用：人设管理 / API 配置 / 通知与提醒 / 数据与隐私 / 关于；附「恢复预置人设」。
  */
 @Composable
 fun SettingsSheet(
@@ -22,6 +22,7 @@ fun SettingsSheet(
     onNotifications: () -> Unit = {},
     onDataPrivacy: () -> Unit = {},
     onAbout: () -> Unit = {},
+    onRestorePersonas: () -> Unit = {},
 ) {
     val items = listOf(
         MIcons.Person to ("人设管理" to "名字、身份、设定词 · 可增删改"),
@@ -48,5 +49,11 @@ fun SettingsSheet(
             )
             Spacer(Modifier.height(10.dp))
         }
+        NeuSheetRow(
+            icon = MIcons.Person,
+            title = "恢复预置人设",
+            subtitle = "阿布 · 严格教练 · 苏格拉底",
+            onClick = onRestorePersonas,
+        )
     }
 }
