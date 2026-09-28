@@ -151,17 +151,9 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                     }
                 }
             }
-            // 板块二：基础任务（一次性，按日期分组）
+            // 板块二：基础任务（一次性，按日期分组；逾期组沉底）
             if (basicTasks.isNotEmpty()) {
                 item { NeuSectionTitle("基础任务", modifier = Modifier.padding(top = 10.dp)) }
-            }
-            if (overdue.isNotEmpty()) {
-                item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp)) }
-                itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
-                    }
-                }
             }
             if (todayTasks.isNotEmpty()) {
                 item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(start = 4.dp)) }
@@ -182,6 +174,15 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (laterTasks.isNotEmpty()) {
                 item { NeuSectionTitle("以后", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                    }
+                }
+            }
+            // 逾期组置底：红字分组头 + 卡片红色左边线
+            if (overdue.isNotEmpty()) {
+                item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp)) }
+                itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
@@ -512,18 +513,38 @@ private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Uni
         onToggle()
     }
     val done = task.isEffectivelyDone()
+    val isOverdue = !task.repeatDaily && !done && dueDateOf(task) < LocalDate.now()
     val tag = when {
         task.repeatDaily -> if (done) "已完成" else "每日"
         done -> "已完成"
-        dueDateOf(task) < LocalDate.now() -> "未打卡"
+        isOverdue -> "已逾期"
         task.createdBy == "ai" -> "导师安排"
         else -> "自建"
     }
-    val showTagAccent = tag == "导师安排"
+    val tagColor = when (tag) {
+        "已逾期" -> NeuDanger
+        "导师安排" -> NeuAccent
+        else -> MutedText
+    }
     NeuCard(
         cornerRadius = 20.dp,
         contentPadding = 13.dp,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            // 逾期未完成：卡片左缘红色边线（clip 内层绘制，跟随圆角）
+            .then(
+                if (isOverdue) {
+                    Modifier.drawBehind {
+                        drawRoundRect(
+                            color = NeuDanger,
+                            size = androidx.compose.ui.geometry.Size(2.5.dp.toPx(), size.height),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx()),
+                        )
+                    }
+                } else {
+                    Modifier
+                },
+            ),
     ) {
         Row(
             Modifier.combinedClickable(onClick = toggleWithHaptic, onLongClick = onLongPress),
@@ -543,14 +564,14 @@ private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Uni
                 }
             }
             Spacer(Modifier.width(8.dp))
-            TaskTag(tag, showTagAccent)
+            TaskTag(tag, tagColor)
         }
     }
 }
 
-/** 任务标签：凹陷小胶囊 */
+/** 任务标签：凹陷小胶囊（逾期红字 / 导师安排黑字加粗，其余灰字） */
 @Composable
-private fun TaskTag(text: String, accent: Boolean) {
+private fun TaskTag(text: String, textColor: Color) {
     Box(
         Modifier.neuSurface(
             999.dp,
@@ -560,8 +581,8 @@ private fun TaskTag(text: String, accent: Boolean) {
         Text(
             text,
             fontSize = 11.sp,
-            color = if (accent) NeuAccent else MutedText,
-            fontWeight = if (accent) FontWeight_SemiBold else null,
+            color = textColor,
+            fontWeight = if (textColor != MutedText) FontWeight_SemiBold else null,
         )
     }
 }
