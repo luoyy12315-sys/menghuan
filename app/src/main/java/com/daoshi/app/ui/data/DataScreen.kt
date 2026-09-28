@@ -223,11 +223,13 @@ private fun SectionHeader(
     }
 }
 
-/** 习惯卡（真数据）：近 7 天打卡热力——每天完成任务数，>0 记一格 */
+/** 习惯卡（真数据）：近 7 天打卡热力——每天完成任务数，>0 记一格；圆点级联浮现（40ms 间隔） */
 @Composable
 private fun HabitCard(weekDaily: List<DayCount>) {
     val totalDone = weekDaily.sumOf { it.done }
     val note = if (totalDone == 0) "" else "共完成 $totalDone 项"
+    var revealed by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { revealed = true }
     NeuCard(cornerRadius = 22.dp) {
         Row(
             Modifier.fillMaxWidth(),
@@ -239,10 +241,21 @@ private fun HabitCard(weekDaily: List<DayCount>) {
         }
         Spacer(Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-            weekDaily.forEach { day ->
+            weekDaily.forEachIndexed { index, day ->
                 val filled = day.done > 0
+                // 逐点级联浮现：动画 spec 自带 delay（非协程 delay，Robolectric 安全）
+                val appear by animateFloatAsState(
+                    if (revealed) 1f else 0f,
+                    tween(340, delayMillis = index * 40, easing = EaseOutExpo),
+                )
                 Box(
                     Modifier
+                        .graphicsLayer {
+                            alpha = appear
+                            val scale = 0.6f + 0.4f * appear
+                            scaleX = scale
+                            scaleY = scale
+                        }
                         .size(24.dp)
                         .then(
                             if (filled) {
@@ -488,12 +501,23 @@ private fun InsightCard(
 ) {
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     var menuOpen by remember { mutableStateOf(false) }
+    // 进场：EaseOutExpo 340ms（淡入 + 轻微上浮）
+    var appeared by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { appeared = true }
+    val enterProgress by animateFloatAsState(
+        if (appeared) 1f else 0f,
+        tween(340, easing = EaseOutExpo),
+    )
     Box {
         NeuCard(
             cornerRadius = 22.dp,
             contentPadding = 16.dp,
             modifier = Modifier
                 .fillMaxWidth()
+                .graphicsLayer {
+                    alpha = enterProgress
+                    translationY = (1f - enterProgress) * 12.dp.toPx()
+                }
                 .combinedClickable(
                     interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                     indication = null,

@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -95,6 +97,12 @@ private fun dueDateOf(task: TaskItem): LocalDate =
 private fun startOfDayMs(date: LocalDate): Long =
     date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
+/** 任务行跨板块移动（勾选/改日期）时的弹簧重排（NeuSnappySpring 参数） */
+private val TaskPlacementSpring = spring<androidx.compose.ui.unit.IntOffset>(
+    dampingRatio = Spring.DampingRatioLowBouncy,
+    stiffness = Spring.StiffnessMedium,
+)
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)) {
@@ -146,7 +154,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (dailyTasks.isNotEmpty()) {
                 item { NeuSectionTitle("每日任务", modifier = Modifier.padding(top = 10.dp)) }
                 itemsIndexed(dailyTasks, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -158,7 +166,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (todayTasks.isNotEmpty()) {
                 item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -166,7 +174,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (tomorrowTasks.isNotEmpty()) {
                 item { NeuSectionTitle("明天", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -174,7 +182,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (laterTasks.isNotEmpty()) {
                 item { NeuSectionTitle("以后", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -183,7 +191,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (overdue.isNotEmpty()) {
                 item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)))) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
