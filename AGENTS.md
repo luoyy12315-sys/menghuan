@@ -41,7 +41,8 @@
 │   │   ├── ProfileRepository.kt # 用户档案仓库（ProfileFact 种子 + 增删改）
 │   │   └── SettingsRepository.kt# DataStore（API Key 经 ApiKeyCipher/AndroidKeyStore 加密；DataStore 可注入供测试）
 │   ├── llm/OpenAiClient.kt      # OpenAI 兼容 SSE 流式客户端
-│   ├── notify/                  # AlarmScheduler + TaskReminderReceiver（含稍后提醒）+ TaskSnoozeReceiver + BootReceiver
+│   ├── notify/                  # AlarmScheduler（含每日重复/每日总结）+ TaskReminderReceiver（含稍后提醒）+ TaskSnoozeReceiver + DailySummaryReceiver + BootReceiver（跨天重置 + 每日闹钟重排）
+│   └── widget/TodayWidget.kt    # Glance 今日任务小组件（黑底白字 3 条，点击直达任务页）
 │   └── ui/
 │       ├── theme/Theme.kt       # Figma 风设计令牌：NeuBackground/NeuTrack/NeuAccent/Brand*色/HeroBrush…
 │       ├── theme/Icons.kt       # MIcons 纯线条图标（stroke 1.6–1.8，墨色 #000000）
@@ -177,6 +178,14 @@
 - [x] 人设可删除（v0.12.0：取消预置不可删限制；物理删除级联清理消息/未读键/水位线；管理页卡片长按与编辑弹层删除均走二次确认；删光后会话列表虚线框「＋ 新建人设」空状态；设置面板「恢复预置人设」= 空表重播种子）
 - [x] 人设头像渐变环统一（v0.12.0：PersonaEditorSheet 预览改 personaBrush(id) 环，与会话列表/聊天顶栏一致；AboutSheet 为 App 徽标保留 Hero 环）
 - [x] 任务逾期状态（v0.13.0：基础任务过期未完成 = 卡片红色左边线 +「已逾期」红字标签；逾期分组沉底）
+- [x] 每日总结通知（v0.14.0：每晚 21:30「今日完成 x/y」，点击直达任务页；通知面板 NeuSwitch 可关；App 启动 + BootReceiver + 到点自排明天三重自愈；summarizeToday 纯函数单测）
+- [x] 快捷打卡 7 天圆点（v0.15.0：面板任务行右侧 7 颗小圆点，左→右 = 6 天前→今天，黑=完成；数据源 task_completions）
+- [x] 数据页 Sparkline（v0.16.0：完成度卡下 7 天每日任务完成率纯 Canvas 折线（黑 1.6dp 圆帽 + 末端圆点），无每日任务不渲染）
+- [x] 单聊消息搜索（v0.17.0：顶栏搜索图标 → 覆盖层搜索态，会话内 LIKE 时间倒序；ChatScreen 外层包 Box 修覆盖层 0 高问题）
+- [x] 导出 Markdown 周报（v0.18.0：数据与隐私面板 → 本周基础任务 x/y + 每日打卡分列 + 档案更新（AI 标注）+ 洞察 20 条，系统分享）
+- [x] 今日任务小组件（v0.19.0：Glance 黑底白字最多 3 条，点击直达 daoshi://tasks；刷新 = 系统 30min + App 启动 + 任务增删改勾选；glance-appwidget 1.1.1）
+- [x] 动效打磨（v0.19.1：任务行弹簧重排 placementSpec；热力点 40ms 级联浮现；洞察卡 EaseOutExpo 340ms 进场）
+- [x] 测试加固（E1/E2：RetryOnFailure 整测重试兜底 IO×虚拟时间卡死；DailySummaryTest / TasksDailyResetTest / ChatListViewModelTest（hidden 过滤 + 物理删除级联）等，总数只增不减）
 
 ## 八、本地构建（已验证可用）
 
