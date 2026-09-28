@@ -52,12 +52,15 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -109,9 +112,12 @@ fun ChatScreen(
     val tone by vm.tone.collectAsState()
     val quickTasks by vm.quickCheckTasks.collectAsState()
     val taskSuggestions by vm.taskSuggestions.collectAsState()
+    val searchResults by vm.searchResults.collectAsState()
     var showToneSheet by remember { mutableStateOf(false) }
     var showQuickCheck by remember { mutableStateOf(false) }
     var messageMenu by remember { mutableStateOf<ChatMessage?>(null) }
+    var searchMode by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
     val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
 
@@ -121,10 +127,13 @@ fun ChatScreen(
     // 查看即已读：会话可见期间每条新消息到达都刷新阅读时刻，列表未读点立即消除
     LaunchedEffect(uiState.messages.lastOrNull()?.id) { vm.markRead() }
 
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Column(Modifier.fillMaxSize()) {
-            // 顶部导航：返回键（退出）+ 居中头像区（长按换风格）
-            NeuTopBar(
+    // 外层容器：让搜索态覆盖层（第二个 fillMaxSize 子级）真正叠在聊天内容之上，
+    // 而不是作为 AdaptiveScreen Column 的兄弟被挤成 0 高度
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+            Column(Modifier.fillMaxSize()) {
+                // 顶部导航：返回键（退出）+ 居中头像区（长按换风格）
+                NeuTopBar(
                 navigationIcon = {
                     NeuCircleButton(onClick = onBack, size = 38.dp) {
                         Icon(MIcons.Back, contentDescription = "返回", tint = TextPrimary, modifier = Modifier.size(19.dp))
@@ -168,6 +177,11 @@ fun ChatScreen(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                    }
+                },
+                actions = {
+                    NeuCircleButton(onClick = { searchMode = true }, size = 38.dp) {
+                        Icon(MIcons.Search, contentDescription = "搜索消息", tint = TextPrimary, modifier = Modifier.size(19.dp))
                     }
                 },
             )
@@ -342,6 +356,89 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    // 会话内搜索态：覆盖整页（顶栏搜索图标进入，返回退出），LIKE 命中实时过滤
+    if (searchMode) {
+        val focusRequester = remember { FocusRequester() }
+        LaunchedEffect(Unit) { focusRequester.requestFocus() }
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .imePadding(),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NeuCircleButton(
+                    onClick = {
+                        searchMode = false
+                        searchQuery = ""
+                        vm.onSearchQueryChange("")
+                    },
+                    size = 38.dp,
+                ) {
+                    Icon(MIcons.Back, contentDescription = "返回", tint = TextPrimary, modifier = Modifier.size(19.dp))
+                }
+                Spacer(Modifier.width(10.dp))
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .neuSurface(22.dp, color = MaterialTheme.colorScheme.background, elevation = 5.dp, inset = true),
+                ) {
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = {
+                            searchQuery = it
+                            vm.onSearchQueryChange(it)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 11.dp)
+                            .focusRequester(focusRequester)
+                            .testTag("chat_search_field"),
+                        textStyle = TextStyle(fontSize = 15.sp, color = TextPrimary),
+                        singleLine = true,
+                        cursorBrush = SolidColor(NeuAccent),
+                        decorationBox = { inner ->
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (searchQuery.isEmpty()) {
+                                    Text("搜索消息…", fontSize = 15.sp, color = MutedText)
+                                }
+                                inner()
+                            }
+                        },
+                    )
+                }
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when {
+                    searchQuery.isBlank() -> {}
+                    searchResults.isEmpty() -> Box(
+                        Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("没有匹配结果", fontSize = 13.sp, color = com.daoshi.app.ui.theme.FaintText)
+                    }
+                    else -> LazyColumn(contentPadding = PaddingValues(vertical = 6.dp)) {
+                        items(searchResults.size) { idx ->
+                            ChatSearchRow(
+                                message = searchResults[idx],
+                                fromLabel = if (searchResults[idx].isFromUser) "我" else (persona?.name ?: "导师"),
+                                onClick = {
+                                    searchMode = false
+                                    searchQuery = ""
+                                    vm.onSearchQueryChange("")
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
     }
 
     if (showToneSheet) {
@@ -615,6 +712,33 @@ private fun TypingDots() {
                     .background(Color.Black, CircleShape),
             )
         }
+    }
+}
+
+/** 单聊搜索结果行：来源 + 时间 + 内容预览（点击退出搜索态） */
+@Composable
+private fun ChatSearchRow(message: ChatMessage, fromLabel: String, onClick: () -> Unit) {
+    val time = Instant.ofEpochMilli(message.timestamp).atZone(ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm"))
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .neuRowPress(onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(fromLabel, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+            Spacer(Modifier.width(8.dp))
+            Text(time, fontSize = 11.sp, color = com.daoshi.app.ui.theme.FaintText)
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(
+            message.content.replace('\n', ' '),
+            fontSize = 14.sp,
+            color = MutedText,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

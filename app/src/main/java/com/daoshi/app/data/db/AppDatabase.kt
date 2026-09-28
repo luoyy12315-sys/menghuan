@@ -70,6 +70,13 @@ interface MessageDao {
     )
     suspend fun searchMessages(query: String): List<ChatMessage>
 
+    /** 单聊内消息搜索（顶栏搜索态）：限定会话，LIKE 命中时间倒序 */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId AND content LIKE '%' || :query || '%' " +
+            "ORDER BY timestamp DESC LIMIT 50"
+    )
+    suspend fun searchInConversation(conversationId: Long, query: String): List<ChatMessage>
+
     /** 删除单条消息（长按气泡菜单；LLM 历史随 DB 实时变化） */
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun delete(id: Long)
