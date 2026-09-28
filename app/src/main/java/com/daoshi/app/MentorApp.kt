@@ -11,6 +11,8 @@ import com.daoshi.app.data.db.AppDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 class MentorApp : Application() {
 
@@ -47,5 +49,13 @@ class MentorApp : Application() {
         personaRepository = PersonaRepository(db, settingsRepository)
         profileRepository = ProfileRepository(db)
         extractionEngine = ExtractionEngine(db, settingsRepository, taskSuggestionHub, applicationScope)
+        // 每日总结闹钟随进程启动重排（覆盖安装/进程被杀后自愈；重启走 BootReceiver）
+        applicationScope.launch {
+            runCatching {
+                if (settingsRepository.dailySummaryEnabled.first()) {
+                    com.daoshi.app.notify.AlarmScheduler.scheduleDailySummary(this@MentorApp)
+                }
+            }
+        }
     }
 }

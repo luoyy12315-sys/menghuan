@@ -15,6 +15,9 @@ object AlarmScheduler {
     const val EXTRA_TASK_ID = "taskId"
     const val EXTRA_TITLE = "title"
 
+    /** 每日总结闹钟专用 requestCode（避免与 taskId 撞号） */
+    private const val SUMMARY_REQUEST_CODE = 2_000_000_001
+
     fun schedule(context: Context, taskId: Long, title: String, remindAt: Long) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val pi = pendingIntent(context, taskId, title)
@@ -39,6 +42,41 @@ object AlarmScheduler {
         }
         schedule(context, taskId, title, next.atZone(zone).toInstant().toEpochMilli())
     }
+
+    /** 每日总结（固定 21:30）：requestCode 与任务闹钟隔离，开关即时生效 */
+    fun scheduleDailySummary(context: Context, at: Long? = null) {
+        val zone = java.time.ZoneId.systemDefault()
+        var next = java.time.LocalDate.now(zone).atTime(21, 30)
+        at?.let {
+            next = java.time.Instant.ofEpochMilli(it).atZone(zone).toLocalTime().let { t ->
+                java.time.LocalDate.now(zone).atTime(t)
+            }
+        }
+        if (next.atZone(zone).toInstant().toEpochMilli() <= System.currentTimeMillis()) {
+            next = next.plusDays(1)
+        }
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = summaryPendingIntent(context)
+        val canExact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
+        if (canExact) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atZone(zone).toInstant().toEpochMilli(), pi)
+        } else {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atZone(zone).toInstant().toEpochMilli(), pi)
+        }
+    }
+
+    fun cancelDailySummary(context: Context) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.cancel(summaryPendingIntent(context))
+    }
+
+    private fun summaryPendingIntent(context: Context): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            SUMMARY_REQUEST_CODE,
+            Intent(context, DailySummaryReceiver::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
     fun cancel(context: Context, taskId: Long, title: String) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager

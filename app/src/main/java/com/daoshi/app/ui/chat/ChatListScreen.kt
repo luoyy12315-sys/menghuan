@@ -235,6 +235,14 @@ class ChatListViewModel(
         settingsRepository.setNotificationsEnabled(enabled)
     }
 
+    /** 每日总结开关（闹钟的排/取消由界面层调 AlarmScheduler，需 Context） */
+    val dailySummaryEnabled: StateFlow<Boolean> = settingsRepository.dailySummaryEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setDailySummaryEnabled(enabled: Boolean) = viewModelScope.launch {
+        settingsRepository.setDailySummaryEnabled(enabled)
+    }
+
     /** 数据与隐私面板：各类数据条数 */
     val dataStats: StateFlow<DataStats> = combine(
         db.messageDao().observeCount(),
@@ -504,6 +512,7 @@ fun ChatListScreen(
     val searchQuery by vm.searchQuery.collectAsState()
     val searchResults by vm.searchResults.collectAsState()
     val notificationsEnabled by vm.notificationsEnabled.collectAsState()
+    val dailySummaryEnabled by vm.dailySummaryEnabled.collectAsState()
     val dataStats by vm.dataStats.collectAsState()
     val importMessage by vm.importMessage.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
@@ -705,6 +714,15 @@ fun ChatListScreen(
         NotificationSettingsSheet(
             enabled = notificationsEnabled,
             onToggle = { vm.setNotificationsEnabled(it) },
+            dailySummaryEnabled = dailySummaryEnabled,
+            onToggleDailySummary = { enabled ->
+                vm.setDailySummaryEnabled(enabled)
+                if (enabled) {
+                    com.daoshi.app.notify.AlarmScheduler.scheduleDailySummary(context)
+                } else {
+                    com.daoshi.app.notify.AlarmScheduler.cancelDailySummary(context)
+                }
+            },
             onDismiss = { showNotifications = false },
         )
     }

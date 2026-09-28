@@ -113,6 +113,77 @@ class TaskSnoozeReceiver : BroadcastReceiver() {
     }
 }
 
+/**
+ * 每日总结（每晚 21:30，可关）：「今日完成 x/y」通知，点击直达任务页。
+ * 今日任务 = 每日任务 + 今日到期的基础任务；完成判定与任务页同口径（isEffectivelyDone）。
+ */
+class DailySummaryReceiver : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val pending = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val app = context.applicationContext as MentorApp
+                val enabled = runCatching { app.settingsRepository.notificationsEnabled.first() }.getOrDefault(true) &&
+                    runCatching { app.settingsRepository.dailySummaryEnabled.first() }.getOrDefault(true)
+                // 明天的总结无论如何先排上（关了开关就静默）
+                AlarmScheduler.scheduleDailySummary(context)
+
+                val (done, total) = summarizeToday(app.db.taskDao().observeAll().first())
+                if (!enabled || total == 0) return@launch // 没有今日任务就不打扰
+
+                val manager = NotificationManagerCompat.from(context)
+                if (Build.VERSION.SDK_INT >= 33 &&
+                    context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    return@launch
+                }
+                manager.createNotificationChannel(
+                    NotificationChannel(CHANNEL_ID, "每日总结", NotificationManager.IMPORTANCE_DEFAULT)
+                )
+                val openTasks = PendingIntent.getActivity(
+                    context,
+                    SUMMARY_NOTIF_ID,
+                    Intent(Intent.ACTION_VIEW, Uri.parse("daoshi://tasks"), context, MainActivity::class.java)
+                        .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
+                val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                    .setContentTitle("今日完成 $done/$total")
+                    .setContentText(if (done == total) "全部完成，稳。" else "还有 ${total - done} 项，收尾再休息。")
+                    .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                    .setAutoCancel(true)
+                    .setContentIntent(openTasks)
+                    .build()
+                manager.notify(SUMMARY_NOTIF_ID, notification)
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    companion object {
+        private const val CHANNEL_ID = "daily_summary"
+        private const val SUMMARY_NOTIF_ID = 2_000_000_001
+
+        /** 今日任务统计（纯函数）：每日任务 + 今日到期基础任务 → (完成数, 总数) */
+        fun summarizeToday(tasks: List<com.daoshi.app.data.model.TaskItem>): Pair<Int, Int> {
+            val todayEpochDay = java.time.LocalDate.now().toEpochDay()
+            val todayStart = java.time.LocalDate.now()
+                .atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            val todayEnd = java.time.LocalDate.now().plusDays(1)
+                .atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+            val todays = tasks.filter {
+                it.repeatDaily || (it.dueAt == 0L || it.dueAt in todayStart until todayEnd)
+            }
+            val done = todays.count { it.isEffectivelyDone(todayEpochDay) }
+            return done to todays.size
+        }
+    }
+}
+
 /** 重启 / 覆盖安装后重排所有未来的提醒（闹钟不跨重启、不跨安装包更新存活） */
 class BootReceiver : BroadcastReceiver() {
 
@@ -144,6 +215,8 @@ class BootReceiver : BroadcastReceiver() {
                             AlarmScheduler.schedule(context, task.id, task.title, task.remindAt!!)
                     }
                 }
+                // 每日总结（21:30）重排；开关在 Receiver 内复查
+                AlarmScheduler.scheduleDailySummary(context)
             } finally {
                 pending.finish()
             }

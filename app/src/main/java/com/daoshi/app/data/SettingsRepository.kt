@@ -44,6 +44,7 @@ class SettingsRepository(
     private val keyModel = stringPreferencesKey("api_model")
     private val keyKeyEnc = stringPreferencesKey("api_key_enc") // 新密文键 Base64(IV+GCM)
     private val keyNotifyEnabled = booleanPreferencesKey("notify_enabled")
+    private val keyDailySummaryEnabled = booleanPreferencesKey("daily_summary_enabled")
 
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
@@ -138,6 +139,13 @@ class SettingsRepository(
 
     suspend fun setNotificationsEnabled(enabled: Boolean) {
         store.edit { it[keyNotifyEnabled] = enabled }
+    }
+
+    /** 每日总结通知（每晚 21:30「今日完成 x/y」，设置 · 通知与提醒） */
+    val dailySummaryEnabled: Flow<Boolean> = store.data.map { it[keyDailySummaryEnabled] ?: true }
+
+    suspend fun setDailySummaryEnabled(enabled: Boolean) {
+        store.edit { it[keyDailySummaryEnabled] = enabled }
     }
 
     /** 提炼水位线：每个会话已提炼到的最后一条消息 id（extract_upto_<personaId>） */

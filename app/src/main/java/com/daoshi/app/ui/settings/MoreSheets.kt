@@ -47,11 +47,13 @@ data class DataStats(
     val facts: Long = 0,
 )
 
-/** 设置 · 通知与提醒：任务提醒总开关 + 系统通知设置入口 */
+/** 设置 · 通知与提醒：任务提醒总开关 + 每日总结开关 + 系统通知设置入口 */
 @Composable
 fun NotificationSettingsSheet(
     enabled: Boolean,
     onToggle: (Boolean) -> Unit,
+    dailySummaryEnabled: Boolean,
+    onToggleDailySummary: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -64,6 +66,15 @@ fun NotificationSettingsSheet(
             Text("任务到点提醒", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(10.dp))
             NeuSwitch(checked = enabled, onToggle = onToggle)
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("每日总结 21:30", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(10.dp))
+            NeuSwitch(checked = dailySummaryEnabled, onToggle = onToggleDailySummary)
         }
         Spacer(Modifier.height(10.dp))
         NeuSheetRow(
