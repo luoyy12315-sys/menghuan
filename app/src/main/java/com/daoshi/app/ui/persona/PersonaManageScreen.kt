@@ -103,13 +103,6 @@ fun PersonaManageScreen(
             },
         )
 
-        Text(
-            "每个人设是一个独立会话；名字、身份、设定词随时可改。",
-            modifier = Modifier.padding(horizontal = 20.dp).padding(top = 4.dp, bottom = 12.dp),
-            fontSize = 12.sp,
-            color = MutedText,
-        )
-
         LazyColumn(
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),

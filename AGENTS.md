@@ -33,7 +33,7 @@
 │   ├── MentorApp.kt             # Application + 服务容器（db / persona / profile / settings 仓库）
 │   ├── data/
 │   │   ├── model/Models.kt      # Persona(含 tone/pinned) / ToneStyle / ChatMessage / TaskItem / ProfileFact / AiInsight
-│   │   ├── db/AppDatabase.kt    # Room v5 + 正式 Migration（5 DAO，messages 有联合索引；schema 导出到 app/schemas，禁破坏性重建）
+│   │   ├── db/AppDatabase.kt    # Room v6 + 正式 Migration（5 DAO，messages 有联合索引；schema 导出到 app/schemas，禁破坏性重建）
 │   │   ├── ExtractionEngine.kt  # AI 提炼流水线（水位线增量 → LLM → facts/insights 落库）
 │   │   ├── ProfileExtractor.kt  # 提炼 prompt + 宽容 JSON 解析（纯函数，JVM 单测）
 │   │   ├── PersonaRepository.kt # 人设仓库（3 个种子均 isBuiltIn；updateTone/setPinned）
@@ -160,6 +160,8 @@
 - [x] 消息长按菜单（v0.9.0：复制全文/删除单条；删除同步移出 LLM 历史；种子消息仅复制，流式期间不可删；MIcons 新增 Copy/Delete）
 - [x] AI 提炼流水线（v0.4.0：`data/ExtractionEngine.kt`——聊天回复成功落库后检查水位线，攒够 8 条增量消息自动调 LLM（复用 OpenAiClient）；产出 ProfileFact（按 key 覆盖，manual 来源不被篡改）+ AiInsight（标题去重、留 20 条）；解析器 `ProfileExtractor` 纯函数 + JVM 单测；数据页洞察区有手动「提炼」入口（API 未配置时隐藏））
 - [x] 数据页习惯/洞察接真实数据（v0.4.0：ai_insights 表（Room v4 + MIGRATION_3_4）驱动洞察卡，空时回退示例并标注「示例数据」；习惯卡改为「近 7 天打卡」每日完成热力（真数据）；档案条目 source=ai 带小徽标）
+- [x] 启动图标 + 底栏修正 + 数据页极简化 + 微信式会话删除（v0.10.0–v0.11.2：黑底白气泡启动图标；底栏 clickable 必须 indication=null；会话长按菜单=置顶/删除会话，删除=清空消息+personas.hidden（Room v6 + MIGRATION_5_6），重开/新消息即恢复；数据页移除全部解释性文字与示例数据，编辑入口只留基础档案栏）
+- [x] 数据页区块头统一 + 全局清理解释性文字（v0.11.3：SectionHeader(title, actionText, onAction) 私有组件，基础档案/近 7 天打卡/AI 洞察三处同一规格（标题 13sp SemiBold 黑、动作 13sp Medium、基线对齐）；移除聊天/任务/人设/设置面板的解释与引导文案，空状态只留事实短语）
 
 ## 八、本地构建（已验证可用）
 

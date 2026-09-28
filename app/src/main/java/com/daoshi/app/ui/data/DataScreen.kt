@@ -47,10 +47,9 @@ import com.daoshi.app.ui.common.EaseOutExpo
 import com.daoshi.app.ui.common.NeuButton
 import com.daoshi.app.ui.common.NeuButtonKind
 import com.daoshi.app.ui.common.NeuCard
-import com.daoshi.app.ui.common.NeuSectionTitle
 import com.daoshi.app.ui.common.NeuSheetScaffold
-import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.NeuTextField
+import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.NeuTopBar
 import com.daoshi.app.ui.common.neuRowPress
 import com.daoshi.app.ui.common.neuSurface
@@ -75,9 +74,8 @@ private fun AiInsight.dateLabel(): String {
 }
 
 /**
- * 我的数据页（新拟态）：目标完成度 + 基础档案 + 习惯追踪 + AI 洞察。
- * 基础档案 = ProfileFact 真实数据（可编辑，编辑后注入聊天 system prompt）；
- * 完成度/习惯/洞察仍为演示数据，二期接 AI 提炼流水线。
+ * 我的数据页：目标完成度 + 基础档案 + 近 7 天打卡 + AI 洞察，全部真数据驱动。
+ * 基础档案 = ProfileFact（可编辑，编辑后注入聊天 system prompt）。
  */
 @Composable
 fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
@@ -118,21 +116,8 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
             Spacer(Modifier.height(2.dp))
             OverviewCard(progress = weekProgress, scrollProvider = { scrollState.value })
 
-            // 基础档案：标题栏即编辑入口（点整行也能进编辑弹层）
-            Row(
-                Modifier.padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "基础档案",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MutedText,
-                    letterSpacing = 0.8.sp,
-                )
-                Spacer(Modifier.weight(1f))
-                NeuTextButton("编辑", onClick = { showEditSheet = true })
-            }
+            // 基础档案：标题栏即编辑入口（点整行档案也能进编辑弹层）
+            SectionHeader("基础档案", actionText = "编辑", onAction = { showEditSheet = true })
             NeuCard(cornerRadius = 22.dp) {
                 if (facts.isEmpty()) {
                     Text(
@@ -155,30 +140,15 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
             }
 
             // 习惯卡（真数据）：近 7 天每日完成任务数 = 打卡热力
-            NeuSectionTitle("近 7 天打卡", modifier = Modifier.padding(horizontal = 4.dp))
+            SectionHeader("近 7 天打卡")
             HabitCard(weekDaily)
 
-            // AI 洞察：有提炼产物显示真数据；没有时回退示例并标注。
-            // API 已配置时提供手动「提炼」入口。
-            Row(
-                Modifier.padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "AI 洞察",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MutedText,
-                    letterSpacing = 0.8.sp,
-                )
-                Spacer(Modifier.weight(1f))
-                if (apiReady) {
-                    NeuTextButton(
-                        if (extracting) "提炼中…" else "提炼",
-                        onClick = { vm.refreshInsights() },
-                    )
-                }
-            }
+            // AI 洞察（真数据）；API 已配置时提供手动「提炼」入口
+            SectionHeader(
+                "AI 洞察",
+                actionText = if (apiReady) (if (extracting) "提炼中…" else "提炼") else null,
+                onAction = { vm.refreshInsights() },
+            )
             extractMessage?.let { message ->
                 Text(
                     message,
@@ -202,6 +172,41 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
             },
             onDismiss = { showEditSheet = false },
         )
+    }
+}
+
+/**
+ * 区块头（全页唯一规格）：13sp SemiBold 黑标题 + 可选 13sp Medium 动作，基线对齐。
+ * 基础档案 / 近 7 天打卡 / AI 洞察 三处复用，无需动作时只渲染标题。
+ */
+@Composable
+private fun SectionHeader(
+    title: String,
+    modifier: Modifier = Modifier,
+    actionText: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Row(modifier.padding(horizontal = 4.dp)) {
+        Text(
+            title,
+            modifier = Modifier.alignByBaseline(),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = TextPrimary,
+        )
+        Spacer(Modifier.weight(1f))
+        if (actionText != null && onAction != null) {
+            Text(
+                actionText,
+                modifier = Modifier
+                    .alignByBaseline()
+                    .neuRowPress(onAction)
+                    .padding(start = 10.dp),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = NeuAccent,
+            )
+        }
     }
 }
 

@@ -23,8 +23,7 @@ import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.common.NeuTextField
 
 /**
- * 人设编辑弹层（新拟态）：新增（persona = null）与编辑共用。
- * 名字必填；预置人设可编辑、不可删除（删除入口仅自建人设可见）。
+ * 人设编辑弹层：新增（persona = null）与编辑共用，名字必填。
  */
 @Composable
 fun PersonaEditorSheet(
@@ -120,10 +119,6 @@ fun PersonaEditorSheet(
                 enabled = name.isNotBlank(),
                 modifier = Modifier.weight(1f),
             )
-        }
-        if (persona?.isBuiltIn == true) {
-            Spacer(Modifier.height(10.dp))
-            com.daoshi.app.ui.common.NeuMuted(text = "预置人设可自由编辑，但不可删除。")
         }
         Spacer(Modifier.height(6.dp))
     }

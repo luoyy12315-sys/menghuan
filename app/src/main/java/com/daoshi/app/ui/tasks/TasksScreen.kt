@@ -236,7 +236,7 @@ private fun EmptyTasksHint() {
         }
         Spacer(Modifier.height(14.dp))
         Text(
-            "暂无任务\n点右上角 ＋ 新建一个",
+            "暂无任务",
             textAlign = TextAlign.Center,
             fontSize = 14.sp,
             lineHeight = 22.sp,

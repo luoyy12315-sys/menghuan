@@ -29,7 +29,6 @@ import com.daoshi.app.BuildConfig
 import com.daoshi.app.ui.common.NeuAvatar
 import com.daoshi.app.ui.common.NeuButton
 import com.daoshi.app.ui.common.NeuButtonKind
-import com.daoshi.app.ui.common.NeuMuted
 import com.daoshi.app.ui.common.NeuSheetRow
 import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.common.NeuSwitch
@@ -62,11 +61,7 @@ fun NotificationSettingsSheet(
             Modifier.fillMaxWidth().padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text("任务到点提醒", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
-                Spacer(Modifier.height(2.dp))
-                Text("关闭后到点不再弹通知，可手动打卡", fontSize = 12.sp, color = MutedText)
-            }
+            Text("任务到点提醒", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(10.dp))
             NeuSwitch(checked = enabled, onToggle = onToggle)
         }
@@ -84,8 +79,6 @@ fun NotificationSettingsSheet(
                 }
             },
         )
-        Spacer(Modifier.height(4.dp))
-        NeuMuted(text = "提醒由系统闹钟触发，全部数据仅存本机。")
     }
 }
 
@@ -135,14 +128,6 @@ fun DataPrivacySheet(
             text = "清除全部聊天记录",
             kind = NeuButtonKind.Danger,
             onClick = { confirmClear = true },
-        )
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "全部数据仅存于本机应用私有目录，不上传云端；导出走系统分享，选哪里存由你决定。" +
-                "合并导入只新增、同名跳过，绝不删除现有数据。API 密钥经系统 Keystore 加密存储，不包含在导出中。",
-            fontSize = 12.sp,
-            lineHeight = 19.sp,
-            color = MutedText,
         )
     }
     if (confirmClear) {

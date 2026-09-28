@@ -24,7 +24,6 @@ import com.daoshi.app.ui.common.NeuButton
 import com.daoshi.app.ui.common.NeuButtonKind
 import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.common.NeuTextField
-import com.daoshi.app.ui.theme.MutedText
 import com.daoshi.app.ui.theme.NeuAccent
 import com.daoshi.app.ui.theme.NeuDanger
 import kotlinx.coroutines.flow.first
@@ -133,12 +132,6 @@ fun ApiConfigSheet(onDismiss: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
         }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "配置后聊天将真实调用该接口（流式）。Key 仅存本机。",
-            fontSize = 12.sp,
-            color = MutedText,
-        )
         Spacer(Modifier.height(6.dp))
     }
 }

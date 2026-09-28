@@ -2,16 +2,13 @@ package com.daoshi.app.ui.settings
 
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.daoshi.app.BuildConfig
 import com.daoshi.app.ui.common.NeuSheetRow
 import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.theme.MIcons
-import com.daoshi.app.ui.theme.MutedText
 
 /**
  * 共享设置面板（新拟态）：入口在会话列表页右上角（仅此一处）。
@@ -51,11 +48,5 @@ fun SettingsSheet(
             )
             Spacer(Modifier.height(10.dp))
         }
-        Spacer(Modifier.height(2.dp))
-        Text(
-            "数据仅存本机，不上传云端。",
-            fontSize = 11.sp,
-            color = MutedText,
-        )
     }
 }

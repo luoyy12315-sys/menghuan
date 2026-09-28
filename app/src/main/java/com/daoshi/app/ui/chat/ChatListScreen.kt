@@ -443,7 +443,7 @@ class ChatListViewModel(
     }
 
     private fun previewOf(persona: Persona, last: ChatMessage?): String {
-        val content = last?.content?.replace('\n', ' ') ?: return "开始对话 →"
+        val content = last?.content?.replace('\n', ' ') ?: return "暂无消息"
         return if (last.isFromUser) "你：$content" else content
     }
 
@@ -800,9 +800,7 @@ private fun SearchOverlay(
         }
 
         when {
-            query.isBlank() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("搜索人设名字或聊天内容", fontSize = 13.sp, color = FaintText)
-            }
+            query.isBlank() -> Spacer(Modifier.fillMaxSize())
             results.isEmpty() -> Column(
                 Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,

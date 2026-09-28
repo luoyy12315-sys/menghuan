@@ -375,7 +375,7 @@ private fun MessageMenuSheet(
         NeuSheetRow(
             icon = MIcons.Copy,
             title = "复制全文",
-            subtitle = "以纯文本粘贴到任何地方",
+            subtitle = "",
             onClick = onCopy,
         )
         Spacer(Modifier.height(10.dp))
@@ -383,15 +383,8 @@ private fun MessageMenuSheet(
             NeuSheetRow(
                 icon = MIcons.Delete,
                 title = "删除消息",
-                subtitle = "同时从导师的对话记忆中移除",
+                subtitle = "",
                 onClick = onDelete,
-            )
-        } else {
-            Text(
-                "演示消息不可删除",
-                modifier = Modifier.padding(horizontal = 4.dp),
-                fontSize = 12.sp,
-                color = MutedText,
             )
         }
         Spacer(Modifier.height(4.dp))
@@ -598,12 +591,6 @@ private fun ToneSwitchSheet(
             )
             Spacer(Modifier.height(10.dp))
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "人设（名字 / 身份 / 设定词）可在「设置」中自由修改或新增，不止于「导师」。",
-            fontSize = 12.sp,
-            color = MutedText,
-        )
     }
 }
 
@@ -618,11 +605,10 @@ private fun QuickCheckSheet(
         Spacer(Modifier.height(14.dp))
         if (tasks.isEmpty()) {
             Text(
-                "没有待打卡的任务\n去任务页新建一个吧",
+                "暂无任务",
                 modifier = Modifier.fillMaxWidth().padding(vertical = 22.dp),
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 fontSize = 14.sp,
-                lineHeight = 22.sp,
                 color = MutedText,
             )
         } else {
@@ -654,11 +640,5 @@ private fun QuickCheckSheet(
                 }
             }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "打卡会以消息发送给当前导师，进入对话记录。",
-            fontSize = 12.sp,
-            color = MutedText,
-        )
     }
 }
