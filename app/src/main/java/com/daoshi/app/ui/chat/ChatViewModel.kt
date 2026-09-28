@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -68,13 +69,19 @@ class ChatViewModel(
     )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
-    /** 快捷打卡候选：当天未完成任务（每日任务按 completionDate 判定），逾期/今天在前 */
-    val quickCheckTasks: StateFlow<List<TaskItem>> = db.taskDao().observeAll()
-        .map { tasks ->
-            val today = startOfToday()
-            tasks.filter { !it.isEffectivelyDone() }.sortedBy { if (it.dueAt == 0L) today else it.dueAt }
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    /** 快捷打卡候选：当天未完成任务（每日任务按 completionDate 判定），逾期/今天在前；附近 7 天完成日 */
+    data class QuickCheckTask(val task: TaskItem, val doneDays: Set<Long>)
+
+    val quickCheckTasks: StateFlow<List<QuickCheckTask>> = combine(
+        db.taskDao().observeAll(),
+        db.taskCompletionDao().observeAll(),
+    ) { tasks, completions ->
+        val today = startOfToday()
+        val doneDaysByTask = completions.groupBy({ it.taskId }, { it.day })
+        tasks.filter { !it.isEffectivelyDone() }
+            .sortedBy { if (it.dueAt == 0L) today else it.dueAt }
+            .map { task -> QuickCheckTask(task, doneDaysByTask[task.id].orEmpty().toSet()) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** AI 任务建议（提炼产出，进程内存）：AI 气泡下方卡片展示，确认后消失 */
     val taskSuggestions: StateFlow<List<TaskSuggestion>> = taskSuggestionHub.forPersona(personaId)

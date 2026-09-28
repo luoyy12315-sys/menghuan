@@ -76,6 +76,7 @@ import com.daoshi.app.ui.common.NeuSheetRow
 import com.daoshi.app.ui.common.NeuSheetScaffold
 import com.daoshi.app.ui.common.NeuTextButton
 import com.daoshi.app.ui.common.NeuTopBar
+import com.daoshi.app.ui.common.neuRowPress
 import com.daoshi.app.ui.common.neuSurface
 import com.daoshi.app.ui.theme.MIcons
 import com.daoshi.app.ui.theme.MutedText
@@ -354,9 +355,9 @@ fun ChatScreen(
     if (showQuickCheck) {
         QuickCheckSheet(
             tasks = quickTasks,
-            onCheckIn = { task ->
+            onCheckIn = { item ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                vm.sendText("✅ 打卡：${task.title}")
+                vm.sendText("✅ 打卡：${item.task.title}")
                 showQuickCheck = false
             },
             onDismiss = { showQuickCheck = false },
@@ -643,11 +644,11 @@ private fun ToneSwitchSheet(
     }
 }
 
-/** 输入栏左键弹出：快捷打卡——勾选未完成任务，以消息形式发进当前会话 */
+/** 输入栏左键弹出：快捷打卡——勾选未完成任务，以消息形式发进当前会话；右侧 7 天完成小圆点（黑=完成） */
 @Composable
 private fun QuickCheckSheet(
-    tasks: List<TaskItem>,
-    onCheckIn: (TaskItem) -> Unit,
+    tasks: List<ChatViewModel.QuickCheckTask>,
+    onCheckIn: (ChatViewModel.QuickCheckTask) -> Unit,
     onDismiss: () -> Unit,
 ) {
     NeuSheetScaffold(title = "快捷打卡", onDismiss = onDismiss) {
@@ -666,7 +667,8 @@ private fun QuickCheckSheet(
                     .heightIn(max = 380.dp)
                     .verticalScroll(rememberScrollState()),
             ) {
-                tasks.forEach { task ->
+                tasks.forEach { item ->
+                    val task = item.task
                     val dueTag = when {
                         task.dueAt == 0L -> "今天"
                         else -> {
@@ -679,13 +681,41 @@ private fun QuickCheckSheet(
                             }
                         }
                     }
-                    NeuSheetRow(
-                        icon = MIcons.Checklist,
-                        title = task.title,
-                        subtitle = dueTag,
-                        onClick = { onCheckIn(task) },
-                    )
-                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .neuRowPress { onCheckIn(item) }
+                            .padding(horizontal = 4.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            MIcons.Checklist,
+                            contentDescription = null,
+                            tint = TextPrimary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(task.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+                            Spacer(Modifier.height(2.dp))
+                            Text(dueTag, fontSize = 12.sp, color = MutedText)
+                        }
+                        // 近 7 天完成轨迹：左→右 = 6 天前 → 今天，黑=完成、灰=未
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            (6 downTo 0).forEach { offset ->
+                                val day = LocalDate.now().minusDays(offset.toLong()).toEpochDay()
+                                Box(
+                                    Modifier
+                                        .size(7.dp)
+                                        .background(
+                                            if (day in item.doneDays) NeuAccent else Color(0xFFE3E3E3),
+                                            CircleShape,
+                                        ),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
                 }
             }
         }
