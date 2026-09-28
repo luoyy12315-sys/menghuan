@@ -133,6 +133,7 @@ object MIcons {
 
     // ===== 列表 / 设置 =====
     val ChevronRight = strokes("ChevronRight", 1.8f, "M9.5 5.5L15.5 12L9.5 18.5")
+    val Play = strokes("Play", 1.8f, "M8 5.5L18 12L8 18.5Z")
     val Copy = strokes(
         "Copy", 1.8f,
         "M9 9h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H11a2 2 0 0 1-2-2V9Z",

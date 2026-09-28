@@ -41,6 +41,7 @@
 │   │   ├── ProfileRepository.kt # 用户档案仓库（ProfileFact 种子 + 增删改）
 │   │   └── SettingsRepository.kt# DataStore（API Key 经 ApiKeyCipher/AndroidKeyStore 加密；DataStore 可注入供测试）
 │   ├── llm/OpenAiClient.kt      # OpenAI 兼容 SSE 流式客户端
+│   ├── agent/                   # 手机 Agent MVP（v0.20.0）：无障碍感知 + 控件编号 + LLM 决策循环 + 手势执行 + 安全围栏
 │   ├── notify/                  # AlarmScheduler（含每日重复/每日总结）+ TaskReminderReceiver（含稍后提醒）+ TaskSnoozeReceiver + DailySummaryReceiver + BootReceiver（跨天重置 + 每日闹钟重排）
 │   └── widget/TodayWidget.kt    # Glance 今日任务小组件（黑底白字 3 条，点击直达任务页）
 │   └── ui/
@@ -186,6 +187,7 @@
 - [x] 今日任务小组件（v0.19.0：Glance 黑底白字最多 3 条，点击直达 daoshi://tasks；刷新 = 系统 30min + App 启动 + 任务增删改勾选；glance-appwidget 1.1.1）
 - [x] 动效打磨（v0.19.1：任务行弹簧重排 placementSpec；热力点 40ms 级联浮现；洞察卡 EaseOutExpo 340ms 进场）
 - [x] 测试加固（E1/E2：RetryOnFailure 整测重试兜底 IO×虚拟时间卡死；DailySummaryTest / TasksDailyResetTest / ChatListViewModelTest（hidden 过滤 + 物理删除级联）等，总数只增不减）
+- [x] 手机 Agent MVP（v0.20.0：`agent/` 六件套——AgentAccessibilityService（感知+手势+悬浮停止）、ScreenState（控件编号清单，纯函数单测）、AgentPrompts（四段式 prompt + 宽容 JSON 动作解析）、AgentLoop（观察→LLM→执行→等界面稳定，maxSteps=15）、ActionExecutor（tap/swipe/setText/back/home）、AgentConfig（白名单围栏：空=不限制，本应用永远放行）；安全围栏 = 白名单 + 敏感词确认（支付/删除/发送）+ 悬浮停止 + 步数上限；入口 = 任务页顶栏 ▶，执行摘要可写入主导师会话；`res/xml/agent_accessibility_config.xml` + Manifest BIND_ACCESSIBILITY_SERVICE）
 
 ## 八、本地构建（已验证可用）
 

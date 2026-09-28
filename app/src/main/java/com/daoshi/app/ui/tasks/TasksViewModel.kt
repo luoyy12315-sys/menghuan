@@ -126,6 +126,15 @@ class TasksViewModel(
         }
     }
 
+    /** 自动执行摘要写入主导师会话（进入 LLM 历史，下轮对话可感知） */
+    fun writeAgentSummary(content: String) = viewModelScope.launch {
+        runCatching {
+            db.messageDao().insert(
+                ChatMessage(conversationId = MENTOR_PERSONA_ID, isFromUser = true, content = content)
+            )
+        }
+    }
+
     companion object {
         /** 主导师 = 种子人设「阿布」，打卡回执固定写入该会话 */
         const val MENTOR_PERSONA_ID = 1L

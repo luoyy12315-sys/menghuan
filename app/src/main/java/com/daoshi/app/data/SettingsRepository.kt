@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -45,6 +46,9 @@ class SettingsRepository(
     private val keyKeyEnc = stringPreferencesKey("api_key_enc") // 新密文键 Base64(IV+GCM)
     private val keyNotifyEnabled = booleanPreferencesKey("notify_enabled")
     private val keyDailySummaryEnabled = booleanPreferencesKey("daily_summary_enabled")
+    private val keyAgentMaxSteps = intPreferencesKey("agent_max_steps")
+    private val keyAgentWhitelist = stringPreferencesKey("agent_whitelist")
+    private val keyAgentSensitiveConfirm = booleanPreferencesKey("agent_sensitive_confirm")
 
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
@@ -146,6 +150,28 @@ class SettingsRepository(
 
     suspend fun setDailySummaryEnabled(enabled: Boolean) {
         store.edit { it[keyDailySummaryEnabled] = enabled }
+    }
+
+    /** 自动执行 Agent 的安全配置（白名单为逗号分隔包名；空 = 不限制） */
+    val agentConfig: Flow<com.daoshi.app.agent.AgentConfig> = store.data.map { prefs ->
+        com.daoshi.app.agent.AgentConfig(
+            maxSteps = prefs[keyAgentMaxSteps] ?: 15,
+            whitelist = prefs[keyAgentWhitelist]
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?.toSet()
+                ?: emptySet(),
+            sensitiveConfirm = prefs[keyAgentSensitiveConfirm] ?: true,
+        )
+    }
+
+    suspend fun setAgentWhitelist(packages: Set<String>) {
+        store.edit { it[keyAgentWhitelist] = packages.joinToString(",") }
+    }
+
+    suspend fun setAgentSensitiveConfirm(enabled: Boolean) {
+        store.edit { it[keyAgentSensitiveConfirm] = enabled }
     }
 
     /** 提炼水位线：每个会话已提炼到的最后一条消息 id（extract_upto_<personaId>） */

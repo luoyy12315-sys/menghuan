@@ -108,6 +108,7 @@ private val TaskPlacementSpring = spring<androidx.compose.ui.unit.IntOffset>(
 fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)) {
     val tasks by vm.tasks.collectAsState()
     var showTaskSheet by remember { mutableStateOf(false) }
+    var showAgentSheet by remember { mutableStateOf(false) }
     var editingTask by remember { mutableStateOf<TaskItem?>(null) }
     var deleteTarget by remember { mutableStateOf<TaskItem?>(null) }
 
@@ -130,11 +131,20 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
         NeuTopBar(
             title = "任务",
             actions = {
-                NeuCircleButton(
-                    onClick = { editingTask = null; showTaskSheet = true },
-                    size = 38.dp,
-                ) {
-                    Icon(MIcons.Plus, contentDescription = "新建任务", tint = TextPrimary, modifier = Modifier.size(19.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    NeuCircleButton(
+                        onClick = { showAgentSheet = true },
+                        size = 38.dp,
+                    ) {
+                        Icon(MIcons.Play, contentDescription = "自动执行", tint = TextPrimary, modifier = Modifier.size(19.dp))
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    NeuCircleButton(
+                        onClick = { editingTask = null; showTaskSheet = true },
+                        size = 38.dp,
+                    ) {
+                        Icon(MIcons.Plus, contentDescription = "新建任务", tint = TextPrimary, modifier = Modifier.size(19.dp))
+                    }
                 }
             },
         )
@@ -219,6 +229,10 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             },
             onDismiss = { showTaskSheet = false },
         )
+    }
+
+    if (showAgentSheet) {
+        AgentSheet(vm = vm, onDismiss = { showAgentSheet = false })
     }
 
     deleteTarget?.let { target ->
