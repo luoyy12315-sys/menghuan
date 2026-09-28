@@ -154,6 +154,20 @@ class DataViewModel(
         }
     }
 
+    /** 洞察一键转任务（长按洞察卡）：标题=洞察标题，备注=洞察说明，来源标记 ai */
+    fun convertInsightToTask(insight: AiInsight) = viewModelScope.launch {
+        runCatching {
+            db.taskDao().upsert(
+                com.daoshi.app.data.model.TaskItem(
+                    title = insight.title,
+                    note = insight.detail,
+                    repeatDaily = false,
+                    createdBy = "ai",
+                )
+            )
+        }
+    }
+
     companion object {
         val Factory = viewModelFactory {
             initializer {

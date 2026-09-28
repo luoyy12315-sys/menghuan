@@ -1,10 +1,12 @@
 package com.daoshi.app.ui.data
 
+import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -87,6 +90,7 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
     val extractMessage by vm.extractMessage.collectAsState()
     val apiReady by vm.apiReady.collectAsState()
     var showEditSheet by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val scrollState = rememberScrollState()
 
     // 提炼结果反馈：展示数秒后自动清除
@@ -158,7 +162,15 @@ fun DataScreen(vm: DataViewModel = viewModel(factory = DataViewModel.Factory)) {
                 )
             }
             insights.forEach { insight ->
-                InsightCard(insight.title, insight.detail, insight.dateLabel())
+                InsightCard(
+                    insight.title,
+                    insight.detail,
+                    insight.dateLabel(),
+                    onConvert = {
+                        vm.convertInsightToTask(insight)
+                        Toast.makeText(context, "已转为任务", Toast.LENGTH_SHORT).show()
+                    },
+                )
             }
         }
     }
@@ -434,29 +446,68 @@ private fun ProfileEditSheet(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun InsightCard(title: String, desc: String, date: String) {
-    NeuCard(cornerRadius = 22.dp, contentPadding = 16.dp) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier
-                    .size(30.dp)
-                    .background(NeuAccent, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("✦", fontSize = 13.sp, color = Color.White)
+private fun InsightCard(
+    title: String,
+    desc: String,
+    date: String,
+    onConvert: () -> Unit,
+) {
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    var menuOpen by remember { mutableStateOf(false) }
+    Box {
+        NeuCard(
+            cornerRadius = 22.dp,
+            contentPadding = 16.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = {},
+                    onLongClick = {
+                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                        menuOpen = true
+                    },
+                ),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(30.dp)
+                        .background(NeuAccent, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("✦", fontSize = 13.sp, color = Color.White)
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    title,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(date, fontSize = 11.sp, color = com.daoshi.app.ui.theme.FaintText)
             }
-            Spacer(Modifier.width(10.dp))
-            Text(
-                title,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = TextPrimary,
-                modifier = Modifier.weight(1f),
-            )
-            Text(date, fontSize = 11.sp, color = com.daoshi.app.ui.theme.FaintText)
+            Spacer(Modifier.height(9.dp))
+            Text(desc, fontSize = 13.sp, lineHeight = 21.sp, color = TextSecondary)
         }
-        Spacer(Modifier.height(9.dp))
-        Text(desc, fontSize = 13.sp, lineHeight = 21.sp, color = TextSecondary)
+        // 长按菜单：洞察 → 任务（复用 AI 建议的落库语义，createdBy=ai）
+        androidx.compose.material3.DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false },
+            containerColor = Color.White,
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+        ) {
+            androidx.compose.material3.DropdownMenuItem(
+                text = { Text("转为任务", fontSize = 15.sp, color = TextPrimary) },
+                onClick = {
+                    menuOpen = false
+                    onConvert()
+                },
+            )
+        }
     }
 }

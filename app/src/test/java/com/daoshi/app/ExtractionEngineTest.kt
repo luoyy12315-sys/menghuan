@@ -161,4 +161,24 @@ class ExtractionEngineTest {
 
         assertTrue(app.taskSuggestionHub.suggestions.value[1L].orEmpty().isEmpty())
     }
+
+    @Test
+    fun `提炼 prompt 注入近 7 天任务完成情况`() = runBlocking {
+        val taskId = app.db.taskDao().upsert(
+            com.daoshi.app.data.model.TaskItem(title = "每日阅读", repeatDaily = true)
+        )
+        app.db.taskCompletionDao().insert(
+            com.daoshi.app.data.model.TaskCompletion(
+                taskId = taskId,
+                day = java.time.LocalDate.now().toEpochDay(),
+            )
+        )
+        insertTurn()
+        enqueueExtraction()
+        app.extractionEngine.extractAll()
+
+        val body = server.takeRequest().body.readUtf8()
+        assertTrue("任务完成情况应注入 prompt", body.contains("近 7 天任务完成情况"))
+        assertTrue("应带任务名与次数", body.contains("每日阅读（1 次）"))
+    }
 }

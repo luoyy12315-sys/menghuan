@@ -68,9 +68,12 @@ class ExtractionEngine(
         val transcript = newMessages.joinToString("\n\n") { message ->
             (if (message.isFromUser) "用户：" else "导师：") + message.content
         }
+        // 近 7 天任务完成情况作为附加上下文：让洞察可以引用真实执行数据
+        val taskContext = buildTaskContext()
+        val content = if (taskContext.isEmpty()) transcript else "$transcript\n\n$taskContext"
         val sb = StringBuilder()
         OpenAiClient(config.baseUrl, config.apiKey, config.model)
-            .chat(ProfileExtractor.SYSTEM_PROMPT, listOf(ChatMessage(conversationId = 0, isFromUser = true, content = transcript)))
+            .chat(ProfileExtractor.SYSTEM_PROMPT, listOf(ChatMessage(conversationId = 0, isFromUser = true, content = content)))
             .collect { token -> sb.append(token) }
 
         val extracted = ProfileExtractor.parse(sb.toString())
@@ -96,6 +99,26 @@ class ExtractionEngine(
         val fresh = suggestionHub.filterAndRecord(suggestions, existingTitles)
         suggestionHub.publish(personaId, fresh)
         return fresh.size
+    }
+
+    /** 近 7 天任务完成情况（任务名 + 次数），注入提炼 prompt；无记录返回空串 */
+    private suspend fun buildTaskContext(): String {
+        val tasks = runCatching { db.taskDao().observeAll().first() }.getOrDefault(emptyList())
+        val completions = runCatching { db.taskCompletionDao().observeAll().first() }.getOrDefault(emptyList())
+        if (completions.isEmpty()) return ""
+        val sinceDay = java.time.LocalDate.now().toEpochDay() - 6
+        val titleById = tasks.associate { it.id to it.title }
+        val lines = completions
+            .filter { it.day >= sinceDay }
+            .groupBy { titleById[it.taskId] }
+            .filterKeys { it != null }
+            .map { (title, list) -> "- $title（${list.size} 次）" }
+            .sorted()
+        if (lines.isEmpty()) return ""
+        return buildString {
+            append("[近 7 天任务完成情况]")
+            lines.forEach { append("\n").append(it) }
+        }
     }
 
     /** @return 新增数 to 更新数 */
