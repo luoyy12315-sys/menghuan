@@ -154,6 +154,7 @@
 - [x] 会话置顶（v0.6.0：Room v5 personas.pinned + 长按会话行切换 + 📌 标识；编辑人设透传 pinned）
 - [x] 测试基建（v0.5.1：OpenAiClientTest 用 MockWebServer 验证 SSE 契约；ExtractionEngineTest 集成测试——提炼落库/去重/水位线；共 30 个测试）
 - [x] 任务编辑（v0.7.0：长按任务行打开预填弹层，改标题/备注/日期/提醒并重排闹钟；删除入口在编辑弹层内，仍走二次确认）
+- [x] 消息长按菜单（v0.9.0：复制全文/删除单条；删除同步移出 LLM 历史；种子消息仅复制，流式期间不可删；MIcons 新增 Copy/Delete）
 - [x] AI 提炼流水线（v0.4.0：`data/ExtractionEngine.kt`——聊天回复成功落库后检查水位线，攒够 8 条增量消息自动调 LLM（复用 OpenAiClient）；产出 ProfileFact（按 key 覆盖，manual 来源不被篡改）+ AiInsight（标题去重、留 20 条）；解析器 `ProfileExtractor` 纯函数 + JVM 单测；数据页洞察区有手动「提炼」入口（API 未配置时隐藏））
 - [x] 数据页习惯/洞察接真实数据（v0.4.0：ai_insights 表（Room v4 + MIGRATION_3_4）驱动洞察卡，空时回退示例并标注「示例数据」；习惯卡改为「近 7 天打卡」每日完成热力（真数据）；档案条目 source=ai 带小徽标）
 
