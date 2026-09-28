@@ -57,5 +57,7 @@ class MentorApp : Application() {
                 }
             }
         }
+        // 今日任务小组件随启动刷新一次（任务数据可能被导入等旁路改过）
+        com.daoshi.app.widget.TodayWidgetRefresher.refresh(this)
     }
 }

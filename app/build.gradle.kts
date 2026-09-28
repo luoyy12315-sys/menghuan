@@ -14,8 +14,8 @@ android {
         applicationId = "com.daoshi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 34
-        versionName = "0.18.0"
+        versionCode = 35
+        versionName = "0.19.0"
         // 只保留中英文资源，去掉依赖库里几十种语言的 strings/日期符号
         resourceConfigurations.addAll(listOf("zh", "zh-rCN", "en"))
     }
@@ -104,6 +104,9 @@ dependencies {
 
     // LLM 流式请求（OpenAI 兼容 SSE）
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // 桌面小组件（今日任务：黑底白字 3 条，点击直达任务页）
+    implementation("androidx.glance:glance-appwidget:1.1.1")
 
     // JVM 截图测试（Robolectric RNG + Roborazzi 截图）
     testImplementation("junit:junit:4.13.2")

@@ -55,6 +55,7 @@ class TasksViewModel(
                     AlarmScheduler.scheduleDaily(appContext, id, title, remindAt)
                 remindAt != null -> AlarmScheduler.schedule(appContext, id, title, remindAt)
             }
+            com.daoshi.app.widget.TodayWidgetRefresher.refresh(appContext)
         }
     }
 
@@ -70,6 +71,7 @@ class TasksViewModel(
                     AlarmScheduler.schedule(appContext, task.id, task.title, remindAt)
                 else -> AlarmScheduler.cancel(appContext, task.id, task.title)
             }
+            com.daoshi.app.widget.TodayWidgetRefresher.refresh(appContext)
         }
     }
 
@@ -112,6 +114,7 @@ class TasksViewModel(
                 )
             }
         }
+        com.daoshi.app.widget.TodayWidgetRefresher.refresh(appContext)
     }
 
     fun delete(task: TaskItem) = viewModelScope.launch {
@@ -119,6 +122,7 @@ class TasksViewModel(
             db.taskDao().delete(task.id)
             db.taskCompletionDao().deleteAllForTask(task.id)
             AlarmScheduler.cancel(appContext, task.id, task.title)
+            com.daoshi.app.widget.TodayWidgetRefresher.refresh(appContext)
         }
     }
 
