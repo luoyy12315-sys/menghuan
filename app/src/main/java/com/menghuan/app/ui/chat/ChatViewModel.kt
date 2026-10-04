@@ -419,13 +419,40 @@ class ChatViewModel(
         runCatching { personaRepository.save(p) }
     }
 
-    /** v0.48.0：聊天音效（发送"嗖"/回复"叮咚"），喇叭开关控制；音效合成本身走应用私有线程 */
-    private fun playChatToneIfEnabled(kind: com.menghuan.app.realtime.CallTones.Kind) {
+    // ---- v0.49.0：AI 回复语音朗读（右上角喇叭开关；音色用人设的通话音色）----
+
+    private var readAloudJob: kotlinx.coroutines.Job? = null
+
+    /** 喇叭关闭 / 用户新发消息时调用：立即掐掉朗读 */
+    fun stopReadAloud() {
+        readAloudJob?.cancel()
+        readAloudJob = null
+    }
+
+    private fun readAloudIfEnabled(text: String) {
         viewModelScope.launch {
-            val enabled = runCatching { settingsRepository.chatSoundEnabled.first() }.getOrDefault(true)
-            if (enabled) com.menghuan.app.realtime.CallTones.play(kind)
+            val enabled = runCatching { settingsRepository.chatReadAloud.first() }.getOrDefault(false)
+            if (!enabled) return@launch
+            stopReadAloud() // 新回复打断旧朗读
+            val clean = cleanForSpeech(text)
+            if (clean.isBlank()) return@launch
+            readAloudJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val voice = runCatching { settingsRepository.callVoiceFor(personaId).first() }
+                    .getOrDefault("").ifBlank { "zh-CN-XiaoxiaoNeural" }
+                val mp3 = runCatching {
+                    com.menghuan.app.realtime.EdgeTtsClient(voice).synthesize(clean)
+                }.getOrNull() ?: return@launch
+                val pcm = com.menghuan.app.realtime.Mp3Decoder.decode(mp3) ?: return@launch
+                com.menghuan.app.realtime.ReadAloudPlayer.play(pcm.samples, pcm.sampleRate)            }
         }
     }
+
+    /** 朗读文本清洗：剥生成标记与 Markdown 记号，只留 TTS 读起来自然的话 */
+    private fun cleanForSpeech(text: String): String = text
+        .replace(Regex("\\[生图:[^\\]]*\\]"), "")
+        .replace(Regex("\\[操作手机:[^\\]]*\\]"), "")
+        .replace(Regex("[*#`>~]"), "")
+        .trim()
 
     fun send() {
         val text = _uiState.value.input.trim()
@@ -541,7 +568,7 @@ class ChatViewModel(
 
     /** 发送共用链路：乐观上屏 → 落库 → LLM 回复 */
     private fun send(userMsg: ChatMessage, clearInput: Boolean) {
-        playChatToneIfEnabled(com.menghuan.app.realtime.CallTones.Kind.SENT)
+        stopReadAloud() // 用户开口（新消息）掐掉上一条朗读
         _uiState.update {
             it.copy(
                 input = if (clearInput) "" else it.input,
@@ -816,7 +843,7 @@ class ChatViewModel(
         // 这里把原串带回去供生图解析
         val rawReply = persistReply(sb, reasoning)
         finishStream()
-        playChatToneIfEnabled(com.menghuan.app.realtime.CallTones.Kind.RECEIVED)
+        readAloudIfEnabled(rawReply)
         // 生图（v0.35.0）：模型按 system prompt 约定输出 [生图:提示词] 标记时，
         // 文字已剥掉标记落库，这里再把图生出来落盘并挂成一条图片消息
         maybeGenerateImage(rawReply)

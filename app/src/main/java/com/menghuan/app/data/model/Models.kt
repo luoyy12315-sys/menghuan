@@ -111,7 +111,12 @@ enum class MediaKind {
      * 自定义表情（v0.45.0）：与图片共用 imagePath 通道（模型照样能看到图），
      * 但气泡要**小一圈且不可点开**——用户明确要求"跟图片不一样，显示区域小点，并且不能点开"。
      */
-    STICKER;
+    STICKER,
+    /**
+     * 语音通话记录卡（v0.49.0）：通话挂断后落进聊天流（"语音通话 · X分X秒"），
+     * attachmentPath 存 call_sessions.id，点气泡弹出该次通话的文字转写。
+     */
+    CALL;
 
     companion object {
         /**

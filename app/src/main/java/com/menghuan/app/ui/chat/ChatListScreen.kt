@@ -283,10 +283,10 @@ class ChatListViewModel(
     private fun previewOf(persona: Persona, last: ChatMessage?): String {
         val msg = last ?: return "暂无消息"
         // 表情消息 content 为空，直接取会得到"你："；这里补一个可读摘要（v0.45.0）
-        val content = if (MediaKind.fromLegacy(msg.mediaKind, msg.imagePath) == MediaKind.STICKER) {
-            "[表情]"
-        } else {
-            msg.content.replace('\n', ' ')
+        val content = when (MediaKind.fromLegacy(msg.mediaKind, msg.imagePath)) {
+            MediaKind.STICKER -> "[表情]"
+            MediaKind.CALL -> "📞 ${msg.content}" // 语音通话记录卡（v0.49.0）
+            else -> msg.content.replace('\n', ' ')
         }
         return if (msg.isFromUser) "你：$content" else content
     }

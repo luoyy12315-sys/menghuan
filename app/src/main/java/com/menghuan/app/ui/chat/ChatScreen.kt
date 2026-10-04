@@ -84,6 +84,7 @@ import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.MediaKind
 import com.menghuan.app.ui.common.LocalContentWidth
 import com.menghuan.app.ui.persona.PersonaEditorSheet
+import com.menghuan.app.ui.realtime.CallLogSheet
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.common.EaseOutQuart
 import com.menghuan.app.ui.common.MarkdownText
@@ -152,7 +153,9 @@ fun ChatScreen(
     var reasoningView by remember { mutableStateOf<ChatMessage?>(null) } // 思考链查看（v0.41.4）
     var showApiSwitch by remember { mutableStateOf(false) }
     var showPersonaEditor by remember { mutableStateOf(false) } // v0.47.1：三点 = 编辑人设
-    var soundOn by remember { mutableStateOf(true) } // v0.48.0：聊天音效开关（初始值见 appContainer 后）
+    var soundOn by remember { mutableStateOf(false) } // v0.49.0：AI 回复语音朗读开关（默认关）
+    var callLogSession by remember { mutableStateOf<Long?>(null) } // v0.49.0：点开的通话记录卡
+    var callLogTitle by remember { mutableStateOf("") }
     // v0.43.0 输入区面板：0=收起 1=表情 2=加号（同一时刻只开一个，与键盘互斥）
     var panel by remember { mutableStateOf(0) }
     var showCamera by remember { mutableStateOf(false) }
@@ -160,11 +163,11 @@ fun ChatScreen(
     val context = LocalContext.current
 
     val appContainer = context.applicationContext as com.menghuan.app.MenghuanApp
-    // v0.48.0：喇叭开关初始值（DataStore，异步读）
+    // v0.49.0：喇叭开关初始值（DataStore，异步读）
     LaunchedEffect(Unit) {
         soundOn = runCatching {
-            appContainer.settingsRepository.chatSoundEnabled.first()
-        }.getOrDefault(true)
+            appContainer.settingsRepository.chatReadAloud.first()
+        }.getOrDefault(false)
     }
     // 自定义表情（v0.43.0）：库表 → 面板真实数据源
     val stickers by appContainer.db.stickerDao().observeAll()
@@ -407,10 +410,11 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // v0.48.0：喇叭 = 聊天音效开关（发送"嗖"/回复"叮咚"）；再右三个点 = 编辑人设。
+                    // v0.49.0：喇叭 = AI 回复语音朗读开关（开着时每条 AI 回复自动读出来）；
+                    // 再右三个点 = 编辑人设。
                     Icon(
                         if (soundOn) MIcons.VolumeOn else MIcons.VolumeOff,
-                        contentDescription = if (soundOn) "关闭消息音效" else "开启消息音效",
+                        contentDescription = if (soundOn) "关闭语音朗读" else "开启语音朗读",
                         tint = if (soundOn) TextPrimary else MutedText,
                         modifier = Modifier
                             .size(21.dp)
@@ -420,7 +424,8 @@ fun ChatScreen(
                             ) {
                                 val next = !soundOn
                                 soundOn = next
-                                scope.launch { appContainer.settingsRepository.setChatSoundEnabled(next) }
+                                scope.launch { appContainer.settingsRepository.setChatReadAloud(next) }
+                                if (!next) vm.stopReadAloud()
                             },
                     )
                     Spacer(Modifier.width(12.dp))
@@ -641,6 +646,37 @@ fun ChatScreen(
                                                 maxWidth = bubbleMaxWidth,
                                                 onLongPress = { messageMenu = msg },
                                             )
+                                        }
+
+                                    // 语音通话记录卡（v0.49.0）：挂断后落进聊天流，点开看文字转写
+                                    MediaKind.CALL ->
+                                        Box(
+                                            Modifier.fillMaxWidth(),
+                                            contentAlignment = if (msg.isFromUser) Alignment.CenterEnd
+                                            else Alignment.CenterStart,
+                                        ) {
+                                            Row(
+                                                Modifier
+                                                    .neuSurface(999.dp, color = NeuSurface)
+                                                    .clickable(
+                                                        interactionSource = remember { MutableInteractionSource() },
+                                                        indication = null,
+                                                    ) {
+                                                        callLogSession = msg.attachmentPath.toLongOrNull() ?: 0L
+                                                        callLogTitle = msg.content
+                                                    }
+                                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                            ) {
+                                                Icon(
+                                                    MIcons.Phone,
+                                                    contentDescription = null,
+                                                    tint = TextPrimary,
+                                                    modifier = Modifier.size(15.dp),
+                                                )
+                                                Spacer(Modifier.width(8.dp))
+                                                Text(msg.content, fontSize = 13.sp, color = TextPrimary)
+                                            }
                                         }
 
                                     MediaKind.TEXT -> MessageBubble(
@@ -1033,6 +1069,16 @@ fun ChatScreen(
                 showPersonaEditor = false
             },
             onDismiss = { showPersonaEditor = false },
+        )
+    }
+
+    // v0.49.0：通话记录卡点开 → 本次通话文字转写
+    callLogSession?.let { sessionId ->
+        CallLogSheet(
+            sessionId = sessionId,
+            title = callLogTitle.ifBlank { "语音通话" },
+            personaName = persona?.name ?: "对方",
+            onDismiss = { callLogSession = null },
         )
     }
 
