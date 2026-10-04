@@ -7,15 +7,38 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 重启后重排任务提醒 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 记账语音录入（v0.42.0）：系统 SpeechRecognizer 需要录音权限，运行时申请 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- App 内自绘拍摄界面（v0.43.0）：CameraX 预览 + 拍照，运行时申请 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 没有相机硬件的设备（模拟器/部分平板）也要能装：相机功能入口自动隐藏 -->
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+    <!-- Agent 应用白名单勾选列表：读取有桌面入口的已安装应用（Android 11+ 包可见性） -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!--
+          语音识别服务（v0.43.1 补）：Android 11+ 的包可见性同样管着 SpeechRecognizer。
+          不声明的话，某些 ROM 上 isRecognitionAvailable() 会返回 false、
+          或 createSpeechRecognizer() 拿不到服务，导致语音永远转不出文字。
+        -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
 
     <application
-        android:name=".MentorApp"
+        android:name=".MenghuanApp"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:theme="@style/Theme.Mentor"
+        android:theme="@style/Theme.Menghuan"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true">
 
         <activity
@@ -34,6 +57,32 @@
 
         <receiver
             android:name=".notify.TaskSnoozeReceiver"
+            android:exported="false" />
+
+        <!-- 人设主动关心（v0.38.0）：每晚一次，默认关 -->
+        <receiver
+            android:name=".notify.ProactiveReceiver"
+            android:exported="false" />
+
+        <!-- 导出文件经 FileProvider 以真实文件分享（.md / .json） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- AI 周报：每周日 21:30 生成（数据页查看） -->
+        <receiver
+            android:name=".notify.WeeklyReportReceiver"
+            android:exported="false" />
+
+        <!-- 每日建议：每天早上 07:30 生成（数据页查看，可长按转任务，v0.42.0） -->
+        <receiver
+            android:name=".notify.DailySuggestionReceiver"
             android:exported="false" />
 
         <receiver
@@ -63,7 +112,7 @@
         <service
             android:name=".agent.AgentAccessibilityService"
             android:exported="false"
-            android:label="导师 · 自动执行"
+            android:label="梦欢 · 自动执行"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

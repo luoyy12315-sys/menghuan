@@ -7,17 +7,23 @@ plugins {
 }
 
 android {
-    namespace = "com.daoshi.app"
+    namespace = "com.menghuan.app"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.daoshi.app"
+        applicationId = "com.menghuan.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 37
-        versionName = "0.20.0"
+        versionCode = 91
+        versionName = "0.45.1"
         // 只保留中英文资源，去掉依赖库里几十种语言的 strings/日期符号
         resourceConfigurations.addAll(listOf("zh", "zh-rCN", "en"))
+        // sherpa-onnx AAR 自带 4 套 ABI（arm64/v7a/x86/x86_64）共 127MB so，
+        // 打进一个包要 120MB+。x86 只活在模拟器/少数 x86 平板上，真机用不到 → 砍掉，
+        // 只留两个手机 ABI（arm64-v8a + armeabi-v7a，覆盖 2017 年以后的全部手机）。
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     buildFeatures {
@@ -37,6 +43,12 @@ android {
         resources {
             excludes += setOf("META-INF/*.version", "DebugProbesKt.bin")
         }
+    }
+
+    // sherpa-onnx 从 assets 读模型走 NDK AAssetManager：**压缩过的 asset 无法随机读**
+    // （官方示例同样关闭压缩），onnx/txt 模型文件必须原样打包
+    androidResources {
+        noCompress.addAll(listOf("onnx", "txt"))
     }
 
     buildTypes {
@@ -74,10 +86,10 @@ android {
     }
 }
 
-// Room schema 导出（exportSchema = true 需要），迁移排错时 diff 相邻版本 JSON
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
-}
+    // Room schema 导出（exportSchema = true 需要），迁移排错时 diff 相邻版本 JSON
+    ksp {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
@@ -91,8 +103,24 @@ dependencies {
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    // 窗口宽度等级（平板/折叠屏 >=600dp 宽版式的唯一判源）
+    implementation("androidx.compose.material3:material3-window-size-class")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    // 离线大模型识别用不上：相机（自绘拍摄界面，v0.43.0 加号面板的「拍摄」）
+    // 只用 core/camera2/lifecycle/view 四个，不要 camera-compose（API 尚不稳定，
+    // 这里用 AndroidView 包 PreviewView，兼容性和可控性都更好）
+    val camerax = "1.4.1"
+    implementation("androidx.camera:camera-core:$camerax")
+    implementation("androidx.camera:camera-camera2:$camerax")
+    implementation("androidx.camera:camera-lifecycle:$camerax")
+    implementation("androidx.camera:camera-view:$camerax")
+
+    // 端侧离线语音识别（v0.44.1）：k2-fsa/sherpa-onnx 官方 AAR（Apache-2.0），
+    // 自带 4 个 ABI 的 onnxruntime/jni so；中文流式模型放在 src/main/assets/asr/
+    // （见 SherpaAsr）。proguard-rules.pro 里有对应 keep 规则。
+    implementation(files("libs/sherpa-onnx-1.13.8.aar"))
 
     // 本地数据库：对话 / 人设 / 任务
     implementation("androidx.room:room-runtime:2.6.1")

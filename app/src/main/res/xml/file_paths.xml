@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 导出文件（会话 Markdown / 数据 JSON / AI 周报）先落 cache/exports 再经 FileProvider 分享 -->
+    <cache-path
+        name="exports"
+        path="exports/" />
+</paths>

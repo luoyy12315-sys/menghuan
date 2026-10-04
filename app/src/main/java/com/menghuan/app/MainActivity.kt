@@ -1,0 +1,559 @@
+package com.menghuan.app
+
+import android.graphics.Color as AndroidColor
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.annotation.StringRes
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.navigation.NavHostController
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import androidx.navigation.navDeepLink
+import com.menghuan.app.ui.chat.ChatListScreen
+import com.menghuan.app.ui.chat.ChatScreen
+import com.menghuan.app.ui.common.AdaptiveScreen
+import com.menghuan.app.ui.common.AdaptiveSplitScreen
+import com.menghuan.app.ui.common.ContentMaxWidth
+import com.menghuan.app.ui.common.EaseOutExpo
+import com.menghuan.app.ui.common.EaseOutQuart
+import com.menghuan.app.ui.common.LocalWindowWidthClass
+import com.menghuan.app.ui.common.WideMaxContentWidth
+import com.menghuan.app.ui.common.isExpandedWindow
+import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.data.DataScreen
+import com.menghuan.app.ui.persona.PersonaManageScreen
+import com.menghuan.app.ui.profile.MeScreen
+import com.menghuan.app.ui.tasks.TasksScreen
+import com.menghuan.app.ui.theme.AccentInk
+import com.menghuan.app.ui.theme.MIcons
+import com.menghuan.app.ui.theme.MentorTheme
+import com.menghuan.app.ui.theme.MutedText
+import com.menghuan.app.ui.theme.NeuAccent
+import com.menghuan.app.ui.theme.NeuSurface
+import com.menghuan.app.ui.theme.ThemeMode
+import com.menghuan.app.ui.theme.resolveDarkTheme
+import kotlinx.coroutines.launch
+
+class MainActivity : ComponentActivity() {
+    @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            // 主题层：跟随系统 / 强制浅色 / 强制深色（设置 · 外观）。
+            // 首帧同步取值（见 settingsRepository.themeModeBlocking），避免启动时先亮后暗闪一下。
+            MenghuanThemedRoot {
+                // 窗口宽度等级：>=600dp（Medium/Expanded）切平板宽版式（双栏消息 / 两列网格）
+                val windowSizeClass = calculateWindowSizeClass(this)
+                CompositionLocalProvider(LocalWindowWidthClass provides windowSizeClass.widthSizeClass) {
+                    MenghuanAppRoot()
+                }
+            }
+        }
+        // AI 周报补生成：App 打开时检查上周是否缺报（如周末没开机则静默补生成；无 API 自动跳过）
+        val app = application as MenghuanApp
+        app.applicationScope.launch {
+            runCatching {
+                val zone = java.time.ZoneId.systemDefault()
+                val lastMonday = java.time.LocalDate.now(zone).with(java.time.DayOfWeek.MONDAY).minusDays(7)
+                app.weeklyReportGenerator.ensureReport(lastMonday, zone)
+            }
+        }
+    }
+}
+
+/**
+ * 主题根：解析「模式 + 系统深色」→ 深/浅两套色板，并同步系统栏图标颜色。
+ * 系统栏必须显式指定（不用 auto）：auto 会跟随系统深色把图标翻白，
+ * 与 App 自己的深浅选择脱钩（浅色界面上直接看不见图标）。
+ */
+@Composable
+private fun MenghuanThemedRoot(content: @Composable () -> Unit) {
+    val context = LocalContext.current
+    val settings = remember(context) { (context.applicationContext as MenghuanApp).settingsRepository }
+    var mode by remember { mutableStateOf(ThemeMode.fromName(settings.themeModeBlocking())) }
+    LaunchedEffect(settings) {
+        settings.themeMode.collect { mode = ThemeMode.fromName(it) }
+    }
+    val dark = resolveDarkTheme(mode, isSystemInDarkTheme())
+
+    val view = LocalView.current
+    SideEffect {
+        val activity = view.context.findActivity() ?: return@SideEffect
+        val style = if (dark) {
+            SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+        } else {
+            SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+        }
+        activity.enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+    }
+
+    MentorTheme(darkTheme = dark) { content() }
+}
+
+/** Context 可能是 ContextWrapper 套娃（弹层/预览），向上找真正的 Activity */
+private tailrec fun android.content.Context.findActivity(): MainActivity? = when (this) {
+    is MainActivity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private data class TopLevelRoute(
+    val route: String,
+    @StringRes val labelRes: Int,
+    val icon: ImageVector,
+)
+
+/**
+ * push 层级页（单聊/人设管理/记账本/洞察详情）的进出场时长（ms）。
+ *
+ * v0.43.1 起**所有 push 路由 + 底栏显隐共用同一个值**，这是修"返回时底栏先冒出来"
+ * 的前提：只要有一处时长不一致，底栏和页面就会各走各的，用户看到的就是"错位"。
+ */
+private const val PUSH_TRANSITION_MS = 420
+
+/** 顶级 tab 顺序 = Pager 页序 = 底栏序 */
+private val topLevelRoutes = listOf(
+    TopLevelRoute("chatList", R.string.tab_chat, MIcons.ChatBubble),
+    TopLevelRoute("data", R.string.tab_data, MIcons.BarChart),
+    TopLevelRoute("tasks", R.string.tab_tasks, MIcons.Checklist),
+    TopLevelRoute("me", R.string.tab_me, MIcons.Person),
+)
+
+@Composable
+private fun MenghuanAppRoot() {
+    val navController = rememberNavController()
+    val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(pageCount = { topLevelRoutes.size })
+    // home 的 deep link（menghuan://open/{page}）只在该 back stack entry 上生效一次：
+    // entry.arguments 里的 page 会永远留着，从单聊等 push 层返回重新组合时
+    // LaunchedEffect 会再跑一遍，把用户拽回深链 tab（「退出对话落到任务页」的根因）。
+    // 记下已消费的 entry id，返回时不再滚动，让 Pager 自然恢复离开时的页面。
+    var appliedDeepLinkEntry by rememberSaveable { mutableStateOf<String?>(null) }
+    // 双栏右栏当前会话（0 = 未选中显示占位；rememberSaveable 保旋转/进程重建）
+    var twoPaneChatId by rememberSaveable { mutableStateOf(0L) }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        // 系统栏 insets 全交给 AdaptiveScreen 处理，避免与各页面重复叠加
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        bottomBar = {
+            // 底栏只在 home（四 tab Pager）显示；单聊/人设管理是 push 层级页，
+            // 隐藏底栏让输入栏直达屏幕底部（否则输入栏与底栏叠在一起）
+            //
+            // ⚠️⚠️ **返回时底栏不能"先冒出来"**（v0.43.1 修用户反馈的第 4 条）：
+            //   `currentBackStackEntryAsState()` 在 `popBackStack()` 的**那一刻**就切回
+            //   "home"，而单聊页的退场动画要跑 420ms。于是这 420ms 里底栏已经渲染出来、
+            //   Scaffold 还把 `innerPadding` 加大 → 正在滑出的聊天页被往上挤了一下
+            //   （用户看到"输入框往上跳"），最后才和顶栏一起退干净。
+            //
+            // 正解 = **底栏的显隐也走动画，且退场要盖住整段退场动画**：
+            //   进场：等 420ms 后再出现（此时聊天页已经滑走，不会互相挤）
+            //   退场：立刻消失（同 420ms 的 shrink 参与，视觉上是"跟着页面一起收走"）
+            // 用 `AnimatedVisibility` 而不是直接 `if`，底栏的高度变化也是渐进的，
+            // Scaffold 的 innerPadding 随之平滑，聊天页不会再被顶。
+            val backStackEntry by navController.currentBackStackEntryAsState()
+            val atHome = backStackEntry?.destination?.route == "home"
+            androidx.compose.animation.AnimatedVisibility(
+                visible = atHome,
+                enter = androidx.compose.animation.expandVertically(
+                    androidx.compose.animation.core.tween(PUSH_TRANSITION_MS, easing = EaseOutQuart),
+                ) + fadeIn(androidx.compose.animation.core.tween(200, delayMillis = 200)),
+                exit = androidx.compose.animation.shrinkVertically(
+                    androidx.compose.animation.core.tween(180, easing = EaseOutQuart),
+                ) + fadeOut(androidx.compose.animation.core.tween(140)),
+            ) {
+                val app = LocalContext.current.applicationContext as MenghuanApp
+                val unread by app.unreadCenter.unreadCount.collectAsState()
+                HomeBottomBar(
+                    pagerState = pagerState,
+                    chatUnread = unread > 0,
+                    onSelectTab = { index -> scope.launch { pagerState.animateScrollToPage(index) } },
+                )
+            }
+        },
+    ) { innerPadding ->
+        NavHost(
+            navController = navController,
+            startDestination = "home",
+            // consumeWindowInsets：让页面内 imePadding 扣除底栏已占的高度
+            modifier = Modifier.padding(innerPadding).consumeWindowInsets(innerPadding),
+            // 默认过渡 = 轻淡入淡出（tab 切换在 Pager 内，不走导航动画）；push 页各自覆盖
+            enterTransition = { fadeIn(tween(240)) },
+            exitTransition = { fadeOut(tween(200)) },
+            popEnterTransition = { fadeIn(tween(240)) },
+            popExitTransition = { fadeOut(tween(200)) },
+        ) {
+            // home = 四 tab 的 HorizontalPager（消息 / 数据 / 任务 / 我的），可横滑切页
+            composable(
+                route = "home",
+                deepLinks = listOf(
+                    navDeepLink { uriPattern = "menghuan://open" },
+                    navDeepLink { uriPattern = "menghuan://open/{page}" },
+                ),
+            ) { entry ->
+                // 仅 deep link（通知/小组件 menghuan://open/{page}）才强制对齐 tab，且只生效一次；
+                // 普通返回（从单聊/人设管理 pop 回 home）不滚动，Pager 自己恢复离开时的页面
+                val deepLinkPage = entry.arguments?.getString("page")
+                val initialTab = when (deepLinkPage) {
+                    "chatList" -> 0
+                    "data" -> 1
+                    "tasks" -> 2
+                    "me" -> 3
+                    else -> -1
+                }
+                val linkKey = entry.id
+                LaunchedEffect(linkKey) {
+                    if (initialTab >= 0 && appliedDeepLinkEntry != linkKey) {
+                        appliedDeepLinkEntry = linkKey
+                        if (pagerState.currentPage != initialTab) {
+                            pagerState.scrollToPage(initialTab)
+                        }
+                    }
+                }
+                HomePages(
+                    navController = navController,
+                    pagerState = pagerState,
+                    twoPaneChatId = twoPaneChatId,
+                    onTwoPaneChatChange = { twoPaneChatId = it },
+                    onOpenLedger = { navController.navigate("ledger") },
+                    onOpenAiDetail = { navController.navigate("ai_detail") },
+                )
+            }
+            // 单聊页：标准 push 进出——从右侧滑入，返回滑出（平板双栏模式下不走此路由）。
+            // v0.41.4 退场手感：滑出从 280ms 拉长到 420ms，并让页面同时轻微缩小
+            // （1→0.96）——纯平移的"唰一下没了"读起来太仓促；缩放收束给出"被收走"的
+            // 空间感，与底栏胶囊指示器的弹簧语言一致。同时去掉退出时的 fadeOut：
+            // 边缩边淡会让输入栏在最后几帧透明化，正是用户看到的"闪一下"。
+            composable(
+                route = "chat/{personaId}",
+                arguments = listOf(navArgument("personaId") { type = NavType.LongType }),
+                // v0.38.0：Agent 进度通知 / 主动关心通知点击直达对应会话
+                deepLinks = listOf(navDeepLink { uriPattern = "menghuan://chat/{personaId}" }),
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                // 单聊页底部避让交给输入栏自己做（max(ime, navBars) 合并动画），
+                // 这里不能再叠一层 navigationBarsPadding，否则退场时输入栏会往上弹（v0.42.4）
+                AdaptiveScreen(applyNavigationBarsPadding = false) {
+                    ChatScreen(
+                        personaId = entry.arguments?.getLong("personaId") ?: 1L,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+            }
+            composable(
+                route = "personas",
+                deepLinks = listOf(navDeepLink { uriPattern = "menghuan://personas" }),
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                // 与单聊页同一套退场手感（v0.41.4）：拉长 + 缩放收束，不叠 fadeOut
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) {
+                AdaptiveScreen { PersonaManageScreen(onBack = { navController.popBackStack() }) }
+            }
+            // 记账本（v0.42.0）：数据页底部入口进入的全屏页
+            composable(
+                route = "ledger",
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) {
+                LedgerRoute(onBack = { navController.popBackStack() })
+            }
+            // AI 洞察 + 周报 详情（v0.42.0）：数据页合并入口进入的全屏页
+            composable(
+                route = "ai_detail",
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) {
+                AiDetailRoute(onBack = { navController.popBackStack() })
+            }
+        }
+    }
+}
+
+/**
+ * Pager 页内容：HorizontalPager 承载四个顶级 tab（手指左右滑切页，越过阻尼走系统默认），
+ * beyondBoundsPageCount 保全部 4 页存活（切页不丢列表位置）。
+ * 平板（>=600dp）消息页为双栏：左会话列表 + 右单聊区，不再 push 单聊。
+ */
+@Composable
+private fun HomePages(
+    navController: NavHostController,
+    pagerState: PagerState,
+    twoPaneChatId: Long,
+    onTwoPaneChatChange: (Long) -> Unit,
+    onOpenLedger: () -> Unit,
+    onOpenAiDetail: () -> Unit,
+) {
+    val wide = isExpandedWindow()
+    HorizontalPager(
+        state = pagerState,
+        // 4 页全部保留在组合内：每页滚动位置不丢；语义树含屏外页属已知取舍
+        beyondViewportPageCount = topLevelRoutes.lastIndex,
+        modifier = Modifier.fillMaxSize(),
+    ) { page ->
+        when (page) {
+            0 ->
+                if (wide) {
+                    AdaptiveSplitScreen(
+                        // 右栏是单聊：底部避让同样交给它的输入栏（见上方 chat 路由注释）
+                        applyNavigationBarsPadding = false,
+                        left = {
+                            ChatListScreen(
+                                onOpen = onTwoPaneChatChange,
+                                onSelect = onTwoPaneChatChange,
+                                selectedPersonaId = twoPaneChatId,
+                            )
+                        },
+                        right = {
+                            if (twoPaneChatId <= 0L) {
+                                TwoPanePlaceholder()
+                            } else {
+                                ChatScreen(
+                                    personaId = twoPaneChatId,
+                                    onBack = { onTwoPaneChatChange(0L) },
+                                    showBack = false,
+                                )
+                            }
+                        },
+                    )
+                } else {
+                    AdaptiveScreen {
+                        ChatListScreen(onOpen = { id -> navController.navigate("chat/$id") })
+                    }
+                }
+            1 -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {
+                // settledPage：翻页动画**停下来**之后才变，用它驱动"数据页真正可见"的入场动画重播
+                DataScreen(
+                    onOpenLedger = onOpenLedger,
+                    onOpenAiDetail = onOpenAiDetail,
+                    visible = pagerState.settledPage == 1,
+                )
+            }
+            2 -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) { TasksScreen() }
+            else -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {
+                MeScreen(onManagePersonas = { navController.navigate("personas") })
+            }
+        }
+    }
+}
+
+/** 双栏右栏无选中会话时的占位（事实短语，无引导文字） */
+@Composable
+private fun TwoPanePlaceholder() {
+    Box(
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("未选择会话", fontSize = 13.sp, color = MutedText)
+    }
+}
+
+/**
+ * 浮起胶囊底栏：白纸 + 发丝线 + 纸叠影；选中项 = 黑色胶囊指示器滑入（弹簧过冲）+
+ * 图标/文字反白。刻意不用 Material NavigationBar（默认 80dp 高 + 胶囊指示器，与设计语言不符）。
+ * 选中态跟随 Pager（拖动跨半页即滑移），点击 = animateScrollToPage 弹簧切页。
+ */
+@Composable
+private fun HomeBottomBar(
+    pagerState: PagerState,
+    chatUnread: Boolean = false,
+    onSelectTab: (Int) -> Unit,
+) {
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val wide = maxWidth >= ContentMaxWidth
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .then(if (wide) Modifier.widthIn(max = ContentMaxWidth) else Modifier)
+                .padding(horizontal = 14.dp)
+                .padding(top = 4.dp, bottom = 8.dp)
+                .navigationBarsPadding(),
+        ) {
+            val barInset = 8.dp
+            val tabIndex = pagerState.currentPage.coerceIn(0, topLevelRoutes.lastIndex)
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    // 用户拍板：底栏不要阴影，靠细线描边与页面基底分区即可
+                    .neuSurface(26.dp, color = NeuSurface, elevation = 0.dp),
+            ) {
+                // 滑动指示器：黑色胶囊按 tab 序号平移，弹簧带轻微过冲
+                BoxWithConstraints(Modifier.matchParentSize()) {
+                    val track = maxWidth - barInset * 2
+                    val cell = track / topLevelRoutes.size
+                    val x by animateDpAsState(
+                        targetValue = barInset + cell * tabIndex,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                        label = "tabIndicator",
+                    )
+                    Box(
+                        Modifier
+                            .offset(x = x)
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                            .width(cell - 16.dp)
+                            .height(40.dp)
+                            .background(NeuAccent, RoundedCornerShape(999.dp)),
+                    )
+                }
+                Row(
+                    Modifier.fillMaxWidth().height(52.dp).padding(horizontal = barInset),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    topLevelRoutes.forEachIndexed { index, route ->
+                        val selected = index == tabIndex
+                        Box(
+                            Modifier
+                                .weight(1f)
+                                .testTag("bottom_tab_$index")
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { if (!selected) onSelectTab(index) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center,
+                            ) {
+                                val iconScale by animateFloatAsState(
+                                    if (selected) 1.08f else 1f,
+                                    spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMedium,
+                                    ),
+                                )
+                                Box {
+                                    Icon(
+                                        route.icon,
+                                        contentDescription = null,
+                                        tint = if (selected) AccentInk else MutedText,
+                                        modifier = Modifier.size(20.dp).scale(iconScale),
+                                    )
+                                    // 消息 tab 未读点：非选中且有未读时叠在图标右上（强调点，与会话列表未读点同语言）
+                                    if (index == 0 && chatUnread && !selected) {
+                                        Box(
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .offset(x = 4.dp, y = (-1).dp)
+                                                .size(7.dp)
+                                                .background(NeuAccent, RoundedCornerShape(999.dp)),
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(1.dp))
+                                Text(
+                                    stringResource(route.labelRes),
+                                    fontSize = 9.sp,
+                                    lineHeight = 11.sp,
+                                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                                    color = if (selected) AccentInk else MutedText,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

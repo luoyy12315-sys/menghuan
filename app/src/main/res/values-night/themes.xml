@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      深色冷启动：窗口底色必须与 ui/theme/Theme.kt 的 DarkPalette.background 同步，
+      否则切换系统深色后启动会先闪一下白（用户反馈的闪烁来源之一）。
+      forceDarkAllowed 仍必须 false：系统反色会搅乱我们的细线与纸叠阴影。
+    -->
+    <style name="Theme.Menghuan" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowBackground">@color/neu_background</item>
+    </style>
+</resources>

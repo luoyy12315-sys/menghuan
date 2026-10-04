@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  API 29+ 深色：窗口底色取 values-night 的深色，且同样关闭 Force Dark
+  （我们自己有深色主题，不需要也不想要系统那套强制反色）。
+-->
+<resources>
+    <style name="Theme.Menghuan" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowBackground">@color/neu_background</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+    </style>
+</resources>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色冷启动窗口底色 = DarkPalette.background（见 ui/theme/Theme.kt） -->
+    <color name="neu_background">#0E0E11</color>
+</resources>
