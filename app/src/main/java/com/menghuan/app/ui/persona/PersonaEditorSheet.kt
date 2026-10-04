@@ -3,8 +3,12 @@ package com.menghuan.app.ui.persona
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.padding
@@ -16,12 +20,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,12 +47,13 @@ import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.theme.MutedText
+import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.TextPrimary
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import com.menghuan.app.ui.theme.NeuDanger
 import com.menghuan.app.ui.theme.NeuSurface
 import java.io.File
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 
@@ -75,6 +84,27 @@ private const val PERSONA_PROMPT_TEMPLATE =
  * 人设编辑弹层：新增（persona = null）与编辑共用，名字必填。
  * 附「设定词写作规范」与「插入模板」（v0.33.0，应用内规范）。
  */
+/** 通话音色预设（Edge TTS 中文声音；任意第三方声音名走"导入第三方音色"） */
+private val PRESET_CALL_VOICES = listOf(
+    "zh-CN-XiaoxiaoNeural" to "晓晓 · 女",
+    "zh-CN-XiaoyiNeural" to "晓伊 · 女",
+    "zh-CN-YunxiNeural" to "云希 · 男",
+    "zh-CN-YunjianNeural" to "云健 · 男",
+    "zh-CN-YunyangNeural" to "云扬 · 播音",
+    "zh-CN-YunxiaNeural" to "云夏 · 少年",
+    "zh-CN-liaoning-XiaobeiNeural" to "晓北 · 东北",
+    "zh-CN-shaanxi-XiaoniNeural" to "晓妮 · 陕西",
+    "zh-TW-HsiaoChenNeural" to "晓臻 · 台湾",
+    "zh-HK-HiuMaanNeural" to "曉曼 · 粤语",
+)
+
+/** 音色行的展示标签：预设显示中文名，自定义显示声音名本身，默认显示"晓晓 · 女（默认）" */
+private fun voiceLabel(voice: String): String =
+    when {
+        voice.isBlank() -> "晓晓 · 女（默认）"
+        else -> PRESET_CALL_VOICES.firstOrNull { it.first == voice }?.second ?: voice
+    }
+
 @Composable
 fun PersonaEditorSheet(
     persona: Persona?,
@@ -94,6 +124,23 @@ fun PersonaEditorSheet(
     var avatarImagePath by remember { mutableStateOf(persona?.avatarImagePath.orEmpty()) }
 
     val context = LocalContext.current
+    // v0.47.1：人设级通话音色（在编辑人设里选，存 call_voice_<personaId>）。
+    // 容器在 sheet 内自取，调用点零改动；非 App 环境（单测宿主）拿不到时整行隐藏。
+    val callSettings = remember(context) {
+        runCatching {
+            (context.applicationContext as? com.menghuan.app.MenghuanApp)?.settingsRepository
+        }.getOrNull()
+    }
+    val editorScope = rememberCoroutineScope()
+    var callVoice by remember { mutableStateOf<String?>(null) } // null = 未加载 / 不可用
+    var voiceMenuOpen by remember { mutableStateOf(false) }
+    var customizingVoice by remember { mutableStateOf(false) }
+    var customVoice by remember { mutableStateOf("") }
+    LaunchedEffect(persona?.id, callSettings) {
+        if (callSettings != null && persona != null) {
+            callVoice = callSettings.callVoiceFor(persona.id).first()
+        }
+    }
     val avatarPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -179,6 +226,88 @@ fun PersonaEditorSheet(
             placeholder = "例：朋友 / 陪伴者 / 教练 / 心理咨询师",
             modifier = Modifier.fillMaxWidth(),
         )
+        // v0.47.1：通话音色——展开菜单选择（不平铺），自定义第三方音色收进同一入口
+        if (callSettings != null && persona != null && callVoice != null) {
+            Spacer(Modifier.height(14.dp))
+            Box {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { voiceMenuOpen = true }
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("通话音色", fontSize = 13.sp, color = TextPrimary)
+                    Text(
+                        voiceLabel(callVoice.orEmpty()),
+                        fontSize = 12.sp,
+                        color = MutedText,
+                    )
+                }
+                DropdownMenu(
+                    expanded = voiceMenuOpen,
+                    onDismissRequest = { voiceMenuOpen = false },
+                    containerColor = NeuSurface,
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                ) {
+                    PRESET_CALL_VOICES.forEach { (voice, label) ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(label, fontSize = 14.sp, color = TextPrimary)
+                                    Text(voice, fontSize = 10.sp, color = MutedText)
+                                }
+                            },
+                            trailingIcon = if (callVoice == voice) {
+                                { Text("✓", color = TextPrimary, fontSize = 13.sp) }
+                            } else null,
+                            onClick = {
+                                callVoice = voice
+                                editorScope.launch { callSettings.setCallVoiceFor(persona.id, voice) }
+                                voiceMenuOpen = false
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("导入第三方音色…", fontSize = 14.sp, color = TextPrimary) },
+                        onClick = {
+                            customizingVoice = true
+                            voiceMenuOpen = false
+                        },
+                    )
+                }
+            }
+            if (customizingVoice) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    NeuTextField(
+                        value = customVoice,
+                        onValueChange = { customVoice = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = "粘贴任意 Edge TTS 声音名",
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    NeuChip(
+                        text = "导入",
+                        selected = false,
+                        onClick = {
+                            val v = customVoice.trim()
+                            if (v.isNotEmpty()) {
+                                callVoice = v
+                                customizingVoice = false
+                                customVoice = ""
+                                editorScope.launch { callSettings.setCallVoiceFor(persona.id, v) }
+                            }
+                        },
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(14.dp))
         NeuTextField(
             value = prompt,

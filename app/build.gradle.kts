@@ -14,8 +14,8 @@ android {
         applicationId = "com.menghuan.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 94
-        versionName = "0.47.0"
+        versionCode = 95
+        versionName = "0.47.1"
         // 只保留中英文资源，去掉依赖库里几十种语言的 strings/日期符号
         resourceConfigurations.addAll(listOf("zh", "zh-rCN", "en"))
         // sherpa-onnx AAR 自带 4 套 ABI（arm64/v7a/x86/x86_64）共 127MB so，

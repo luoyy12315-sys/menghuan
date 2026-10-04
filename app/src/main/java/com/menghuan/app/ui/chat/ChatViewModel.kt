@@ -414,6 +414,11 @@ class ChatViewModel(
         runCatching { settingsRepository.markChatRead(personaId) }
     }
 
+    /** v0.47.1：单聊页三点 → 编辑人设弹层的保存（人设管理页之外的第二入口） */
+    fun savePersona(p: com.menghuan.app.data.model.Persona) = viewModelScope.launch {
+        runCatching { personaRepository.save(p) }
+    }
+
     fun send() {
         val text = _uiState.value.input.trim()
         if (text.isEmpty() || _uiState.value.isStreaming) return

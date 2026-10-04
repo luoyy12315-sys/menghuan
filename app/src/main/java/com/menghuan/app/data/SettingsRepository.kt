@@ -67,13 +67,9 @@ class SettingsRepository(
     // v0.42.0：每日建议（独立第三条 AI 产出链路）的提示词策略 + 是否通知
     private val keyDailySuggestionStrategy = stringPreferencesKey("daily_suggestion_strategy")
     private val keyDailySuggestionNotifyEnabled = booleanPreferencesKey("daily_suggestion_notify_enabled")
-    // v0.46.0：语音通话（Edge TTS 音色 + 挂断后是否保存转写记录）
-    private val keyCallVoice = stringPreferencesKey("call_voice")
-    private val keyCallSaveTranscript = booleanPreferencesKey("call_save_transcript")
-    // v0.47.0：通话模型覆盖（空=用当前接口模型；填 deepseek-chat 可避开 reasoner 的慢思考）
-    private val keyCallModel = stringPreferencesKey("call_model")
-    // v0.47.0：接通/挂断提示音
-    private val keyCallToneEnabled = booleanPreferencesKey("call_tone_enabled")
+    // v0.47.1：按人设的通话音色，前缀键 call_voice_<personaId>（空 = 默认晓晓）。
+    // 音色属于人设（在编辑人设弹层里选），不再有全局通话设置。
+    private val callVoicePrefix = "call_voice_"
 
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
@@ -514,37 +510,18 @@ class SettingsRepository(
         store.edit { it[keyDailySuggestionNotifyEnabled] = enabled }
     }
 
-    /** 语音通话：Edge TTS 音色（默认晓晓，音色名即微软声音名） */
-    val callVoice: Flow<String> =
-        store.data.map { it[keyCallVoice] ?: "zh-CN-XiaoxiaoNeural" }
+    /** 语音通话：按人设的 Edge TTS 音色（空 = 默认晓晓；音色名即微软声音名） */
+    fun callVoiceFor(personaId: Long): Flow<String> =
+        store.data.map { it[stringPreferencesKey("$callVoicePrefix$personaId")] ?: "" }
 
-    suspend fun setCallVoice(voice: String) {
+    /** 恢复默认（晓晓）传空串即可 */
+    suspend fun setCallVoiceFor(personaId: Long, voice: String) {
         store.edit {
-            if (voice.isBlank() || voice == "zh-CN-XiaoxiaoNeural") it.remove(keyCallVoice)
-            else it[keyCallVoice] = voice.trim()
+            val v = voice.trim()
+            val key = stringPreferencesKey("$callVoicePrefix$personaId")
+            if (v.isEmpty() || v == "zh-CN-XiaoxiaoNeural") it.remove(key)
+            else it[key] = v
         }
-    }
-
-    /** 语音通话：挂断后保存转写记录（默认开） */
-    val callSaveTranscript: Flow<Boolean> =
-        store.data.map { it[keyCallSaveTranscript] ?: true }
-
-    suspend fun setCallSaveTranscript(enabled: Boolean) {
-        store.edit { it[keyCallSaveTranscript] = enabled }
-    }
-
-    /** 语音通话：模型覆盖（空 = 用当前对话接口的模型） */
-    val callModel: Flow<String> = store.data.map { it[keyCallModel] ?: "" }
-
-    suspend fun setCallModel(model: String) {
-        store.edit { it[keyCallModel] = model.trim() }
-    }
-
-    /** 语音通话：接通/挂断提示音（默认开） */
-    val callToneEnabled: Flow<Boolean> = store.data.map { it[keyCallToneEnabled] ?: true }
-
-    suspend fun setCallToneEnabled(enabled: Boolean) {
-        store.edit { it[keyCallToneEnabled] = enabled }
     }
 
     /** 人设主动关心（默认关：每天晚间最多一条，基于档案与任务情况） */

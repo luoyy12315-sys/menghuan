@@ -7,7 +7,8 @@ import kotlinx.coroutines.flow.Flow
 
 /**
  * 通话记录仓库：通话期间引擎只在内存攒 [CallTurnData]，
- * 挂断时**一次性**写 Room（任务书 §二十：partial 绝不入库）。只存文字不存音频。
+ * 挂断时**一次性**写 Room（任务书 §二十：partial 绝不入库）。只存文字不存音频，
+ * 转写恒定保存（用户拍板：不留开关）。
  */
 class RealtimeCallRepository(private val db: AppDatabase) {
 
@@ -17,7 +18,6 @@ class RealtimeCallRepository(private val db: AppDatabase) {
         endedAt: Long,
         turns: List<CallTurnData>,
         status: String,
-        saveTranscript: Boolean,
     ) {
         val sessionId = db.callDao().insertSession(
             CallSession(
@@ -28,7 +28,7 @@ class RealtimeCallRepository(private val db: AppDatabase) {
                 status = status,
             ),
         )
-        if (saveTranscript && turns.isNotEmpty()) {
+        if (turns.isNotEmpty()) {
             db.callDao().insertTurns(
                 turns.map {
                     CallTurn(

@@ -56,7 +56,7 @@ class PipelineVoiceCallEngine(
     private val appScope: CoroutineScope,
     private val saveCall: suspend (
         personaId: Long, startedAt: Long, endedAt: Long,
-        turns: List<CallTurnData>, status: String, saveTranscript: Boolean,
+        turns: List<CallTurnData>, status: String,
     ) -> Unit,
 ) : VoiceCallEngine {
 
@@ -158,7 +158,7 @@ class PipelineVoiceCallEngine(
         if (cfg != null) {
             // 存到应用级作用域：即使 VM 立刻销毁（引擎 scope.cancel）记录也不会丢
             appScope.launch {
-                runCatching { saveCall(cfg.personaId, startedAt, endedAt, snapshot, status, cfg.saveTranscript) }
+                runCatching { saveCall(cfg.personaId, startedAt, endedAt, snapshot, status) }
                     .onFailure { Log.e(TAG, "save call failed: ${it.message}") }
             }
         }

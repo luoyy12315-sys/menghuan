@@ -83,7 +83,7 @@ import com.menghuan.app.agent.AgentRunner
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.MediaKind
 import com.menghuan.app.ui.common.LocalContentWidth
-import com.menghuan.app.ui.realtime.PersonaCallSettingsSheet
+import com.menghuan.app.ui.persona.PersonaEditorSheet
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.common.EaseOutQuart
 import com.menghuan.app.ui.common.MarkdownText
@@ -150,7 +150,7 @@ fun ChatScreen(
     val voiceTranscriptIds = remember { mutableStateListOf<Long>() }
     var reasoningView by remember { mutableStateOf<ChatMessage?>(null) } // 思考链查看（v0.41.4）
     var showApiSwitch by remember { mutableStateOf(false) }
-    var showCallSettings by remember { mutableStateOf(false) } // v0.47.0：人设通话设置 sheet
+    var showPersonaEditor by remember { mutableStateOf(false) } // v0.47.1：三点 = 编辑人设
     // v0.43.0 输入区面板：0=收起 1=表情 2=加号（同一时刻只开一个，与键盘互斥）
     var panel by remember { mutableStateOf(0) }
     var showCamera by remember { mutableStateOf(false) }
@@ -399,19 +399,18 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // v0.47.0：三个点 = 人设通话设置（音色/模型/音效/转写）。
-                    // 通话入口已收进加号面板第四格；原电话图标位置与放大镜并排挤压
-                    // （v0.46.0 教训），顶栏动作按钮只保留这一颗。
+                    // v0.47.1：三个点 = 编辑人设（名字/头像/设定词/通话音色都在人设编辑里，
+                    // 通话音色按人设各自保存）。通话入口在加号面板第四格。
                     Icon(
                         MIcons.MoreVert,
-                        contentDescription = "通话设置",
+                        contentDescription = "编辑人设",
                         tint = TextPrimary,
                         modifier = Modifier
                             .size(21.dp)
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
-                            ) { showCallSettings = true },
+                            ) { showPersonaEditor = true },
                     )
                 },
             )
@@ -1000,11 +999,15 @@ fun ChatScreen(
         ApiConfigSheet(onDismiss = { showApiConfig = false })
     }
 
-    // v0.47.0：人设通话设置（音色/模型/音效/转写），顶栏三点进入
-    if (showCallSettings) {
-        PersonaCallSettingsSheet(
-            settings = appContainer.settingsRepository,
-            onDismiss = { showCallSettings = false },
+    // v0.47.1：人设编辑（三点进入；音色选择在人设里，按人设各自保存）
+    if (showPersonaEditor && persona != null) {
+        PersonaEditorSheet(
+            persona = persona,
+            onSave = {
+                vm.savePersona(it)
+                showPersonaEditor = false
+            },
+            onDismiss = { showPersonaEditor = false },
         )
     }
 
