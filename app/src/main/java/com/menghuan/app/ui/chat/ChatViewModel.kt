@@ -283,26 +283,6 @@ class ChatViewModel(
         .map { it.isComplete }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
-    // ===== 会话内消息搜索（顶栏搜索图标进入）=====
-    // 不做 delay 防抖（Robolectric PAUSED 时钟下 delay 永不恢复；本地 LIKE 毫秒级），cancel 旧任务保序
-    private val _searchResults = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val searchResults: StateFlow<List<ChatMessage>> = _searchResults.asStateFlow()
-
-    private var searchJob: kotlinx.coroutines.Job? = null
-
-    fun onSearchQueryChange(query: String) {
-        searchJob?.cancel()
-        if (query.isBlank()) {
-            _searchResults.value = emptyList()
-            return
-        }
-        searchJob = viewModelScope.launch {
-            _searchResults.value = runCatching {
-                db.messageDao().searchInConversation(personaId, query.trim())
-            }.getOrDefault(emptyList())
-        }
-    }
-
     /** AI 建议 → 写入任务（repeatDaily 取 daily，来源标记 ai），卡片随之消失 */
     fun addSuggestedTask(suggestion: TaskSuggestion) = viewModelScope.launch {
         runCatching {

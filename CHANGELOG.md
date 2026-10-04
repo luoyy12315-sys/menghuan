@@ -4,6 +4,19 @@
 > 老用户升级路径：先在 v0.35.3 里「设置 · 数据与隐私 · 导出全部数据」，装新版后「导入数据」；
 > API Key 因 Keystore 与包名绑定必须重填。
 
+## v0.46.1（versionCode 93）
+
+**修：单聊页顶栏电话图标与放大镜图标并排挤压（用户真机反馈），用户拍板「删搜索保通话」**
+——单聊页消息搜索功能整体移除（不只是按键）。
+
+- 删 `ChatScreen`：顶栏放大镜、搜索态状态量、返回键分流的搜索分支、整页搜索覆盖层
+  （输入框 + LIKE 命中列表）、`ChatSearchRow` 组件、三个只为搜索服务的 import。
+- 删 `ChatViewModel`：`searchResults` 流与 `onSearchQueryChange` 查询逻辑。
+- 删 `MessageDao.searchInConversation`（单聊内搜索专用 SQL；
+  **`searchMessages` 保留**——会话列表顶部的搜索还在用它，那个功能不动）。
+- 删截图测试 `render10ChatSearch`。
+- 顶栏现在只有一颗电话图标，无挤压。会话列表的搜索（列表顶部搜索框 / 上滑换放大镜）**不受影响**。
+
 ## v0.46.0（versionCode 92）
 
 **实时语音通话（管道版）**：任意人设可以像打电话一样与 AI 持续对话——免按住、免等待，

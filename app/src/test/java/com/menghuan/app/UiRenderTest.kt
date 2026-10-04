@@ -780,30 +780,6 @@ class UiRenderTest {
         snap("15-persona-guide")
     }
 
-    /** 单聊消息搜索：顶栏搜索图标 → 搜索态 → LIKE 命中结果上屏 */
-    @Test
-    fun render10ChatSearch() {
-        val app = compose.activity.application as MenghuanApp
-        kotlinx.coroutines.runBlocking {
-            app.db.messageDao().insert(
-                com.menghuan.app.data.model.ChatMessage(
-                    conversationId = 1, isFromUser = false,
-                    content = "把今晚的执行卡贴在最显眼的地方，睡前手机放客厅充电。",
-                )
-            )
-        }
-        awaitText("阿布")
-        clickText("阿布")
-        // 有持久化消息时会话显示 DB 内容（种子演示视图被替代），以预置消息出现为准
-        awaitText("执行卡")
-        clickDesc("搜索消息") // 顶栏搜索图标
-        awaitText("搜索消息…") // 搜索态覆盖层已展开（占位符上屏）
-        compose.onNode(androidx.compose.ui.test.hasTestTag("chat_search_field"))
-            .performTextInput("充电")
-        awaitText("充电") // 命中行上屏
-        snap("11-chat-search")
-    }
-
     /**
      * 记账本全屏页（v0.42.0）：从数据页底部入口进入，验证
      * 现金余额 Hero、月度统计三栏、流水行与空态。

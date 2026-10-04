@@ -82,13 +82,6 @@ interface MessageDao {
     )
     suspend fun searchMessages(query: String): List<ChatMessage>
 
-    /** 单聊内消息搜索（顶栏搜索态）：限定会话，LIKE 命中时间倒序 */
-    @Query(
-        "SELECT * FROM messages WHERE conversationId = :conversationId AND content LIKE '%' || :query || '%' " +
-            "ORDER BY timestamp DESC LIMIT 50"
-    )
-    suspend fun searchInConversation(conversationId: Long, query: String): List<ChatMessage>
-
     /** 周报上下文：某时间段内的消息（截断限量，防 token 爆炸） */
     @Query(
         "SELECT * FROM messages WHERE timestamp >= :from AND timestamp < :to " +

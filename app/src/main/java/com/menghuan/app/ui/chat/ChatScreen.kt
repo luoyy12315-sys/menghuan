@@ -64,8 +64,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -75,7 +73,6 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -144,7 +141,6 @@ fun ChatScreen(
     val uiState by vm.uiState.collectAsState()
     val persona by vm.activePersona.collectAsState()
     val taskSuggestions by vm.taskSuggestions.collectAsState()
-    val searchResults by vm.searchResults.collectAsState()
     var showApiConfig by remember { mutableStateOf(false) }
     var viewerPath by remember { mutableStateOf<String?>(null) } // 全屏图片查看（v0.39.0）
     var messageMenu by remember { mutableStateOf<ChatMessage?>(null) }
@@ -152,8 +148,6 @@ fun ChatScreen(
     // 放在列表层而不是气泡内部：气泡滚出屏会被回收，状态放里面会丢。
     val voiceTranscriptIds = remember { mutableStateListOf<Long>() }
     var reasoningView by remember { mutableStateOf<ChatMessage?>(null) } // 思考链查看（v0.41.4）
-    var searchMode by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
     var showApiSwitch by remember { mutableStateOf(false) }
     // v0.43.0 输入区面板：0=收起 1=表情 2=加号（同一时刻只开一个，与键盘互斥）
     var panel by remember { mutableStateOf(0) }
@@ -269,8 +263,6 @@ fun ChatScreen(
     LaunchedEffect(personaId) {
         panel = 0
         voiceMode = false
-        searchMode = false
-        searchQuery = ""
         messageMenu = null
         reasoningView = null
         viewerPath = null
@@ -296,7 +288,7 @@ fun ChatScreen(
     LaunchedEffect(uiState.messages.lastOrNull()?.id) { vm.markRead() }
 
     // 返回键分流（v0.43.1 定稿，v0.43.1 二次返工）：
-    // 只在**真的有"可收起的层"**时启用 BackHandler：录音中 / 搜索态 / 面板打开 / 语音态。
+    // 只在**真的有"可收起的层"**时启用 BackHandler：录音中 / 面板打开 / 语音态。
     //
     // ⚠️⚠️ **绝不能把"键盘可见"也算进 `enabled`** —— 这条是上一版两次踩坑的结论：
     //   ① 把 `imeVisible` 算进 `enabled` 时，BackHandler 会在**键盘刚弹起**那一刻就消费返回事件，
@@ -307,20 +299,16 @@ fun ChatScreen(
     //
     // 正解 = **键盘交给系统**：系统对"返回键 + 输入法可见"有内置分流 ——
     //   第一次返回收键盘且**不把事件交给 Activity**，键盘收起后再按才会走到 NavHost。
-    // 我们只需管好自己造的那些层（面板/语音态/搜索），键盘一个字节都不用碰。
+    // 我们只需管好自己造的那些层（面板/语音态），键盘一个字节都不用碰。
     //
-    // 顺序即优先级：录音 → 搜索 → 面板 → 语音态。
+    // 顺序即优先级：录音 → 面板 → 语音态。
     // ⚠️ 面板分支里**不能再调 `keyboardController.hide()`**：点表情时键盘早已收走，
     //    这一句只会在"面板还开着 + 用户刚点回输入框"的窗口里把新唤起的键盘又按下去。
-    val hasDismissableLayer = recording || searchMode || panel != 0 || voiceMode
+    val hasDismissableLayer = recording || panel != 0 || voiceMode
     androidx.activity.compose.BackHandler(enabled = hasDismissableLayer) {
         when {
             // 录音中：吃掉返回，避免录制被中断（松手才算结束）
             recording -> Unit
-            searchMode -> {
-                searchMode = false
-                vm.onSearchQueryChange("")
-            }
             panel != 0 -> panel = 0
             voiceMode -> voiceMode = false
         }
@@ -409,8 +397,8 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // v0.46.0：语音通话入口——与放大镜同款"无圆圈"裸图标（NeuTopBar 默认
-                    // 84dp 槽宽正好两颗 38dp 按钮，无需传 actionsWidth）
+                    // v0.46.0：语音通话入口，顶栏唯一动作按钮（v0.46.1 起单聊页消息搜索
+                    // 已整体移除——原放大镜与电话图标并排挤压，用户拍板删搜索保通话）
                     Icon(
                         MIcons.Phone,
                         contentDescription = "语音通话",
@@ -421,19 +409,6 @@ fun ChatScreen(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
                             ) { onOpenCall() },
-                    )
-                    Spacer(Modifier.width(14.dp))
-                    // 无圆圈：放大镜图标直接落在顶栏（用户反馈"图标周围不需要圆圈"）
-                    Icon(
-                        MIcons.Search,
-                        contentDescription = "搜索消息",
-                        tint = TextPrimary,
-                        modifier = Modifier
-                            .size(21.dp)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { searchMode = true },
                     )
                 },
             )
@@ -1023,88 +998,6 @@ fun ChatScreen(
     // 全屏图片查看（捏合缩放 / 双击放大 / 单击关闭）
     viewerPath?.let { path ->
         ImageViewerOverlay(path = path, onDismiss = { viewerPath = null })
-    }
-
-    // 会话内搜索态：覆盖整页（顶栏搜索图标进入，返回退出），LIKE 命中实时过滤
-    if (searchMode) {
-        val focusRequester = remember { FocusRequester() }
-        LaunchedEffect(Unit) { focusRequester.requestFocus() }
-        Column(
-            Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-                .imePadding(),
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                NeuCircleButton(
-                    onClick = {
-                        searchMode = false
-                        searchQuery = ""
-                        vm.onSearchQueryChange("")
-                    },
-                    size = 38.dp,
-                ) {
-                    Icon(MIcons.Back, contentDescription = "返回", tint = TextPrimary, modifier = Modifier.size(19.dp))
-                }
-                Spacer(Modifier.width(10.dp))
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .neuSurface(22.dp, color = MaterialTheme.colorScheme.background, elevation = 5.dp, inset = true),
-                ) {
-                    BasicTextField(
-                        value = searchQuery,
-                        onValueChange = {
-                            searchQuery = it
-                            vm.onSearchQueryChange(it)
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 11.dp)
-                            .focusRequester(focusRequester)
-                            .testTag("chat_search_field"),
-                        textStyle = TextStyle(fontSize = 15.sp, color = TextPrimary),
-                        singleLine = true,
-                        cursorBrush = SolidColor(NeuAccent),
-                        decorationBox = { inner ->
-                            Box(contentAlignment = Alignment.CenterStart) {
-                                if (searchQuery.isEmpty()) {
-                                    Text("搜索消息…", fontSize = 15.sp, color = MutedText)
-                                }
-                                inner()
-                            }
-                        },
-                    )
-                }
-            }
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                when {
-                    searchQuery.isBlank() -> {}
-                    searchResults.isEmpty() -> Box(
-                        Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("没有匹配结果", fontSize = 13.sp, color = com.menghuan.app.ui.theme.FaintText)
-                    }
-                    else -> LazyColumn(contentPadding = PaddingValues(vertical = 6.dp)) {
-                        items(searchResults.size) { idx ->
-                            ChatSearchRow(
-                                message = searchResults[idx],
-                                fromLabel = if (searchResults[idx].isFromUser) "我" else (persona?.name ?: "AI"),
-                                onClick = {
-                                    searchMode = false
-                                    searchQuery = ""
-                                    vm.onSearchQueryChange("")
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
     }
 
@@ -1792,32 +1685,5 @@ private fun TypingDots() {
                     .background(TextPrimary, CircleShape),
             )
         }
-    }
-}
-
-/** 单聊搜索结果行：来源 + 时间 + 内容预览（点击退出搜索态） */
-@Composable
-private fun ChatSearchRow(message: ChatMessage, fromLabel: String, onClick: () -> Unit) {
-    val time = Instant.ofEpochMilli(message.timestamp).atZone(ZoneId.systemDefault())
-        .format(java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm"))
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .neuRowPress(onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(fromLabel, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-            Spacer(Modifier.width(8.dp))
-            Text(time, fontSize = 11.sp, color = com.menghuan.app.ui.theme.FaintText)
-        }
-        Spacer(Modifier.height(3.dp))
-        Text(
-            message.content.replace('\n', ' '),
-            fontSize = 14.sp,
-            color = MutedText,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
 }
