@@ -4,6 +4,52 @@
 > 老用户升级路径：先在 v0.35.3 里「设置 · 数据与隐私 · 导出全部数据」，装新版后「导入数据」；
 > API Key 因 Keystore 与包名绑定必须重填。
 
+## v0.46.0（versionCode 92）
+
+**实时语音通话（管道版）**：任意人设可以像打电话一样与 AI 持续对话——免按住、免等待，
+说完即答，随时打断。用户拍板走「DeepSeek 管道」而非 WebRTC 真双工（引擎做成可替换接口，
+将来可插 GLM-Realtime），AI 声音用 Edge TTS（免费），"耳朵"复用内置 sherpa 模型 + 新增
+Silero VAD 分段。
+
+### 通话链路（`realtime/` 新包，与语音消息链路完全独立）
+- `PipelineVoiceCallEngine`：状态机唯一写手（`RealtimeCallState` 11 态，UI 只观察）。
+  主循环 = AudioRecord（**VOICE_COMMUNICATION 源**，系统级回声消除/降噪/增益）持续采样
+  → Silero VAD 话语分段 + barge-in 检测（AI 出声期间用户开口 ≥0.3s 即打断）
+  → 流式 ASR partial 字幕 → 一句收口（停顿 0.6s 判定说完）→ LLM 流式
+  → `SentenceSplitter` 按句切（句末标点即切、超长句逗号兜底，压首声延迟）
+  → Edge TTS 逐句合成（OkHttp WebSocket，`Sec-MS-GEC` 时钟令牌照 rany2/edge-tts 移植）
+  → MediaCodec 解 MP3 → AudioTrack 单一播放链路。
+- LLM 复用现有 `OpenAiClient.streamEvents`（DeepSeek 等任意已配置接口）；
+  system prompt 与文字聊天同源组装（人设设定词 + 档案注入），另加"语音通话措辞"
+  （口语短句、禁 Markdown）。
+- `CallAsr` / `CallVad` 独立实例独立生命周期（通话结束 release），**不碰**
+  `VoiceRecorder` / `SpeechToText`（按住说话链路原样不动）。
+- **零新增依赖**：VAD/ASR 用已有 sherpa-onnx AAR，TTS 走已有 OkHttp；
+  assets 新增 `silero_vad.onnx`（1.8MB，ModelScope 镜像下载）。
+- 打断（barge-in）：掐 LLM 请求 + 清 TTS 队列 + `AudioTrack.pause+flush`，
+  已播出的句子记入转写；非阻塞分块写 PCM 保证打断时协程能退出。
+- 挂断：停录音/播放 → 释放 VAD/ASR/AudioRecord/AudioTrack → 恢复 AudioManager
+  进通话前状态（MODE/外放）→ 转写一次性落库 → 引擎作用域 cancel。每次通话新引擎实例，
+  二次通话无残留。
+
+### UI 与数据
+- 单聊页顶栏新增**电话图标**（`MIcons.Phone`，feather 移植，与放大镜同款无圆圈）；
+  新路由 `call/{personaId}`（push 转场与单聊一致，平板双栏同样可用）。
+- `RealtimeCallScreen`：大头像 + 状态文案主视觉（连接中/正在听你说话/思考中/正在说），
+  字幕区为辅助（你：/人设：，用户侧支持流式 partial）；底部静音（Mic/MicOff）+
+  红色挂断（PhoneOff）大圆钮，全部无涟漪缩放反馈。返回键 = 挂断，挂断完成后自动退出。
+- 权限：无麦克风权限进页即请求，拒绝显示"需要麦克风权限才能开始通话"+ 重试按钮；
+  对话接口未配置显示"实时通话尚未配置"。
+- 通话记录：Room **v14**（`MIGRATION_13_14`）新增 `call_sessions` / `call_turns`
+  两表 + `CallDao`——通话期间转写只在内存，挂断一次性写入；partial 绝不入库。
+- 设置：`call_voice`（Edge TTS 音色，默认晓晓 zh-CN-XiaoxiaoNeural）与
+  `call_save_transcript`（挂断后保存转写，默认开）入 DataStore。
+
+### 已知限制（一期）
+- 首声延迟约 1.5–3 秒（管道方案的固有代价，用户已知并接受）；体验是"对讲机"而非"电话"。
+- Edge TTS 为微软非官方接口，理论上有失效风险（失效时该句降级为纯字幕，通话不断）。
+- 通话记录暂无查看界面（已落库，展示入口待下期）；无前台服务，App 被杀通话即断。
+
 ## v0.45.1（versionCode 91）
 
 **修：点输入框唤起键盘后，消息列表不跟随，看不到最新一条**（用户真机反馈，每次都出现）。

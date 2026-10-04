@@ -598,3 +598,10 @@
   变矮，`LazyColumn` 不自动保持贴底 → 最新一条被挤出屏幕外（用户真机反馈，每次都出现）。
   `ChatScreen` 监听视口高度，只在**视口收缩且收缩前本来贴底**时按收缩量 `scrollBy` 跟随到底
   （用户选定"贴底才跟随"，微信式；翻历史不打断）；用收缩前一帧的贴底状态判断，瞬时弹键盘也准。
+- [x] **实时语音通话一期（v0.46.0，versionCode 92）**：用户拍板"DeepSeek 管道"（非 WebRTC 真双工，
+  引擎做成可替换接口 `VoiceCallEngine` 将来可插 GLM-Realtime）。免按住持续对话 + VAD 分段 +
+  barge-in 打断 + Edge TTS 免费音色（晓晓）；复用内置 sherpa 流式模型出 partial 字幕；
+  新增 assets `silero_vad.onnx`（1.8MB，ModelScope 下载）；Room v14 加 call_sessions/call_turns
+  （挂断一次性落库）；零新增 gradle 依赖。单聊顶栏电话图标 → `call/{personaId}`。
+  已知限制：首声延迟 1.5–3s；Edge TTS 非官方接口有失效风险（降级纯字幕）；通话记录无查看 UI；
+  无前台服务（App 被杀即断）。**必须真机验收**（Robolectric 无法跑 AudioRecord/WS 合成）。

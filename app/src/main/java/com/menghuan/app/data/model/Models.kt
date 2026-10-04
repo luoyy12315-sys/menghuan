@@ -433,3 +433,34 @@ object LedgerMath {
         return if (neg) "-$s" else s
     }
 }
+
+/**
+ * 语音通话会话（v0.46.0）：点挂断后一次性落库（通话期间转写只在内存，
+ * **不把 partial 写进 Room**）。只存文字转写，不存原始音频。
+ */
+@Entity(
+    tableName = "call_sessions",
+    indices = [Index("personaId"), Index("startedAt")],
+)
+data class CallSession(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val personaId: Long,
+    val startedAt: Long,
+    val endedAt: Long = 0,
+    val durationMs: Long = 0,
+    /** completed = 正常挂断 / error = 异常中断 */
+    val status: String = "completed",
+)
+
+/** 通话逐轮转写：speaker = user / ai，timestamp = 该轮结束（收口）时刻 */
+@Entity(
+    tableName = "call_turns",
+    indices = [Index("sessionId")],
+)
+data class CallTurn(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val speaker: String,
+    val text: String,
+    val timestamp: Long,
+)

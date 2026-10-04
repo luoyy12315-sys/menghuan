@@ -2,6 +2,7 @@ package com.menghuan.app.data.db
 
 import androidx.room.Dao
 import androidx.room.Database
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -11,6 +12,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.menghuan.app.data.model.AiInsight
 import com.menghuan.app.data.model.AiWeeklyReport
+import com.menghuan.app.data.model.CallSession
+import com.menghuan.app.data.model.CallTurn
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.DailySuggestion
 import com.menghuan.app.data.model.ImageGenerationRecord
@@ -323,6 +326,28 @@ interface StickerDao {
     suspend fun deleteAll()
 }
 
+@Dao
+interface CallDao {
+    @Insert
+    suspend fun insertSession(session: CallSession): Long
+
+    @Insert
+    suspend fun insertTurns(turns: List<CallTurn>)
+
+    /** 某 persona 的通话历史（新→旧），展示层配 turns() 取逐轮转写 */
+    @Query("SELECT * FROM call_sessions WHERE personaId = :personaId ORDER BY startedAt DESC")
+    fun observeSessions(personaId: Long): Flow<List<CallSession>>
+
+    @Query("SELECT * FROM call_turns WHERE sessionId = :sessionId ORDER BY timestamp ASC")
+    suspend fun turns(sessionId: Long): List<CallTurn>
+
+    @Query("DELETE FROM call_sessions WHERE id = :sessionId")
+    suspend fun deleteSession(sessionId: Long)
+
+    @Query("DELETE FROM call_turns WHERE sessionId = :sessionId")
+    suspend fun deleteTurns(sessionId: Long)
+}
+
 @Database(
     entities = [
         Persona::class,
@@ -336,8 +361,10 @@ interface StickerDao {
         LedgerEntry::class,
         DailySuggestion::class,
         Sticker::class,
+        CallSession::class,
+        CallTurn::class,
     ],
-    version = 13,
+    version = 14,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -353,8 +380,40 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun ledgerDao(): LedgerDao
     abstract fun dailySuggestionDao(): DailySuggestionDao
     abstract fun stickerDao(): StickerDao
+    abstract fun callDao(): CallDao
 
     companion object {
+        /**
+         * v14：语音通话记录（v0.46.0）。
+         * call_sessions = 每次通话一行；call_turns = 逐轮转写（挂断时一次性写入）。
+         * 只存文字不存音频，无破坏性变更——全新表，存量数据零影响。
+         */
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `call_sessions` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`personaId` INTEGER NOT NULL, " +
+                        "`startedAt` INTEGER NOT NULL, " +
+                        "`endedAt` INTEGER NOT NULL, " +
+                        "`durationMs` INTEGER NOT NULL, " +
+                        "`status` TEXT NOT NULL)"
+                )
+                // 索引名必须与 Room 生成的默认名一致（index_<表>_<列>），否则启动时 schema 校验失败
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_sessions_personaId` ON `call_sessions` (`personaId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_sessions_startedAt` ON `call_sessions` (`startedAt`)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `call_turns` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`sessionId` INTEGER NOT NULL, " +
+                        "`speaker` TEXT NOT NULL, " +
+                        "`text` TEXT NOT NULL, " +
+                        "`timestamp` INTEGER NOT NULL)"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_call_turns_sessionId` ON `call_turns` (`sessionId`)")
+            }
+        }
+
         /**
          * v13：语音 / 附件 / 自定义表情（v0.43.0）
          * - messages 六个新列：mediaKind / audioPath / audioDurationMs / attachmentPath /

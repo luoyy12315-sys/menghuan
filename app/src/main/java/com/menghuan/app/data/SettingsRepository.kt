@@ -67,6 +67,9 @@ class SettingsRepository(
     // v0.42.0：每日建议（独立第三条 AI 产出链路）的提示词策略 + 是否通知
     private val keyDailySuggestionStrategy = stringPreferencesKey("daily_suggestion_strategy")
     private val keyDailySuggestionNotifyEnabled = booleanPreferencesKey("daily_suggestion_notify_enabled")
+    // v0.46.0：语音通话（Edge TTS 音色 + 挂断后是否保存转写记录）
+    private val keyCallVoice = stringPreferencesKey("call_voice")
+    private val keyCallSaveTranscript = booleanPreferencesKey("call_save_transcript")
 
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
@@ -505,6 +508,25 @@ class SettingsRepository(
 
     suspend fun setDailySuggestionNotifyEnabled(enabled: Boolean) {
         store.edit { it[keyDailySuggestionNotifyEnabled] = enabled }
+    }
+
+    /** 语音通话：Edge TTS 音色（默认晓晓，音色名即微软声音名） */
+    val callVoice: Flow<String> =
+        store.data.map { it[keyCallVoice] ?: "zh-CN-XiaoxiaoNeural" }
+
+    suspend fun setCallVoice(voice: String) {
+        store.edit {
+            if (voice.isBlank() || voice == "zh-CN-XiaoxiaoNeural") it.remove(keyCallVoice)
+            else it[keyCallVoice] = voice.trim()
+        }
+    }
+
+    /** 语音通话：挂断后保存转写记录（默认开） */
+    val callSaveTranscript: Flow<Boolean> =
+        store.data.map { it[keyCallSaveTranscript] ?: true }
+
+    suspend fun setCallSaveTranscript(enabled: Boolean) {
+        store.edit { it[keyCallSaveTranscript] = enabled }
     }
 
     /** 人设主动关心（默认关：每天晚间最多一条，基于档案与任务情况） */

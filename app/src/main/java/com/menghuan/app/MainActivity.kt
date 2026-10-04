@@ -92,6 +92,7 @@ import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.data.DataScreen
 import com.menghuan.app.ui.persona.PersonaManageScreen
 import com.menghuan.app.ui.profile.MeScreen
+import com.menghuan.app.ui.realtime.RealtimeCallScreen
 import com.menghuan.app.ui.tasks.TasksScreen
 import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.theme.MIcons
@@ -310,9 +311,33 @@ private fun MenghuanAppRoot() {
             ) { entry ->
                 // 单聊页底部避让交给输入栏自己做（max(ime, navBars) 合并动画），
                 // 这里不能再叠一层 navigationBarsPadding，否则退场时输入栏会往上弹（v0.42.4）
+                val pId = entry.arguments?.getLong("personaId") ?: 1L
                 AdaptiveScreen(applyNavigationBarsPadding = false) {
                     ChatScreen(
-                        personaId = entry.arguments?.getLong("personaId") ?: 1L,
+                        personaId = pId,
+                        onBack = { navController.popBackStack() },
+                        onOpenCall = { navController.navigate("call/$pId") },
+                    )
+                }
+            }
+            // 实时语音通话页（v0.46.0）：从单聊页顶栏电话图标进入，push 转场与单聊一致
+            composable(
+                route = "call/{personaId}",
+                arguments = listOf(navArgument("personaId") { type = NavType.LongType }),
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                val callId = entry.arguments?.getLong("personaId") ?: 1L
+                AdaptiveScreen {
+                    RealtimeCallScreen(
+                        personaId = callId,
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -409,6 +434,7 @@ private fun HomePages(
                                     personaId = twoPaneChatId,
                                     onBack = { onTwoPaneChatChange(0L) },
                                     showBack = false,
+                                    onOpenCall = { navController.navigate("call/$twoPaneChatId") },
                                 )
                             }
                         },

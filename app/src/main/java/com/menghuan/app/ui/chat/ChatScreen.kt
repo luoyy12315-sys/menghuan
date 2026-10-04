@@ -138,6 +138,7 @@ fun ChatScreen(
     personaId: Long,
     onBack: () -> Unit,
     showBack: Boolean = true,   // 平板双栏：右栏嵌入时隐藏返回键（会话切换走左栏点选）
+    onOpenCall: () -> Unit = {}, // v0.46.0：顶栏电话图标 → 实时语音通话页
     vm: ChatViewModel = viewModel(key = "chat_$personaId", factory = ChatViewModel.factory(personaId)),
 ) {
     val uiState by vm.uiState.collectAsState()
@@ -408,6 +409,20 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // v0.46.0：语音通话入口——与放大镜同款"无圆圈"裸图标（NeuTopBar 默认
+                    // 84dp 槽宽正好两颗 38dp 按钮，无需传 actionsWidth）
+                    Icon(
+                        MIcons.Phone,
+                        contentDescription = "语音通话",
+                        tint = TextPrimary,
+                        modifier = Modifier
+                            .size(21.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { onOpenCall() },
+                    )
+                    Spacer(Modifier.width(14.dp))
                     // 无圆圈：放大镜图标直接落在顶栏（用户反馈"图标周围不需要圆圈"）
                     Icon(
                         MIcons.Search,

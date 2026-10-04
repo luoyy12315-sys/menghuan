@@ -1,0 +1,127 @@
+package com.menghuan.app.realtime
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.AudioTrack
+import android.media.MediaRecorder
+
+/**
+ * 通话音频通道（引擎专用，与语音消息链路的 VoiceRecorder / SpeechToText 完全独立，
+ * 任务书 §八：两套系统互不破坏）。
+ *
+ * - 进：AudioRecord，**VOICE_COMMUNICATION 源** = 系统级回声消除/降噪/自动增益
+ *   （任务书 §二十四，真机 AEC 是"AI 不打断自己"的第一道防线）；
+ * - 出：AudioTrack（VOICE_COMMUNICATION 用途 + SPEECH 内容类型，24kHz mono），
+ *   单一播放链路（任务书 §二十五）——没有第二个播放器；
+ * - AudioManager 进 MODE_IN_COMMUNICATION + 外放，[close] 恢复进入前状态。
+ */
+class CallAudioManager {
+
+    private var record: AudioRecord? = null
+    private var track: AudioTrack? = null
+    private var prevMode = AudioManager.MODE_NORMAL
+    private var prevSpeaker = false
+
+    @SuppressLint("MissingPermission") // 麦克风权限由 UI 层在启动前申请并检查
+    fun start(context: Context): Boolean = runCatching {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        prevMode = am.mode
+        prevSpeaker = am.isSpeakerphoneOn
+        am.mode = AudioManager.MODE_IN_COMMUNICATION
+        am.isSpeakerphoneOn = true
+
+        val minBuf = AudioRecord.getMinBufferSize(
+            IN_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+        )
+        record = AudioRecord(
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            IN_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            maxOf(minBuf * 2, IN_RATE), // ≥ 0.5s，网络卡顿时不丢帧
+        )
+        if (record?.state != AudioRecord.STATE_INITIALIZED) return false
+        record?.startRecording()
+        record?.recordingState == AudioRecord.RECORDSTATE_RECORDING
+    }.getOrDefault(false)
+
+    /** 读一个 512 采样窗口（32ms @16kHz）。未在录/未初始化返回 null。 */
+    fun readChunk(): ShortArray? {
+        val r = record ?: return null
+        if (r.recordingState != AudioRecord.RECORDSTATE_RECORDING) return null
+        val out = ShortArray(CallVad.WINDOW)
+        val n = r.read(out, 0, out.size)
+        return if (n == out.size) out else null
+    }
+
+    /** 建播放轨道并启动（每轮 AI 回复开始出声前调用） */
+    fun playStart(): Boolean = runCatching {
+        val t = track ?: AudioTrack(
+            AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build(),
+            AudioFormat.Builder()
+                .setSampleRate(OUT_RATE)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build(),
+            AudioTrack.getMinBufferSize(OUT_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT) * 4,
+            AudioTrack.MODE_STREAM,
+            AudioManager.AUDIO_SESSION_ID_GENERATE,
+        ).also { track = it }
+        if (t.state != AudioTrack.STATE_INITIALIZED) return false
+        t.play()
+        true
+    }.getOrDefault(false)
+
+    /** 非阻塞分块写（打断时协程可退出；阻塞写无法被 cancel 中断） */
+    fun playPcm(pcm: ShortArray, stillActive: () -> Boolean): Boolean {
+        val t = track ?: return false
+        var off = 0
+        while (off < pcm.size && stillActive()) {
+            val w = t.write(pcm, off, pcm.size - off, AudioTrack.WRITE_NON_BLOCKING)
+            if (w > 0) {
+                off += w
+            } else {
+                System.err // no-op
+                Thread.sleep(8)
+            }
+        }
+        return off >= pcm.size
+    }
+
+    /** 停止播放并丢弃未播数据（打断 / 每轮收尾） */
+    fun stopPlayback() {
+        runCatching {
+            track?.pause()
+            track?.flush()
+        }
+    }
+
+    /** 释放全部音频资源并恢复 AudioManager 进入前状态（任务书 §二十一） */
+    fun close(context: Context) {
+        runCatching {
+            record?.stop()
+            record?.release()
+            track?.stop()
+            track?.release()
+        }
+        record = null
+        track = null
+        runCatching {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.mode = prevMode
+            am.isSpeakerphoneOn = prevSpeaker
+        }
+    }
+
+    companion object {
+        const val IN_RATE = 16_000
+        const val OUT_RATE = 24_000
+    }
+}

@@ -93,6 +93,7 @@
 │   ├── llm/OpenAiClient.kt      # OpenAI 兼容 SSE 流式客户端（v0.38.0 起：streamEvents 带 usage 解析 + vision 多段 content）
 │   ├── llm/ImageProbe.kt        # 生图接口探活（POST /images/generations 极简请求，生图端点没有 /models 可查）
 │   ├── agent/                   # 手机 Agent MVP（v0.20.0）：无障碍感知 + 控件编号 + LLM 决策循环 + 手势执行 + 安全围栏；v0.37.0 起对话内 [操作手机:…] 标记直触发（完全权限无确认，挂应用级 scope）
+│   ├── realtime/                # 实时语音通话（v0.46.0，管道版）：PipelineVoiceCallEngine（状态机唯一写手，VAD 分段→流式ASR→LLM→切句→EdgeTTS→AudioTrack）+ CallVad/CallAsr（sherpa 独立实例）+ CallAudioManager（VOICE_COMMUNICATION 源）+ EdgeTtsClient（rany2/edge-tts 协议移植）+ SentenceSplitter + RealtimeCallRepository；VoiceCallEngine 为可替换接口（将来插真双工）
 │   ├── notify/                  # AlarmScheduler（每日重复/每日总结/每周日周报/每日建议 07:30/主动关心）+ TaskReminderReceiver（含稍后提醒）+ TaskSnoozeReceiver + DailySummaryReceiver + WeeklyReportReceiver + DailySuggestionReceiver + BootReceiver（跨天重置 + 闹钟重排 + 缺报补生成）+ ProactiveReceiver + AgentNotifier（Agent 进度常驻通知）
 │   └── widget/TodayWidget.kt    # Glance 今日任务小组件（黑底白字 3 条，点击直达任务页）
 │   └── ui/
@@ -105,6 +106,7 @@
 │       ├── chat/CameraCaptureScreen.kt # App 内自绘拍摄界面（v0.43.1；v0.45.0 加淡入淡出 + 翻转镜头动效 + BackHandler）：CameraX + 白圆底黑图标；左相册/中快门/右翻转，拍完先确认再发
 │       ├── chat/ChatComponents.kt # 共享件：ImageBubble 生图气泡 / StickerBubble 表情小气泡（v0.45.0，120dp 不可点开）/ VoiceBubble 语音条 / FileBubble 文件气泡 / ApiSwitchSheet 接口切换 / 提示词查看器
 │       ├── persona/             # PersonaManageScreen + PersonaEditorSheet（新增/编辑/删除人设）
+│       ├── realtime/            # 通话页（v0.46.0）：RealtimeCallScreen（大头像+状态主视觉、字幕辅助、静音/挂断大圆钮）+ RealtimeCallViewModel（引擎事件聚合字幕）；路由 call/{personaId}，单聊顶栏电话图标进入
 │       ├── data/DataScreen.kt   # 我的数据页（v0.42.0 顺序：本周回顾条置顶 → 今日建议 → 记账本单卡 → AI 洞察/周报合并入口；v0.42.1 去阴影+删说明小字）
 │       ├── data/AiDetailScreen.kt # AI 洞察 + 周报 全屏详情页（v0.42.0：洞察全文 + 周报全文，最新一期默认展开）
 │       ├── data/DataViewModel.kt # 数据页 VM（含纯函数 buildWeekReview / weekReviewStreak；LedgerStatsScope MONTH/WEEK + periodStats）
