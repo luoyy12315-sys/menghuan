@@ -98,8 +98,10 @@ class RealtimeCallViewModel(
             val voice = runCatching { settings.callVoice.first() }
                 .getOrDefault(RealtimeCallConfig.DEFAULT_TTS_VOICE)
             val saveTranscript = runCatching { settings.callSaveTranscript.first() }.getOrDefault(true)
-
-            val client = OpenAiClient(config.baseUrl, config.apiKey, config.model)
+            // 通话模型覆盖（v0.47.0）：留空用当前接口模型；填 deepseek-chat 可避开
+            // reasoner 深度思考带来的长等待（用户反馈"我说话快，AI 接得慢"的主因之一）
+            val modelOverride = runCatching { settings.callModel.first() }.getOrDefault("").trim()
+            val client = OpenAiClient(config.baseUrl, config.apiKey, modelOverride.ifBlank { config.model })
             val repo = RealtimeCallRepository(db)
             val eng = PipelineVoiceCallEngine(app, client, app.applicationScope) { p, st, et, turns, status, save ->
                 repo.saveCall(p, st, et, turns, status, save)
@@ -116,6 +118,7 @@ class RealtimeCallViewModel(
     }
 
     fun hangUp() {
+        playTone(android.media.ToneGenerator.TONE_PROP_NACK)
         engine?.hangUp()
     }
 
@@ -126,9 +129,33 @@ class RealtimeCallViewModel(
         _ui.update { it.copy(muted = next) }
     }
 
+    // ---- 接通/挂断提示音（v0.47.0，可开关）----
+
+    private var toneGen: android.media.ToneGenerator? = null
+    private var connectTonePlayed = false
+
+    private fun playTone(tone: Int) {
+        viewModelScope.launch {
+            val enabled = runCatching { settings.callToneEnabled.first() }.getOrDefault(true)
+            if (!enabled) return@launch
+            runCatching {
+                (toneGen ?: android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 70)
+                    .also { toneGen = it })
+                    .startTone(tone, 320)
+            }
+        }
+    }
+
     private fun onEvent(ev: RealtimeCallEvent) {
         when (ev) {
-            is RealtimeCallEvent.State -> _ui.update { it.copy(state = ev.state) }
+            is RealtimeCallEvent.State -> {
+                _ui.update { it.copy(state = ev.state) }
+                // 接通音：首次进入倾听态（引擎初始化完成）
+                if (ev.state == RealtimeCallState.LISTENING && !connectTonePlayed) {
+                    connectTonePlayed = true
+                    playTone(android.media.ToneGenerator.TONE_PROP_ACK)
+                }
+            }
             is RealtimeCallEvent.UserPartial -> _ui.update { it.copy(userPartial = ev.text) }
             is RealtimeCallEvent.UserFinal -> _ui.update {
                 it.copy(userPartial = "", turns = it.turns + CallTurnData("user", ev.text, System.currentTimeMillis()))
@@ -149,6 +176,7 @@ class RealtimeCallViewModel(
 
     override fun onCleared() {
         engine?.destroy()
+        runCatching { toneGen?.release() }
         super.onCleared()
     }
 

@@ -23,7 +23,8 @@ class CallVad(assets: AssetManager) {
             sileroVadModelConfig = SileroVadModelConfig(
                 model = MODEL_ASSET,
                 threshold = 0.5f,
-                // 说完停 0.6s 判定一句结束：太短容易把换气切断，太长"抢话感"重
+                // 说完停 0.45s 判定一句结束：太短容易把换气切断，太长"抢话感"重
+                // （v0.47.0 从 0.6 收紧——用户反馈"我说话快，AI 接得慢"）
                 minSilenceDuration = MIN_SILENCE_S,
                 minSpeechDuration = 0.25f,
                 windowSize = WINDOW,
@@ -56,7 +57,7 @@ class CallVad(assets: AssetManager) {
     companion object {
         const val MODEL_ASSET = "asr/silero_vad.onnx"
         const val WINDOW = 512 // 32ms @16kHz
-        const val MIN_SILENCE_S = 0.6f
+        const val MIN_SILENCE_S = 0.45f
         const val IN_RATE = 16_000
     }
 }

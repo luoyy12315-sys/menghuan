@@ -58,11 +58,14 @@ class CallAudioManager {
         return if (n == out.size) out else null
     }
 
-    /** 建播放轨道并启动（每轮 AI 回复开始出声前调用） */
+    /** 建播放轨道并启动（每轮 AI 回复开始出声前调用）。
+     *  用途 = USAGE_MEDIA（走媒体音量，用户日常听得见）而非 VOICE_COMMUNICATION——
+     *  通话音量（STREAM_VOICE_CALL）经常被用户调到 0，真机上表现为"没声音"；
+     *  回声消除仍由麦克风侧 VOICE_COMMUNICATION 源 + MODE_IN_COMMUNICATION 提供。 */
     fun playStart(): Boolean = runCatching {
         val t = track ?: AudioTrack(
             AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build(),
             AudioFormat.Builder()

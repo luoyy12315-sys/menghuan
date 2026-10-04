@@ -114,6 +114,13 @@ object MIcons {
     }.build()
 
     // ===== 语音通话（v0.46.0，feather 图标线条化移植；Mic 沿用输入栏已有图标）=====
+    /** 三个点（竖排实心）：通话设置入口 */
+    val MoreVert = filled(
+        "MoreVert",
+        circleData(12f, 5f, 1.35f) + " ",
+        circleData(12f, 12f, 1.35f) + " ",
+        circleData(12f, 19f, 1.35f),
+    )
     val Phone = strokes(
         "Phone", 1.7f,
         "M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 " +

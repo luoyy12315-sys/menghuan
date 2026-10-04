@@ -83,6 +83,7 @@ import com.menghuan.app.agent.AgentRunner
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.MediaKind
 import com.menghuan.app.ui.common.LocalContentWidth
+import com.menghuan.app.ui.realtime.PersonaCallSettingsSheet
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.common.EaseOutQuart
 import com.menghuan.app.ui.common.MarkdownText
@@ -149,6 +150,7 @@ fun ChatScreen(
     val voiceTranscriptIds = remember { mutableStateListOf<Long>() }
     var reasoningView by remember { mutableStateOf<ChatMessage?>(null) } // 思考链查看（v0.41.4）
     var showApiSwitch by remember { mutableStateOf(false) }
+    var showCallSettings by remember { mutableStateOf(false) } // v0.47.0：人设通话设置 sheet
     // v0.43.0 输入区面板：0=收起 1=表情 2=加号（同一时刻只开一个，与键盘互斥）
     var panel by remember { mutableStateOf(0) }
     var showCamera by remember { mutableStateOf(false) }
@@ -397,18 +399,19 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // v0.46.0：语音通话入口，顶栏唯一动作按钮（v0.46.1 起单聊页消息搜索
-                    // 已整体移除——原放大镜与电话图标并排挤压，用户拍板删搜索保通话）
+                    // v0.47.0：三个点 = 人设通话设置（音色/模型/音效/转写）。
+                    // 通话入口已收进加号面板第四格；原电话图标位置与放大镜并排挤压
+                    // （v0.46.0 教训），顶栏动作按钮只保留这一颗。
                     Icon(
-                        MIcons.Phone,
-                        contentDescription = "语音通话",
+                        MIcons.MoreVert,
+                        contentDescription = "通话设置",
                         tint = TextPrimary,
                         modifier = Modifier
                             .size(21.dp)
                             .clickable(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
-                            ) { onOpenCall() },
+                            ) { showCallSettings = true },
                     )
                 },
             )
@@ -947,6 +950,8 @@ fun ChatScreen(
                             onAlbum = { panel = 0; imagePicker.launch("image/*") },
                             onCamera = { panel = 0; showCamera = true },
                             onFile = { panel = 0; filePicker.launch(arrayOf("*/*")) },
+                            // v0.47.0：通话入口收进加号面板第四格（收面板 → 进通话页）
+                            onCall = { panel = 0; onOpenCall() },
                         )
                     }
                 }
@@ -993,6 +998,14 @@ fun ChatScreen(
     // 错误条「去配置」直达：不跳页，直接在这里把 API 配置弹层叠上来
     if (showApiConfig) {
         ApiConfigSheet(onDismiss = { showApiConfig = false })
+    }
+
+    // v0.47.0：人设通话设置（音色/模型/音效/转写），顶栏三点进入
+    if (showCallSettings) {
+        PersonaCallSettingsSheet(
+            settings = appContainer.settingsRepository,
+            onDismiss = { showCallSettings = false },
+        )
     }
 
     // 全屏图片查看（捏合缩放 / 双击放大 / 单击关闭）

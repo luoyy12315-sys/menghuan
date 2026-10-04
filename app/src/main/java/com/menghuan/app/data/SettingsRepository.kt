@@ -70,6 +70,10 @@ class SettingsRepository(
     // v0.46.0：语音通话（Edge TTS 音色 + 挂断后是否保存转写记录）
     private val keyCallVoice = stringPreferencesKey("call_voice")
     private val keyCallSaveTranscript = booleanPreferencesKey("call_save_transcript")
+    // v0.47.0：通话模型覆盖（空=用当前接口模型；填 deepseek-chat 可避开 reasoner 的慢思考）
+    private val keyCallModel = stringPreferencesKey("call_model")
+    // v0.47.0：接通/挂断提示音
+    private val keyCallToneEnabled = booleanPreferencesKey("call_tone_enabled")
 
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
@@ -527,6 +531,20 @@ class SettingsRepository(
 
     suspend fun setCallSaveTranscript(enabled: Boolean) {
         store.edit { it[keyCallSaveTranscript] = enabled }
+    }
+
+    /** 语音通话：模型覆盖（空 = 用当前对话接口的模型） */
+    val callModel: Flow<String> = store.data.map { it[keyCallModel] ?: "" }
+
+    suspend fun setCallModel(model: String) {
+        store.edit { it[keyCallModel] = model.trim() }
+    }
+
+    /** 语音通话：接通/挂断提示音（默认开） */
+    val callToneEnabled: Flow<Boolean> = store.data.map { it[keyCallToneEnabled] ?: true }
+
+    suspend fun setCallToneEnabled(enabled: Boolean) {
+        store.edit { it[keyCallToneEnabled] = enabled }
     }
 
     /** 人设主动关心（默认关：每天晚间最多一条，基于档案与任务情况） */

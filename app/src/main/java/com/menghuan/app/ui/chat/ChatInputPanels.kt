@@ -268,15 +268,17 @@ private fun Modifier.combinedClickableSticker(
 }
 
 /**
- * 加号面板：相册 / 拍摄 / 文件 三格。
+ * 加号面板：相册 / 拍摄 / 文件 / 通话 四格。
  * v0.45.0：高度再压到 104dp、四周留白收紧，并把按钮按压从 Material ripple
  * 换成与输入栏一致的缩放反馈（用户要求"跟输入框周围按钮一样改小改快"）。
+ * v0.47.0：第四格（原留空）放入「语音通话」——顶栏只剩三点设置，通话入口收进这里。
  */
 @Composable
 fun PlusPanel(
     onAlbum: () -> Unit,
     onCamera: () -> Unit,
     onFile: () -> Unit,
+    onCall: () -> Unit,
 ) {
     Column(
         Modifier
@@ -289,7 +291,7 @@ fun PlusPanel(
             PlusAction("相册", MIcons.ImageIcon, onAlbum, Modifier.weight(1f))
             PlusAction("拍摄", MIcons.Camera, onCamera, Modifier.weight(1f))
             PlusAction("文件", MIcons.FileDoc, onFile, Modifier.weight(1f))
-            Spacer(Modifier.weight(1f)) // 第四格留空，三项左对齐（微信的网格节奏）
+            PlusAction("通话", MIcons.Phone, onCall, Modifier.weight(1f))
         }
     }
 }

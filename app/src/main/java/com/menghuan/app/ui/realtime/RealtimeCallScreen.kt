@@ -5,11 +5,19 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,19 +26,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -42,18 +51,18 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.menghuan.app.realtime.CallTurnData
 import com.menghuan.app.realtime.RealtimeCallState
 import com.menghuan.app.ui.common.AdaptiveScreen
-import com.menghuan.app.ui.common.NeuCircleButton
-import com.menghuan.app.ui.common.NeuTopBar
+import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
-import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.theme.AccentInk
+import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
+import com.menghuan.app.ui.theme.NeuBackground
 import com.menghuan.app.ui.theme.NeuDanger
 import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuTrack
@@ -61,12 +70,12 @@ import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.personaBrush
-import com.menghuan.app.realtime.CallTurnData
+import kotlinx.coroutines.delay
 
 /**
- * 实时语音通话页（v0.46.0）：状态 + 字幕 + 静音/挂断。
- * 视觉遵循 DESIGN.md（黑白骨架 + MIcons 线条图标），字幕是辅助（任务书 §十四），
- * 主视觉是头像 + 状态文案。
+ * 实时语音通话页（v0.47.0 重构）：无顶栏（用户反馈与中部头像重复），主视觉 =
+* 中部大头像（说话时呼吸脉动）+ 名字 + 状态；字幕做成歌词式——贴底、最新一两句
+* 清晰突出、越旧的越淡，顶部用背景色渐变收束；底部静音/挂断大圆钮。
  */
 @Composable
 fun RealtimeCallScreen(
@@ -91,10 +100,13 @@ fun RealtimeCallScreen(
     LaunchedEffect(Unit) {
         if (hasPermission) vm.start() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
-    // 返回键 = 挂断；引擎走到 ENDED 后自动退出页面（保证资源释放完再离开）
+    // 返回键 = 挂断；ENDED 后延迟退出，给挂断提示音留出时间
     BackHandler { vm.hangUp() }
     LaunchedEffect(ui.state) {
-        if (ui.state == RealtimeCallState.ENDED) onBack()
+        if (ui.state == RealtimeCallState.ENDED) {
+            delay(650)
+            onBack()
+        }
     }
 
     val persona = ui.persona
@@ -103,159 +115,149 @@ fun RealtimeCallScreen(
         RealtimeCallState.CONNECTING, RealtimeCallState.LISTENING, RealtimeCallState.USER_SPEAKING,
         RealtimeCallState.AI_THINKING, RealtimeCallState.AI_SPEAKING, RealtimeCallState.INTERRUPTED,
     )
-
-    AdaptiveScreen {
-        Column(Modifier.fillMaxSize()) {
-            NeuTopBar(
-                navigationIcon = {
-                    NeuCircleButton(
-                        onClick = { vm.hangUp() },
-                        size = 38.dp,
-                    ) {
-                        Icon(MIcons.Back, contentDescription = "返回", tint = TextPrimary, modifier = Modifier.size(19.dp))
-                    }
-                },
-                center = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        NeuAvatar(
-                            emoji = persona?.avatarEmoji ?: "🙂",
-                            imagePath = persona?.avatarImagePath.orEmpty(),
-                            size = 38.dp,
-                            ringBrush = personaBrush(personaId),
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text(name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                            Text(stateLabel(ui), fontSize = 11.sp, color = MutedText)
-                        }
-                    }
-                },
-                actions = {},
-            )
-
-            // 中部主视觉：大头像 + 状态
-            Column(
-                Modifier.fillMaxWidth().weight(0.62f),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                NeuAvatar(
-                    emoji = persona?.avatarEmoji ?: "🙂",
-                    imagePath = persona?.avatarImagePath.orEmpty(),
-                    size = 108.dp,
-                    ringBrush = personaBrush(personaId),
-                )
-                Spacer(Modifier.height(22.dp))
-                Text(
-                    when {
-                        ui.llmMissing -> "实时通话尚未配置"
-                        !hasPermission -> "需要麦克风权限才能开始通话"
-                        else -> stateLabel(ui)
-                    },
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = TextSecondary,
-                )
-                if (ui.error != null) {
-                    Spacer(Modifier.height(14.dp))
-                    Box(
-                        Modifier
-                            .neuSurface(999.dp, color = NeuTrack)
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                    ) {
-                        Text(ui.error ?: "", fontSize = 12.sp, color = NeuDanger)
-                    }
-                }
-                if (!hasPermission) {
-                    Spacer(Modifier.height(16.dp))
-                    Box(
-                        Modifier
-                            .neuSurface(999.dp, color = NeuAccent)
-                            .clickable { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
-                            .padding(horizontal = 22.dp, vertical = 10.dp),
-                    ) {
-                        Text("授予麦克风权限", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = AccentInk)
-                    }
-                }
-            }
-
-            // 字幕区（辅助 UI，任务书 §十四：不做主视觉）
-            SubtitleList(ui, name, Modifier.weight(0.9f))
-
-            // 底部操作：静音 + 挂断
-            Row(
-                Modifier.fillMaxWidth().padding(bottom = 34.dp),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                CallActionButton(
-                    size = 60.dp,
-                    container = if (ui.muted) NeuAccent else NeuSurface,
-                    tint = if (ui.muted) AccentInk else TextPrimary,
-                    icon = if (ui.muted) MIcons.MicOff else MIcons.Mic,
-                    description = if (ui.muted) "取消静音" else "静音",
-                    enabled = active,
-                    onClick = { vm.toggleMute() },
-                )
-                Spacer(Modifier.width(30.dp))
-                CallActionButton(
-                    size = 68.dp,
-                    container = NeuDanger,
-                    tint = AccentInk,
-                    icon = MIcons.PhoneOff,
-                    description = "挂断",
-                    enabled = active,
-                    onClick = { vm.hangUp() },
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SubtitleList(
-    ui: RealtimeCallUiState,
-    personaName: String,
-    modifier: Modifier = Modifier,
-) {
-    val listState = rememberLazyListState()
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
-    ) {
-        val visible = ui.turns.takeLast(40)
-        items(visible.size) { i ->
-            val t = visible[i]
-            SubtitleLine(speaker = if (t.speaker == "user") "你" else personaName, text = t.text)
-        }
-        if (ui.userPartial.isNotBlank()) {
-            item { SubtitleLine(speaker = "你", text = ui.userPartial) }
-        }
-        if (ui.aiPartial.isNotBlank()) {
-            item { SubtitleLine(speaker = personaName, text = ui.aiPartial) }
-        }
-    }
-    LaunchedEffect(ui.turns.size, ui.userPartial, ui.aiPartial) {
-        val count = listState.layoutInfo.totalItemsCount
-        if (count > 0) runCatching { listState.scrollToItem(count - 1) }
-    }
-}
-
-@Composable
-private fun SubtitleLine(speaker: String, text: String) {
-    Text(
-        buildAnnotatedString {
-            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = MutedText)) {
-                append("$speaker：")
-            }
-            withStyle(SpanStyle(fontSize = 13.sp, color = TextPrimary)) {
-                append(text)
-            }
-        },
-        lineHeight = 19.sp,
+    val pulsing = ui.state == RealtimeCallState.AI_SPEAKING || ui.state == RealtimeCallState.USER_SPEAKING
+    val breath = rememberInfiniteTransition(label = "breath").animateFloat(
+        initialValue = 0.985f,
+        targetValue = 1.035f,
+        animationSpec = infiniteRepeatable(tween(950, easing = LinearEasing), RepeatMode.Reverse),
+        label = "breathScale",
     )
+    val avatarScale by animateFloatAsState(if (pulsing) breath.value else 1f, label = "avatarScale")
+
+    Box(Modifier.fillMaxSize().background(NeuBackground)) {
+        // 主视觉：大头像 + 名字 + 状态
+        Column(
+            Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.weight(1.05f))
+            NeuAvatar(
+                emoji = persona?.avatarEmoji ?: "🙂",
+                imagePath = persona?.avatarImagePath.orEmpty(),
+                size = 124.dp,
+                ringBrush = personaBrush(personaId),
+                modifier = Modifier.scale(avatarScale),
+            )
+            Spacer(Modifier.height(18.dp))
+            Text(name, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
+            Spacer(Modifier.height(6.dp))
+            Crossfade(targetState = stateLabel(ui), label = "stateLabel") { label ->
+                Text(label, fontSize = 13.sp, color = MutedText)
+            }
+            if (ui.error != null) {
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    Modifier
+                        .neuSurface(999.dp, color = NeuTrack)
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    Text(ui.error ?: "", fontSize = 12.sp, color = NeuDanger)
+                }
+            }
+            if (ui.llmMissing || !hasPermission) {
+                Spacer(Modifier.height(14.dp))
+                Box(
+                    Modifier
+                        .neuSurface(999.dp, color = NeuAccent)
+                        .clickable {
+                            if (!hasPermission) permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                        .padding(horizontal = 22.dp, vertical = 10.dp),
+                ) {
+                    Text(
+                        when {
+                            ui.llmMissing -> "实时通话尚未配置，先在聊天里配好 AI 接口"
+                            else -> "授予麦克风权限"
+                        },
+                        fontSize = 13.sp, fontWeight = FontWeight.Medium, color = AccentInk,
+                    )
+                }
+            }
+            Spacer(Modifier.weight(1f))
+        }
+
+        // 歌词式字幕：贴底、最新清晰、旧的渐隐（透明度阶梯；禁止 blur，用透明度+字号收束）
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 122.dp, start = 30.dp, end = 30.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            val lines = remember(ui.turns, ui.userPartial, ui.aiPartial) { buildLines(ui, name) }
+            val alphas = listOf(0.14f, 0.22f, 0.36f, 0.55f, 0.8f, 1f)
+            lines.forEachIndexed { i, line ->
+                val fromEnd = lines.lastIndex - i
+                val alpha = alphas[alphas.lastIndex - fromEnd.coerceIn(0, alphas.lastIndex)]
+                val isNew = fromEnd == 0
+                Text(
+                    subtitleText(line, name, MutedText),
+                    fontSize = if (isNew) 15.sp else if (fromEnd == 1) 14.sp else 13.sp,
+                    lineHeight = if (isNew) 21.sp else 19.sp,
+                    fontWeight = if (isNew) FontWeight.SemiBold else FontWeight.Normal,
+                    color = when {
+                        isNew -> TextPrimary
+                        fromEnd == 1 -> TextSecondary
+                        else -> FaintText
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .alpha(alpha),
+                    maxLines = 2,
+                )
+            }
+        }
+
+        // 底部操作：静音 + 挂断
+        Row(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 40.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CallActionButton(
+                size = 60.dp,
+                container = if (ui.muted) NeuAccent else NeuSurface,
+                tint = if (ui.muted) AccentInk else TextPrimary,
+                icon = if (ui.muted) MIcons.MicOff else MIcons.Mic,
+                description = if (ui.muted) "取消静音" else "静音",
+                enabled = active,
+                onClick = { vm.toggleMute() },
+            )
+            Spacer(Modifier.width(30.dp))
+            CallActionButton(
+                size = 68.dp,
+                container = NeuDanger,
+                tint = AccentInk,
+                icon = MIcons.PhoneOff,
+                description = "挂断",
+                enabled = active,
+                onClick = { vm.hangUp() },
+            )
+        }
+    }
+}
+
+/** 字幕行：text + 是否用户 + 是否已收口（partial = 正在进行） */
+private data class CallLine(val text: String, val isUser: Boolean, val isPartial: Boolean)
+
+private fun buildLines(ui: RealtimeCallUiState, name: String): List<CallLine> {
+    val closed = ui.turns.takeLast(5).map { CallLine(it.text, it.speaker == "user", false) }
+    val live = buildList {
+        if (ui.userPartial.isNotBlank()) add(CallLine(ui.userPartial, true, true))
+        if (ui.aiPartial.isNotBlank()) add(CallLine(ui.aiPartial, false, true))
+    }
+    return (closed + live).takeLast(6)
+}
+
+private fun subtitleText(line: CallLine, name: String, labelColor: Color) = buildAnnotatedString {
+    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = labelColor)) {
+        append(if (line.isUser) "你 " else "$name ")
+    }
+    append(line.text)
+    if (line.isPartial) append(" …")
 }
 
 private fun stateLabel(ui: RealtimeCallUiState): String = when (ui.state) {
