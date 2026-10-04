@@ -97,6 +97,19 @@ interface MessageDao {
     @Query("UPDATE messages SET content = :content WHERE id = :id")
     suspend fun updateContent(id: Long, content: String)
 
+    /**
+     * 把一条已落库的文字消息**原地升级成语音条**（v0.50.0 AI 语音条）。
+     *
+     * 为什么升级同一条而不是另插一条：语音条与文字是同一句话的两种形态，另插一条会让用户
+     * 看到"一段文字 + 一条说同样内容的语音"。升级同一条天然不重复，而且合成失败时
+     * 什么都不用回滚——那条消息本来就是文字。
+     */
+    @Query(
+        "UPDATE messages SET mediaKind = :mediaKind, audioPath = :audioPath, " +
+            "audioDurationMs = :audioDurationMs WHERE id = :id",
+    )
+    suspend fun updateVoice(id: Long, mediaKind: String, audioPath: String, audioDurationMs: Long)
+
     /** 数据与隐私面板：消息总数 */
     @Query("SELECT COUNT(*) FROM messages")
     fun observeCount(): Flow<Long>
@@ -499,7 +512,7 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        /** v2：任务加 dueAt/createdBy，人设加 tone（数据只存本机，不允许破坏性重建） */
+        /** v2：任务加 dueAt/createdBy，人设加 tone（不允许破坏性重建） */
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE tasks ADD COLUMN dueAt INTEGER NOT NULL DEFAULT 0")

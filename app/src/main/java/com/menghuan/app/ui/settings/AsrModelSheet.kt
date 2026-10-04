@@ -1,0 +1,280 @@
+package com.menghuan.app.ui.settings
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.menghuan.app.MenghuanApp
+import com.menghuan.app.data.AsrDownloadPhase
+import com.menghuan.app.data.AsrDownloadSession
+import com.menghuan.app.data.AsrImportResult
+import com.menghuan.app.data.AsrModelFile
+import com.menghuan.app.data.AsrModelManager
+import com.menghuan.app.data.AsrModelRules
+import com.menghuan.app.data.AsrModelSource
+import com.menghuan.app.ui.common.NeuButton
+import com.menghuan.app.ui.common.NeuButtonKind
+import com.menghuan.app.ui.common.NeuChip
+import com.menghuan.app.ui.common.NeuSectionTitle
+import com.menghuan.app.ui.common.NeuSheetScaffold
+import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.theme.FaintText
+import com.menghuan.app.ui.theme.MutedText
+import com.menghuan.app.ui.theme.NeuAccent
+import com.menghuan.app.ui.theme.NeuDanger
+import com.menghuan.app.ui.theme.NeuSurface
+import com.menghuan.app.ui.theme.NeuTrack
+import com.menghuan.app.ui.theme.TextPrimary
+import com.menghuan.app.ui.theme.TextSecondary
+import kotlinx.coroutines.launch
+
+/**
+ * 语音识别模型面板（v0.50.0）：SenseVoice int8 **不随包**，在这里下载或手动导入。
+ *
+ * 挂在「设置」里，也会被"点语音键却没模型"的提示直接拉起——所以它必须能独立工作，
+ * 不依赖任何聊天/通话上下文。
+ *
+ * 进度挂在进程级的 [AsrDownloadSession] 上：228MB 要下几分钟，用户关掉面板不该把下载掐断，
+ * 重开面板还能看到同一次下载的百分比。
+ */
+@Composable
+fun AsrModelSheet(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val app = context.applicationContext as MenghuanApp
+    val scope = rememberCoroutineScope()
+
+    val phase by AsrDownloadSession.phase.collectAsState()
+    val running = AsrDownloadSession.isRunning
+
+    // 每次面板重开或有动作后重算一次；不在每帧重组里 stat 磁盘
+    var ready by remember { mutableStateOf(AsrModelManager.isReady(context)) }
+    var pending by remember { mutableStateOf(AsrModelManager.pendingBytes(context)) }
+    fun refresh() {
+        ready = AsrModelManager.isReady(context)
+        pending = AsrModelManager.pendingBytes(context)
+    }
+
+    var source by remember { mutableStateOf(AsrModelSource.MODELSCOPE) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf(false) }
+    var importTarget by remember { mutableStateOf<AsrModelFile?>(null) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val which = importTarget ?: return@rememberLauncherForActivityResult
+        importTarget = null
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            importError = null
+            notice = null
+            when (val result = AsrModelManager.importFrom(context, uri, which)) {
+                AsrImportResult.Verified -> notice = "${which.fileName} 已导入，校验通过"
+                is AsrImportResult.AcceptedWithWarning -> notice = result.reason
+                is AsrImportResult.Failed -> importError = result.reason
+            }
+            refresh()
+        }
+    }
+
+    NeuSheetScaffold(title = "语音识别模型", onDismiss = onDismiss) {
+        Spacer(Modifier.height(14.dp))
+
+        NeuSectionTitle(if (ready) "已就绪" else "未就绪")
+        Spacer(Modifier.height(8.dp))
+        AsrModelFile.entries.forEach { file ->
+            ModelFileRow(
+                name = file.fileName,
+                size = AsrModelRules.humanSize(file.sizeBytes),
+                present = AsrModelManager.fileOf(context, file)
+                    .let { it.isFile && it.length() == file.sizeBytes },
+            )
+            Spacer(Modifier.height(6.dp))
+        }
+
+        val runningPhase = phase as? AsrDownloadPhase.Running
+        if (runningPhase != null) {
+            Spacer(Modifier.height(8.dp))
+            DownloadProgress(runningPhase)
+        }
+
+        Spacer(Modifier.height(14.dp))
+        NeuSectionTitle("下载源")
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth()) {
+            AsrModelSource.entries.forEach { s ->
+                NeuChip(text = s.label, selected = source == s, onClick = { source = s })
+                Spacer(Modifier.width(8.dp))
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        if (ready) {
+            NeuButton(text = "已就绪", kind = NeuButtonKind.Secondary, enabled = false, onClick = {})
+        } else if (running) {
+            NeuButton(text = "暂停下载", kind = NeuButtonKind.Secondary, onClick = { AsrDownloadSession.pause() })
+        } else {
+            NeuButton(
+                // 按钮上直接写还差多少字节：这既是"要下多大"也是"要走多少流量"，
+                // 不用再另加一行说明性小字
+                text = (if (pending < AsrModelFile.entries.sumOf { it.sizeBytes }) "继续下载 · " else "下载模型 · ") +
+                    AsrModelRules.humanSize(pending),
+                kind = NeuButtonKind.Primary,
+                onClick = {
+                    notice = null
+                    importError = null
+                    AsrDownloadSession.clearFailure()
+                    AsrDownloadSession.start(context, app.applicationScope, source)
+                },
+            )
+        }
+
+        (phase as? AsrDownloadPhase.Failed)?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it.reason, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
+        }
+        importError?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
+        }
+        notice?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = MutedText)
+        }
+
+        Spacer(Modifier.height(16.dp))
+        NeuSectionTitle("手动导入")
+        Spacer(Modifier.height(8.dp))
+        AsrModelFile.entries.forEach { file ->
+            NeuButton(
+                text = "导入 ${file.fileName}",
+                kind = NeuButtonKind.Secondary,
+                onClick = {
+                    importTarget = file
+                    picker.launch("*/*")
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+
+        if (ready || pending < AsrModelFile.entries.sumOf { it.sizeBytes }) {
+            Spacer(Modifier.height(8.dp))
+            NeuSectionTitle("释放空间")
+            Spacer(Modifier.height(8.dp))
+            NeuButton(
+                text = "删除模型文件",
+                kind = NeuButtonKind.Danger,
+                onClick = { confirmDelete = true },
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            tonalElevation = 0.dp, // v0.42.1 全应用去阴影（该重载阴影来自 tonalElevation）
+            onDismissRequest = { confirmDelete = false },
+            containerColor = NeuSurface,
+            title = { Text("删除模型文件", color = TextPrimary) },
+            text = {
+                Text(
+                    "将删除：已下载的 SenseVoice 模型与 tokens（约 228 MB），以及未下完的续传分片。\n" +
+                        "保留：聊天记录、人设、任务与全部设置。删除后语音输入与通话不可用，" +
+                        "文字聊天不受影响；随时可重新下载。",
+                    color = TextPrimary,
+                    lineHeight = 20.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        AsrDownloadSession.pause()
+                        AsrModelManager.delete(context)
+                        confirmDelete = false
+                        notice = "已删除模型文件"
+                        refresh()
+                    },
+                ) { Text("删除", color = NeuDanger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("取消", color = MutedText) }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ModelFileRow(name: String, size: String, present: Boolean) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                name,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = TextPrimary,
+            )
+            Text(size, fontSize = 11.sp, color = FaintText)
+        }
+        Text(
+            if (present) "已就绪" else "未下载",
+            fontSize = 12.sp,
+            color = if (present) TextSecondary else MutedText,
+        )
+    }
+}
+
+@Composable
+private fun DownloadProgress(phase: AsrDownloadPhase.Running) {
+    val fraction = AsrModelRules.fraction(phase.doneBytes, phase.totalBytes)
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                phase.file.fileName,
+                fontSize = 12.sp,
+                color = TextSecondary,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "${AsrModelRules.humanSize(phase.doneBytes)} / ${AsrModelRules.humanSize(phase.totalBytes)}",
+                fontSize = 12.sp,
+                color = MutedText,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .neuSurface(999.dp, color = NeuTrack, inset = true),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(fraction)
+                    .height(6.dp)
+                    .background(NeuAccent, RoundedCornerShape(999.dp)),
+            )
+        }
+    }
+}

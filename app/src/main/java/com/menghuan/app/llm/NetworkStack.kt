@@ -26,7 +26,7 @@ import javax.net.ssl.SSLSession
  *    **证书链本身仍走系统 TrustManager 校验**（默认行为），假证书/自签/MITM 仍会被拒。
  *
  * **为什么不用 TrustAllCerts**：那会让任何中间人都能截走 `Authorization: Bearer <apiKey>`
- * 明文头，用户档案/对话内容可被静默篡改。App 里 API Key 走 Keystore 加密、数据只存本机，
+ * 明文头，用户档案/对话内容可被静默篡改。App 里 API Key 走 Keystore 加密，
  * 网络层是唯一的安全边界，不能拆。若遇到自签端点，让用户把 CA 装进设备
  * （network_security_config.xml 已经信任 user CA），比全局 trust-all 干净得多。
  *

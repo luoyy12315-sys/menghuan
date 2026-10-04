@@ -37,6 +37,8 @@ import com.menghuan.app.ui.chat.AGENT_CHAT_DEFAULT_STRATEGY
 import com.menghuan.app.ui.chat.AGENT_CHAT_HINT_FRAMEWORK
 import com.menghuan.app.ui.chat.IMAGE_HINT_DEFAULT_STRATEGY
 import com.menghuan.app.ui.chat.IMAGE_HINT_FRAMEWORK
+import com.menghuan.app.ui.chat.VOICE_NOTE_DEFAULT_STRATEGY
+import com.menghuan.app.ui.chat.VOICE_NOTE_FRAMEWORK
 import com.menghuan.app.ui.chat.insightLogicText
 import com.menghuan.app.ui.chat.reportLogicText
 import com.menghuan.app.ui.common.NeuButton
@@ -79,6 +81,7 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
     var imageHintStrategy by remember { mutableStateOf(IMAGE_HINT_DEFAULT_STRATEGY) }
     var agentChatEnabled by remember { mutableStateOf(true) }
     var agentChatStrategy by remember { mutableStateOf(AGENT_CHAT_DEFAULT_STRATEGY) }
+    var voiceNoteStrategy by remember { mutableStateOf(VOICE_NOTE_DEFAULT_STRATEGY) }
     var loaded by remember { mutableStateOf(false) }
     // 手风琴：同一时间只展开一段；null = 全收起
     var openSection by remember { mutableStateOf<String?>(null) }
@@ -97,6 +100,7 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
         imageHintStrategy = app.settingsRepository.imageHintStrategy.first()
         agentChatEnabled = app.settingsRepository.agentChatEnabled.first()
         agentChatStrategy = app.settingsRepository.agentChatStrategy.first()
+        voiceNoteStrategy = app.settingsRepository.voiceNoteStrategy.first()
         loaded = true
     }
 
@@ -127,6 +131,7 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
                 app.settingsRepository.setImageHintStrategy(imageHintStrategy)
                 app.settingsRepository.setAgentChatEnabled(agentChatEnabled)
                 app.settingsRepository.setAgentChatStrategy(agentChatStrategy)
+                app.settingsRepository.setVoiceNoteStrategy(voiceNoteStrategy)
             }
             onDismiss()
         }
@@ -141,6 +146,7 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
         imageHintStrategy = IMAGE_HINT_DEFAULT_STRATEGY
         agentChatEnabled = true
         agentChatStrategy = AGENT_CHAT_DEFAULT_STRATEGY
+        voiceNoteStrategy = VOICE_NOTE_DEFAULT_STRATEGY
     }
 
     if (!loaded) {
@@ -157,6 +163,7 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
     val weeklyCustomized = weeklyReportStrategy.trim() != WeeklyReportMath.DEFAULT_STRATEGY
     val imageCustomized = imageHintStrategy.trim() != IMAGE_HINT_DEFAULT_STRATEGY
     val agentChatCustomized = agentChatStrategy.trim() != AGENT_CHAT_DEFAULT_STRATEGY
+    val voiceNoteCustomized = voiceNoteStrategy.trim() != VOICE_NOTE_DEFAULT_STRATEGY
 
     NeuSheetScaffold(title = "AI 提示词", onDismiss = onDismiss) {
         Spacer(Modifier.height(8.dp))
@@ -293,6 +300,24 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
                 customized = agentChatCustomized,
                 onStrategyChange = { agentChatStrategy = it },
                 onResetStrategy = { agentChatStrategy = AGENT_CHAT_DEFAULT_STRATEGY },
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+
+        SectionRow(
+            title = "⑧ AI 语音条（仅语音合成配齐时注入）",
+            customized = voiceNoteCustomized,
+            expanded = openSection == "voiceNote",
+        ) { toggle("voiceNote") }
+        if (openSection == "voiceNote") {
+            LayeredEditor(
+                frameworkLabel = "框架（硬编码不可改：【语音条】 标记格式）",
+                framework = VOICE_NOTE_FRAMEWORK,
+                strategyLabel = "策略（可编：什么时候该用说的、什么时候必须打字）",
+                strategy = voiceNoteStrategy,
+                customized = voiceNoteCustomized,
+                onStrategyChange = { voiceNoteStrategy = it },
+                onResetStrategy = { voiceNoteStrategy = VOICE_NOTE_DEFAULT_STRATEGY },
             )
             Spacer(Modifier.height(10.dp))
         }

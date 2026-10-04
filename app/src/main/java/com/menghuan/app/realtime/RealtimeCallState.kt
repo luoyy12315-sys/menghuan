@@ -39,20 +39,16 @@ sealed interface RealtimeCallEvent {
 /**
  * 一次通话的配置：人设快照（personaId/systemPrompt/voice 由调用方组装好）。
  * 通话对象就是现有 Persona（任务书 §十七），不建第二套人格系统；
- * 音色按人设各自保存（DataStore call_voice_<personaId>，空 = 默认晓晓）。
+ * 音色按人设各自保存（DataStore tts_voice_<personaId>，空 = 当前 provider 的默认预置音色）。
  */
 data class RealtimeCallConfig(
     val personaId: Long,
     val personaName: String,
     /** 已组装的 system prompt：persona.systemPrompt（或基础提示词）+ 档案注入说明 + 用户档案 */
     val systemPrompt: String,
-    /** Edge TTS 音色（人设级配置，编辑人设弹层里选） */
-    val voice: String = DEFAULT_TTS_VOICE,
-) {
-    companion object {
-        const val DEFAULT_TTS_VOICE = "zh-CN-XiaoxiaoNeural"
-    }
-}
+    /** 音色（v0.50.0 起是 [VoiceRef]：哪家 provider + 该家认的音色串；通话与 AI 语音条共用） */
+    val voice: com.menghuan.app.data.VoiceRef,
+)
 
 /** 通话期间内存暂存的一轮对话（挂断时一次性写 Room，partial 绝不入库） */
 data class CallTurnData(

@@ -30,4 +30,16 @@ class AiPromptsTest {
         assertTrue(AiPrompts.DEFAULT_ASSISTANT_PROMPT_V038.contains("快捷打卡面板"))
         assertTrue(AiPrompts.DEFAULT_ASSISTANT_PROMPT_V038.length > 2000)
     }
+
+    @Test
+    fun `新手册不再宣称单机与数据只存本机`() {
+        // v0.50.0：项目取消纯离线定位，用户可见文案不再宣称本地专属
+        assertFalse(AiPrompts.DEFAULT_ASSISTANT_PROMPT.contains("单机版"))
+        assertFalse(AiPrompts.DEFAULT_ASSISTANT_PROMPT.contains("数据 100% 只存本机"))
+        assertFalse(AiPrompts.DEFAULT_ASSISTANT_PROMPT.contains("不上传任何服务器"))
+        assertFalse(AiPrompts.DEFAULT_ASSISTANT_PROMPT.contains("图片只存本机"))
+        // 锚点原样保留（升级识别不受影响）
+        assertTrue(AiPrompts.DEFAULT_ASSISTANT_PROMPT_V038.contains("单机版"))
+        assertTrue(AiPrompts.DEFAULT_ASSISTANT_PROMPT_V038.contains("数据 100% 只存本机"))
+    }
 }

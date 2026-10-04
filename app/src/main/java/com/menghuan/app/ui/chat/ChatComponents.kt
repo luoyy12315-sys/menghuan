@@ -481,14 +481,20 @@ fun VoiceBubble(
     isPlaying: Boolean,
     onToggle: () -> Unit,
     onLongPress: () -> Unit = {},
+    isUser: Boolean = true,
 ) {
     val sec = (durationMs / 1000).coerceAtLeast(1)
     val ratio = (0.30f + (sec.coerceAtMost(30) - 1) / 29f * 0.26f).coerceIn(0.30f, 0.56f)
+    // AI 侧走文字气泡那套「面色 + 细线」，用户侧保持强调色药丸——
+    // 否则整屏只有 AI 语音条是黑块，跟 AI 文字气泡不是一家人。
+    val ink = if (isUser) AccentInk else TextPrimary
     Row(
         Modifier
             .widthIn(max = maxWidth * ratio, min = maxWidth * 0.30f)
-            .clip(RoundedCornerShape(18.dp))
-            .background(NeuAccent)
+            .then(
+                if (isUser) Modifier.clip(RoundedCornerShape(18.dp)).background(NeuAccent)
+                else Modifier.neuSurface(18.dp, color = MaterialTheme.colorScheme.surface, elevation = 2.dp)
+            )
             .combinedClickable2(onLongPress = onLongPress, onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -496,7 +502,7 @@ fun VoiceBubble(
         Icon(
             if (isPlaying) MIcons.Pause else MIcons.Play,
             contentDescription = if (isPlaying) "暂停" else "播放",
-            tint = AccentInk,
+            tint = ink,
             modifier = Modifier.size(15.dp),
         )
         Spacer(Modifier.width(9.dp))
@@ -519,14 +525,14 @@ fun VoiceBubble(
                         .width(2.5.dp)
                         .height((13.dp * h * amp).coerceAtLeast(4.dp))
                         .clip(RoundedCornerShape(2.dp))
-                        .background(AccentInk.copy(alpha = 0.9f)),
+                        .background(ink.copy(alpha = 0.9f)),
                 )
             }
         }
         Spacer(Modifier.weight(1f))
         Text(
             com.menghuan.app.data.VoiceRecorder.formatDuration(durationMs),
-            color = AccentInk,
+            color = ink,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
         )

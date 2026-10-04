@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android 12+ 数据提取规则：云备份与设备迁移均不传输应用数据（数据仅存本机） -->
+<!-- Android 12+ 数据提取规则：云备份与设备迁移均不传输应用数据（避免本地数据随系统备份外流） -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="root" path="." />

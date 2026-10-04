@@ -153,7 +153,6 @@ fun ChatScreen(
     var reasoningView by remember { mutableStateOf<ChatMessage?>(null) } // 思考链查看（v0.41.4）
     var showApiSwitch by remember { mutableStateOf(false) }
     var showPersonaEditor by remember { mutableStateOf(false) } // v0.47.1：三点 = 编辑人设
-    var soundOn by remember { mutableStateOf(false) } // v0.49.0：AI 回复语音朗读开关（默认关）
     var callLogSession by remember { mutableStateOf<Long?>(null) } // v0.49.0：点开的通话记录卡
     var callLogTitle by remember { mutableStateOf("") }
     // v0.43.0 输入区面板：0=收起 1=表情 2=加号（同一时刻只开一个，与键盘互斥）
@@ -163,15 +162,12 @@ fun ChatScreen(
     val context = LocalContext.current
 
     val appContainer = context.applicationContext as com.menghuan.app.MenghuanApp
-    // v0.49.0：喇叭开关初始值（DataStore，异步读）
-    LaunchedEffect(Unit) {
-        soundOn = runCatching {
-            appContainer.settingsRepository.chatReadAloud.first()
-        }.getOrDefault(false)
-    }
     // 自定义表情（v0.43.0）：库表 → 面板真实数据源
     val stickers by appContainer.db.stickerDao().observeAll()
         .collectAsState(initial = emptyList())
+    // v0.50.0：「语音通话」总开关关掉时，加号面板第四格整格不出现
+    val voiceCallOn by appContainer.settingsRepository.voiceCallEnabled
+        .collectAsState(initial = true)
     val scope = rememberCoroutineScope()
     // 正在播放的语音消息 id（同一时刻只播一条；null = 没在播）
     var playingVoiceId by remember { mutableStateOf<Long?>(null) }
@@ -240,6 +236,8 @@ fun ChatScreen(
     var recording by remember { mutableStateOf(false) }
     // 语音态：输入框位置显示"按住 说话"，再点语音键切回打字
     var voiceMode by remember { mutableStateOf(false) }
+    // 识别模型不随包（228MB 装后下载）：没模型时点语音键直接开下载面板，不进语音态假死
+    var showAsrModelSheet by remember { mutableStateOf(false) }
 
     /**
      * 输入区「输出形态」统一切换（v0.43.1）。
@@ -410,27 +408,9 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // v0.49.0：喇叭 = AI 回复语音朗读开关（开着时每条 AI 回复自动读出来）；
-                    // 再右三个点 = 编辑人设。
-                    Icon(
-                        if (soundOn) MIcons.VolumeOn else MIcons.VolumeOff,
-                        contentDescription = if (soundOn) "关闭语音朗读" else "开启语音朗读",
-                        tint = if (soundOn) TextPrimary else MutedText,
-                        modifier = Modifier
-                            .size(21.dp)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) {
-                                val next = !soundOn
-                                soundOn = next
-                                scope.launch { appContainer.settingsRepository.setChatReadAloud(next) }
-                                if (!next) vm.stopReadAloud()
-                            },
-                    )
-                    Spacer(Modifier.width(12.dp))
                     // v0.47.1：三个点 = 编辑人设（名字/头像/设定词/通话音色都在人设编辑里，
                     // 通话音色按人设各自保存）。通话入口在加号面板第四格。
+                    // v0.50.0：喇叭（AI 回复朗读）已删——朗读功能整体取消，AI 想说话改用【语音条】标记。
                     Icon(
                         MIcons.MoreVert,
                         contentDescription = "编辑人设",
@@ -603,6 +583,7 @@ fun ChatScreen(
                                                 durationMs = msg.audioDurationMs,
                                                 maxWidth = bubbleMaxWidth,
                                                 isPlaying = playingVoiceId == msg.id,
+                                                isUser = msg.isFromUser,
                                                 onToggle = {
                                                     if (playingVoiceId == msg.id) {
                                                         voicePlayer.stop()
@@ -839,6 +820,11 @@ fun ChatScreen(
                         if (voiceMode) {
                             // 回打字态：要求键盘立刻回来（用户点的是"键盘"图标）
                             switchOutputMode(nextPanel = 0, nextVoice = false, showKeyboard = true)
+                        } else if (!com.menghuan.app.data.AsrModelManager.isReady(context)) {
+                            // 模型没下载就进语音态，用户按住说完只会得到一条空转写——
+                            // 与其让他录完才发现，不如这一下就把下载入口摆出来。
+                            Toast.makeText(context, "语音识别模型未下载", Toast.LENGTH_SHORT).show()
+                            showAsrModelSheet = true
                         } else {
                             // 切到语音态：收键盘、收面板（三者互斥），不要键盘
                             switchOutputMode(nextPanel = 0, nextVoice = true, showKeyboard = false)
@@ -896,11 +882,10 @@ fun ChatScreen(
                                     val (file, duration) = result
                                     scope.launch {
                                         // 录完再转写（录音期间绝不碰识别器：会抢麦克风）。
-                                        // 三级级联：云端 Whisper（主力）→ 系统识别（兜底）→ 空。
+                                        // 只有端侧离线一级，识别不出来就发空文字，语音条照发。
                                         val text = com.menghuan.app.data.SpeechToText.transcribe(
                                             context = context,
                                             audioPath = file.absolutePath,
-                                            cloudTranscribe = { f -> vm.cloudTranscribe(f) },
                                         ) ?: ""
                                         vm.sendVoice(file.absolutePath, duration, text)
                                     }
@@ -1012,6 +997,7 @@ fun ChatScreen(
                             onFile = { panel = 0; filePicker.launch(arrayOf("*/*")) },
                             // v0.47.0：通话入口收进加号面板第四格（收面板 → 进通话页）
                             onCall = { panel = 0; onOpenCall() },
+                            callEnabled = voiceCallOn,
                         )
                     }
                 }
@@ -1124,6 +1110,10 @@ fun ChatScreen(
     // 思考链全文查看（v0.41.4）：推理类模型的思维过程，只在这里按需展示
     reasoningView?.let { message ->
         ReasoningSheet(content = message.reasoning, onDismiss = { reasoningView = null })
+    }
+
+    if (showAsrModelSheet) {
+        com.menghuan.app.ui.settings.AsrModelSheet(onDismiss = { showAsrModelSheet = false })
     }
 }
 

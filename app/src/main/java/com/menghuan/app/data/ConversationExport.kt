@@ -32,7 +32,7 @@ object ConversationExport {
                 message.content.lines().forEach { line -> append("> $line\n") }
                 append("\n")
             }
-            append("---\n\n由「梦欢」App 导出 · 数据仅存本机\n")
+            append("---\n\n由「梦欢」App 导出\n")
         }
     }
 }

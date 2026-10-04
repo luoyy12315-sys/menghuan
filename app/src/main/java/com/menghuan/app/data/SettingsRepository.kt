@@ -67,11 +67,20 @@ class SettingsRepository(
     // v0.42.0：每日建议（独立第三条 AI 产出链路）的提示词策略 + 是否通知
     private val keyDailySuggestionStrategy = stringPreferencesKey("daily_suggestion_strategy")
     private val keyDailySuggestionNotifyEnabled = booleanPreferencesKey("daily_suggestion_notify_enabled")
-    // v0.47.1：按人设的通话音色，前缀键 call_voice_<personaId>（空 = 默认晓晓）。
-    // 音色属于人设（在编辑人设弹层里选），不再有全局通话设置。
-    private val callVoicePrefix = "call_voice_"
-    // v0.48.0 → v0.49.0：AI 回复语音朗读（右上角喇叭开关控制，默认关）
-    private val keyChatReadAloud = booleanPreferencesKey("chat_read_aloud")
+    // v0.50.0：语音合成接口（三家可切；通话与 AI 语音条共用同一套配置）
+    private val keyTtsProvider = stringPreferencesKey("tts_provider")
+    private val keyTtsBaseUrl = stringPreferencesKey("tts_base_url")
+    private val keyTtsModel = stringPreferencesKey("tts_model")
+    private val keyTtsKeyEnc = stringPreferencesKey("tts_api_key_enc")
+    private val keyTtsKeyPlain = stringPreferencesKey("tts_api_key_plain")
+    // v0.50.0：按人设的音色，前缀键 tts_voice_<personaId>（空 = 该 provider 的默认预置音色）。
+    // 音色属于人设（在编辑人设弹层里选），通话与 AI 语音条共用，不再有单独的"通话设置"。
+    // 老键 call_voice_<id> 存的是 Edge 音色名，Edge TTS 已删，读也不读它。
+    private val ttsVoicePrefix = "tts_voice_"
+    // v0.50.0：语音两个总开关（朗读功能已删）。默认都开——
+    // 语音条的提示词只在 TTS 配齐时才注入，所以没配 TTS 时开着也不会产生坏行为。
+    private val keyVoiceNoteEnabled = booleanPreferencesKey("voice_note_enabled")
+    private val keyVoiceCallEnabled = booleanPreferencesKey("voice_call_enabled")
 
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
@@ -372,6 +381,8 @@ class SettingsRepository(
     // v0.37.0：对话内操控手机（总开关默认开 = 用户授了完全权限；关掉即不注入能力提示）
     private val keyAgentChatEnabled = booleanPreferencesKey("agent_chat_enabled")
     private val keyAgentChatStrategy = stringPreferencesKey("agent_chat_strategy")
+    // v0.50.0：AI 语音条策略（标记格式 【语音条】 硬编码在 VOICE_NOTE_FRAMEWORK）
+    private val keyVoiceNoteStrategy = stringPreferencesKey("voice_note_strategy")
     // v0.38.0：Agent 进度通知 / 人设主动关心 / token 用量记账
     private val keyAgentNotifyEnabled = booleanPreferencesKey("agent_notify_enabled")
     private val keyProactiveEnabled = booleanPreferencesKey("proactive_enabled")
@@ -456,6 +467,21 @@ class SettingsRepository(
         }
     }
 
+    /** AI 语音条策略（标记格式 【语音条】 硬编码在 VOICE_NOTE_FRAMEWORK） */
+    val voiceNoteStrategy: Flow<String> =
+        store.data.map { it[keyVoiceNoteStrategy] ?: com.menghuan.app.ui.chat.VOICE_NOTE_DEFAULT_STRATEGY }
+
+    suspend fun setVoiceNoteStrategy(text: String) {
+        store.edit { prefs ->
+            val trimmed = text.trim()
+            if (trimmed.isEmpty() || trimmed == com.menghuan.app.ui.chat.VOICE_NOTE_DEFAULT_STRATEGY) {
+                prefs.remove(keyVoiceNoteStrategy)
+            } else {
+                prefs[keyVoiceNoteStrategy] = trimmed
+            }
+        }
+    }
+
     /** 对话内操控手机总开关（默认开；关掉后聊天回复不注入能力提示，模型无法发起标记） */
     val agentChatEnabled: Flow<Boolean> = store.data.map { it[keyAgentChatEnabled] ?: true }
 
@@ -512,26 +538,86 @@ class SettingsRepository(
         store.edit { it[keyDailySuggestionNotifyEnabled] = enabled }
     }
 
-    /** 语音通话：按人设的 Edge TTS 音色（空 = 默认晓晓；音色名即微软声音名） */
-    fun callVoiceFor(personaId: Long): Flow<String> =
-        store.data.map { it[stringPreferencesKey("$callVoicePrefix$personaId")] ?: "" }
+    /**
+     * 人设专属音色（通话与 AI 语音条**共用一套**）。空 = 用当前 provider 的第一个预置音色。
+     *
+     * v0.50.0 起存 [VoiceRef]（`<PROVIDER>|<voiceId>`）而不是 Edge 音色名。
+     * 老键 `call_voice_<id>` 里的值（如 `zh-CN-XiaoxiaoNeural`）不带 provider 段，
+     * [VoiceRef.decode] 解不出来自然回落默认 —— 这就是方案要求的"忽略并回落、不报错不崩"，
+     * 不需要额外迁移代码。
+     */
+    fun voiceRefFor(personaId: Long): Flow<VoiceRef?> =
+        store.data.map { VoiceRef.decode(it[stringPreferencesKey("$ttsVoicePrefix$personaId")]) }
 
-    /** 恢复默认（晓晓）传空串即可 */
-    suspend fun setCallVoiceFor(personaId: Long, voice: String) {
+    /** 传 null = 恢复默认音色 */
+    suspend fun setVoiceRefFor(personaId: Long, ref: VoiceRef?) {
         store.edit {
-            val v = voice.trim()
-            val key = stringPreferencesKey("$callVoicePrefix$personaId")
-            if (v.isEmpty() || v == "zh-CN-XiaoxiaoNeural") it.remove(key)
-            else it[key] = v
+            val key = stringPreferencesKey("$ttsVoicePrefix$personaId")
+            if (ref == null || ref.isBlank) it.remove(key) else it[key] = ref.encode()
         }
     }
 
-    /** AI 回复语音朗读（默认关：喇叭打开时每条 AI 回复自动读出来） */
-    val chatReadAloud: Flow<Boolean> =
-        store.data.map { it[keyChatReadAloud] ?: false }
+    /** 人设删除的级联清理：移除音色配置 */
+    suspend fun removeVoiceRef(personaId: Long) {
+        store.edit { it.remove(stringPreferencesKey("$ttsVoicePrefix$personaId")) }
+    }
 
-    suspend fun setChatReadAloud(enabled: Boolean) {
-        store.edit { it[keyChatReadAloud] = enabled }
+    /** AI 语音条（默认开）：允许 AI 用 `【语音条】` 标记把回复发成可播放的语音气泡 */
+    val voiceNoteEnabled: Flow<Boolean> =
+        store.data.map { it[keyVoiceNoteEnabled] ?: true }
+
+    suspend fun setVoiceNoteEnabled(enabled: Boolean) {
+        store.edit { if (enabled) it.remove(keyVoiceNoteEnabled) else it[keyVoiceNoteEnabled] = false }
+    }
+
+    /** 语音通话（默认开）：关掉后加号面板不再出现「通话」格 */
+    val voiceCallEnabled: Flow<Boolean> =
+        store.data.map { it[keyVoiceCallEnabled] ?: true }
+
+    suspend fun setVoiceCallEnabled(enabled: Boolean) {
+        store.edit { if (enabled) it.remove(keyVoiceCallEnabled) else it[keyVoiceCallEnabled] = false }
+    }
+
+    // ===== 语音合成接口（v0.50.0：三家可切，通话与 AI 语音条共用） =====
+
+    val ttsConfig: Flow<TtsConfig> = store.data.map { prefs ->
+        val sealed = prefs[keyTtsKeyEnc]
+        TtsConfig(
+            provider = TtsProvider.fromName(prefs[keyTtsProvider]),
+            baseUrl = prefs[keyTtsBaseUrl] ?: "",
+            model = prefs[keyTtsModel] ?: "",
+            apiKey = if (sealed.isNullOrBlank()) {
+                prefs[keyTtsKeyPlain] ?: ""
+            } else {
+                resolveSealed(sealed) ?: (prefs[keyTtsKeyPlain] ?: "")
+            },
+        )
+    }.distinctUntilChanged()
+
+    /** Key 走 Keystore 加密；Keystore 不可用时才回退明文（与对话/生图接口同一套规矩） */
+    suspend fun saveTtsConfig(config: TtsConfig) = withContext(Dispatchers.IO) {
+        val sealed = if (config.apiKey.isEmpty()) null else ApiKeyCipher.encrypt(config.apiKey)
+        store.edit { prefs ->
+            when {
+                sealed != null -> {
+                    prefs[keyTtsKeyEnc] = sealed
+                    prefs.remove(keyTtsKeyPlain)
+                }
+
+                config.apiKey.isNotEmpty() -> {
+                    prefs[keyTtsKeyPlain] = config.apiKey
+                    prefs.remove(keyTtsKeyEnc)
+                }
+
+                else -> {
+                    prefs.remove(keyTtsKeyEnc)
+                    prefs.remove(keyTtsKeyPlain)
+                }
+            }
+            prefs[keyTtsProvider] = config.provider.name
+            prefs[keyTtsBaseUrl] = config.baseUrl.trim()
+            prefs[keyTtsModel] = config.model.trim()
+        }
     }
 
     /** 人设主动关心（默认关：每天晚间最多一条，基于档案与任务情况） */
@@ -658,7 +744,6 @@ class SettingsRepository(
     }
 
     // ===== 外观（跟随系统 / 浅色 / 深色） =====
-
     /** 主题模式名：SYSTEM / LIGHT / DARK（缺失 = 跟随系统） */
     val themeMode: Flow<String> = store.data.map { prefs ->
         (prefs[keyThemeMode] ?: DEFAULT_THEME_MODE).also { cachedThemeMode = it }

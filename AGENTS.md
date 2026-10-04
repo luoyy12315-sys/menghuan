@@ -3,7 +3,7 @@
 > 本文件面向在此项目工作的 AI 助手与人类开发者。动手前必读，读完再改代码。
 >
 > 配套文档（别把内容往本文件里堆，本文件要一直保持"能一次读完"）：
-> `DESIGN.md` = 设计系统细节｜`ROADMAP.md` = 功能台账（做完勾一项）｜`CHANGELOG.md` = 逐版本变更。
+> `docs/DESIGN.md` = 设计系统细节｜`docs/ROADMAP.md` = 功能台账（做完勾一项）｜`docs/CHANGELOG.md` = 逐版本变更。
 
 ## 零、最高优先级约定（2026-10-04 用户拍板，违反即返工）
 
@@ -30,26 +30,51 @@
       适合什么情况"，让用户按自己的意图挑；  
    ③ **用户选定后再动手**，做完交付时要能对得上用户当初选的那个方向。  
    （方向唯一、没有歧义的小修可以直接做；但凡"这么做也行、那么做也行"，一律先问。）
-4. **键盘 / 语音模块现行实现（v0.44.0 整体替换 + v0.44.1 收尾），未经点名不得再动。**  
+4. **键盘 / 语音模块现行实现（键盘 v0.44.0 整体替换；语音 v0.50.0 整体重做），未经点名不得再动。**  
    - 键盘避让：`ui/chat/KeyboardInsets.kt` —— 官方 `WindowInsetsAnimationCompat` + 导航条基线；  
      `ImeDismissesPanels` 让"键盘真弹起"反过来收掉面板/语音态（面板与键盘互斥由**键盘状态**驱动，
      不靠点击入口各自 hide/show —— PanelSwitchHelper 的核心思路）。  
    - 语音采集：`data/VoiceRecorder.kt` —— AudioRecord 直采 PCM + 手写 WAV 头。  
-   - 语音转写：`data/SherpaAsr.kt`（**端侧离线主力**）+ `data/SpeechToText.kt`（三级级联：
-     端侧 → 云端 Whisper → 系统识别器）。  
-     sherpa-onnx 1.13.8 AAR 在 `app/libs/`，中文模型 `app/src/main/assets/asr/`（zh-14M int8，25MB），
-     `app/build.gradle.kts` 有 `noCompress onnx/txt` + `ndk.abiFilters(armeabi-v7a, arm64-v8a)`，
-     `proguard-rules.pro` 有 `-keep class com.k2fsa.sherpa.onnx.**`。**这几处配置缺一不可**，
-     动了会直接崩（AAssetManager 读不了压缩资源 / 找不到 so / JNI 字段被混淆）。  
-   ⚠️ 修这两块之前**先按第 3 条问清方向**；它们已经返工过多轮，别再试错式连改。
+   - **语音栈 v0.50.0 整体重做**（施工依据 `docs/PLAN-v0.50.0-语音执行方案.md`，协议依据
+     `docs/RESEARCH-v0.50.0-TTS协议查证.md`）：一条识别链 + 一条合成链 + 一个标记协议 + 两个开关。
+     - 识别：`data/SherpaAsr.kt` 是**唯一一级** —— sherpa-onnx `OfflineRecognizer` +
+       **SenseVoice 离线非流式**。`SpeechToText.kt` 已收成单级；云端 Whisper 与系统识别器
+       两级实测永远走不通，连同 `OpenAiClient.transcribe` 一起删除，**不要复活**。
+     - **语音消息与通话共用同一个识别器实例**（`CallAsr.kt` 已删，通话改调
+       `SherpaAsr.transcribeSamples`）：228MB 权重建两个 session ≈ 500MB，中低端机直接 OOM。
+     - **识别模型不随包**：`data/AsrModelManager.kt`（Range 断点续传 + 逐文件 sha256 + SAF 导入）
+       + `ui/settings/AsrModelSheet.kt`；模型落 `filesDir/asr_sensevoice/`，
+       源顺序 **ModelScope → hf-mirror → 手动导入**（实测 GitHub Releases 不可达、hf-mirror 证书异常）。
+       就绪判定 = `.verified` 标记 + 两文件字节数全等，**不是每次重算 228MB 哈希**（点语音键就要调）。
+       `assets/asr/` 只剩 `silero_vad.onnx`（1.8MB 继续内置）。
+     - 合成：`data/TtsClient.kt` 三家可切（硅基流动 CosyVoice2 / 小米 MiMo / 自定义 OpenAI 兼容），
+       **三家协议不统一、逐家一个实现**（MiMo 走 `/chat/completions` 且目标文本必须放 `assistant`；
+       硅基预置音色要拼 `<model>:<alias>`、回裸二进制；自定义端点只发四个最小字段）。
+       `data/TtsConfig.kt`（`VoiceRef` 编解码 / 容器嗅探 / 上限换算，纯函数）、
+       `data/VoiceCloner.kt`（硅基 App 内克隆：裁 15 秒 → **端侧 ASR 自动出逐字稿** → multipart 上传换 uri）、
+       `ui/settings/TtsConfigSheet.kt`。
+     - 通话播放新增 `realtime/TtsAudioDecoder.kt`：按容器嗅探分流解码 + **下混单声道 + 重采样到 OUT_RATE**。
+       以前 Edge TTS 恒定 24kHz 单声道 MP3 刚好等于 `OUT_RATE` 所以没这层；换三家后不归一化会变速变调。
+     - AI 语音条：`data/VoiceNoteMarker.kt` 解析 `【语音条】` 标记，合成成功后把刚落库那条
+       **原地升级**成语音条（不另插一条，否则文字与语音说同一件事）；`VoiceBubble(isUser=…)`
+       AI 侧走面色细线、用户侧保持黑底药丸。
+     - **已删除、不要复活**：Edge TTS（`EdgeTtsClient.kt`）、AI 回复朗读（`ReadAloudPlayer.kt` +
+       单聊右上角喇叭 + `chat_read_aloud` 键）——用户明确作废朗读功能。
+     - 构建配置三处硬约束：`noCompress` **只剩 `onnx`**（`txt` 随内置 tokens 一起移除）、
+       `ndk.abiFilters` **只剩 `arm64-v8a`**（去 v7a 省 22MB，用户已确认放弃 32 位老机）、
+       `proguard-rules.pro` 的 `-keep class com.k2fsa.sherpa.onnx.**` **保持不变**（JNI 字段被混淆会崩）。
+       ⚠️ 这三处任一被"顺手改回"都会让语音崩或让包涨回 80MB。
+   ⚠️ 修键盘这块**先按第 3 条问清方向**。语音栈刚在 v0.50.0 整体重做完，改前先看上面两份文档，
+   别凭记忆改。
 
 ## 一、项目是什么
 
 **「梦欢」**：Android 平台的 AI 陪伴应用（v0.36.0 起改名，原「导师」；vibe coding 开发中）。  
 用户与 AI 人设（persona）单聊，获得生活/学习/工作指导；App 收集用户数据形成洞察，  
-并通过任务清单 + 定时提醒督促执行。用户**自行配置 LLM API**，数据**只存本机**。
+并通过任务清单 + 定时提醒督促执行。用户**自行配置 LLM API**（LLM / 语音 / 生图等外部服务均自带 Key）。
 
-- 定位：单机版 AI mentor，不做账号体系、不做云端
+- 定位：AI 陪伴 mentor，**联网运行**（用户自配 LLM / 语音服务；识别模型装后下载）
+- **不设「纯离线 / 单机」约束**：账号体系与云端为后续规划方向，数据当前落本机只是现状、不是底线
 - 交互核心：聊天为主界面，人设 = 聊天对象（类似联系人）
 - 当前阶段：**核心闭环可用（真实 LLM / 任务提醒 / 档案注入），二期做 AI 提炼**
 
@@ -67,7 +92,8 @@
 
 ```
 梦欢/
-├── AGENTS.md                    ← 本文件
+├── AGENTS.md                    ← 本文件（必须留在根目录，工具从这里自动加载）
+├── docs/                        ← 配套文档（DESIGN.md / ROADMAP.md / CHANGELOG.md / PLAN-*.md）
 ├── preview/all.html             ← 旧版交互预览（已弃用，仅供历史参考）
 ├── app/src/main/java/com/menghuan/app/
 │   ├── MainActivity.kt          # NavHost（home 四 tab Pager + chat/{personaId} + personas；deep link menghuan://open/{page}）+ MenghuanThemedRoot 主题根（解析外观模式 + 同步系统栏图标色）
@@ -88,12 +114,18 @@
 │   │   ├── DailySuggestionGenerator.kt # 每日建议（v0.42.0 独立链路）：DailySuggestionMath 纯函数（FRAMEWORK schema + 可自定义 STRATEGY + 宽容解析）+ 上下文采集 + LLM 生成落库
 │   │   ├── FileTextExtractor.kt # 文件正文抽取（v0.43.0）：txt/docx/xlsx/pptx/PDF 分类型抠文字喂模型，零依赖
 │   │   ├── VoiceRecorder.kt     # 按住说话录音（v0.43.1）：WAV→AAC 回退链，失败原因回传 UI → filesDir/voice/
-│   │   ├── SpeechToText.kt      # 语音转文字（v0.43.1 定稿）：三级级联 = 云端 Whisper 主力（cloudTranscribe 注入）+ 系统识别器兜底 + 都失败返回 null；录完再识别（20s 超时）
+│   │   ├── SpeechToText.kt      # 语音转文字（v0.50.0 收成单级）：只有端侧 SherpaAsr，云端 Whisper 与系统识别器已删（实测两级永远走不通）
+│   │   ├── SherpaAsr.kt         # 端侧离线识别（v0.50.0）：sherpa-onnx OfflineRecognizer + SenseVoice 非流式；模型在 filesDir/asr_sensevoice/；语音消息与通话共用同一实例
+│   │   ├── AsrModelManager.kt   # 识别模型下载（v0.50.0）：Range 断点续传 + 逐文件 sha256 + SAF 导入 + 删除；源 ModelScope→hf-mirror；AsrDownloadSession 进程级进度
+│   │   ├── TtsClient.kt         # 统一语音合成（v0.50.0）：硅基流动 / 小米 MiMo / 自定义 OpenAI 兼容三家，协议不统一逐家一个实现；失败原因回传
+│   │   ├── TtsConfig.kt         # TTS 数据层纯函数（v0.50.0）：TtsProvider/TtsConfig/VoiceRef 编解码、voice 前缀拼法、容器嗅探、MiMo 上限
+│   │   ├── VoiceCloner.kt       # 音色克隆（v0.50.0）：样本裁 15 秒→端侧 ASR 自动出逐字稿→multipart 上传换 uri；列音色（数组键名四路兜底）
+│   │   ├── VoiceNoteMarker.kt   # 【语音条】标记解析（v0.50.0）：纯函数，剥标记 + 收空行
 │   │   ├── StickerStore.kt      # 自定义表情文件管理（v0.43.0）：stickers/ 目录导入与删除
 │   ├── llm/OpenAiClient.kt      # OpenAI 兼容 SSE 流式客户端（v0.38.0 起：streamEvents 带 usage 解析 + vision 多段 content）
 │   ├── llm/ImageProbe.kt        # 生图接口探活（POST /images/generations 极简请求，生图端点没有 /models 可查）
 │   ├── agent/                   # 手机 Agent MVP（v0.20.0）：无障碍感知 + 控件编号 + LLM 决策循环 + 手势执行 + 安全围栏；v0.37.0 起对话内 [操作手机:…] 标记直触发（完全权限无确认，挂应用级 scope）
-│   ├── realtime/                # 实时语音通话（v0.46.0，管道版）：PipelineVoiceCallEngine（状态机唯一写手，VAD 分段→流式ASR→LLM→切句→EdgeTTS→AudioTrack）+ CallVad/CallAsr（sherpa 独立实例）+ CallAudioManager（VOICE_COMMUNICATION 源）+ EdgeTtsClient（rany2/edge-tts 协议移植）+ SentenceSplitter + RealtimeCallRepository；VoiceCallEngine 为可替换接口（将来插真双工）
+│   ├── realtime/                # 实时语音通话（v0.46.0 管道版；v0.50.0 换引擎）：PipelineVoiceCallEngine（状态机唯一写手，VAD 分段→离线 ASR→LLM→切句→TtsClient→AudioTrack）+ CallVad（silero VAD，内置 assets）+ CallAudioManager（VOICE_COMMUNICATION 源）+ TtsAudioDecoder（容器嗅探分流 + 下混 + 重采样到 OUT_RATE）+ SentenceSplitter + RealtimeCallRepository；EdgeTtsClient/CallAsr/ReadAloudPlayer 已删；VoiceCallEngine 为可替换接口（将来插真双工）
 │   ├── notify/                  # AlarmScheduler（每日重复/每日总结/每周日周报/每日建议 07:30/主动关心）+ TaskReminderReceiver（含稍后提醒）+ TaskSnoozeReceiver + DailySummaryReceiver + WeeklyReportReceiver + DailySuggestionReceiver + BootReceiver（跨天重置 + 闹钟重排 + 缺报补生成）+ ProactiveReceiver + AgentNotifier（Agent 进度常驻通知）
 │   └── widget/TodayWidget.kt    # Glance 今日任务小组件（黑底白字 3 条，点击直达任务页）
 │   └── ui/
@@ -104,9 +136,9 @@
 │       ├── chat/                # ChatListScreen（顶部搜索框滚动联动）+ ChatScreen（MarkdownText/按天分组/快捷打卡/微信风输入栏/语音条/文件气泡/生图气泡/失败重试）+ ChatViewModel + ChatDrafts
 │       ├── chat/ChatInputPanels.kt # 输入区功能面板（v0.43.0，v0.45.0 收紧）：EmojiPanel（表情页 + 收藏页，收藏页末尾一个加号格=唯一添加入口）/ PlusPanel（相册/拍摄/文件）
 │       ├── chat/CameraCaptureScreen.kt # App 内自绘拍摄界面（v0.43.1；v0.45.0 加淡入淡出 + 翻转镜头动效 + BackHandler）：CameraX + 白圆底黑图标；左相册/中快门/右翻转，拍完先确认再发
-│       ├── chat/ChatComponents.kt # 共享件：ImageBubble 生图气泡 / StickerBubble 表情小气泡（v0.45.0，120dp 不可点开）/ VoiceBubble 语音条 / FileBubble 文件气泡 / ApiSwitchSheet 接口切换 / 提示词查看器
+│       ├── chat/ChatComponents.kt # 共享件：ImageBubble 生图气泡 / StickerBubble 表情小气泡（v0.45.0，120dp 不可点开）/ VoiceBubble 语音条（v0.50.0 起带 isUser：AI 侧面色细线、用户侧黑底药丸）/ FileBubble 文件气泡 / ApiSwitchSheet 接口切换 / 提示词查看器
 │       ├── persona/             # PersonaManageScreen + PersonaEditorSheet（新增/编辑/删除人设）
-│       ├── realtime/            # 通话页（v0.46.0）：RealtimeCallScreen（大头像+状态主视觉、字幕辅助、静音/挂断大圆钮）+ RealtimeCallViewModel（引擎事件聚合字幕）；路由 call/{personaId}，单聊顶栏电话图标进入
+│       ├── realtime/            # 通话页（v0.46.0）：RealtimeCallScreen（大头像+状态主视觉、字幕辅助、静音/挂断大圆钮；缺模型/缺 TTS 提示条 + 一键拉起面板）+ RealtimeCallViewModel（引擎事件聚合字幕）；路由 call/{personaId}，入口在单聊加号面板第四格；v0.50.0 起字幕**按 VAD 段出**（离线非流式没有逐字 partial）
 │       ├── data/DataScreen.kt   # 我的数据页（v0.42.0 顺序：本周回顾条置顶 → 今日建议 → 记账本单卡 → AI 洞察/周报合并入口；v0.42.1 去阴影+删说明小字）
 │       ├── data/AiDetailScreen.kt # AI 洞察 + 周报 全屏详情页（v0.42.0：洞察全文 + 周报全文，最新一期默认展开）
 │       ├── data/DataViewModel.kt # 数据页 VM（含纯函数 buildWeekReview / weekReviewStreak；LedgerStatsScope MONTH/WEEK + periodStats）
@@ -114,7 +146,7 @@
 │       ├── profile/MeScreen.kt  # 「我的」页（第 4 tab：人设管理/基础档案/AI 图库/AI 提示词/设置行卡 + 设置链弹层 + 档案编辑弹层 + MeViewModel；v0.45.0 AI 提示词提到一级）
 │       ├── tasks/TasksScreen.kt # 任务页（分组卡片/勾选打卡/长按删除 + TasksViewModel）
 │       ├── common/MarkdownText.kt # AI 气泡轻量 Markdown（粗体/行内码/列表/标题/代码栅栏）
-│       ├── settings/SettingsSheet.kt  # 共享设置面板 + ApiConfigSheet + PromptSettingsSheet（AI 提示词）+ MoreSheets.kt（通知/隐私/关于）
+│       ├── settings/SettingsSheet.kt  # 共享设置面板 + ApiConfigSheet + PromptSettingsSheet（AI 提示词，v0.50.0 起八段含「AI 语音条策略」）+ MoreSheets.kt（通知/隐私/关于/**语音**）+ TtsConfigSheet.kt（v0.50.0 三家合成 + 试听 + 音色克隆）+ AsrModelSheet.kt（v0.50.0 识别模型下载/导入/删除）
 ```
 
 ## 四、设计系统（Figma 风，2026-09-28 用户拍板）
@@ -286,7 +318,7 @@
 
 ## 七、路线图
 
-**已拆到 [`ROADMAP.md`](ROADMAP.md)**（按优先级排列的功能台账，做完一项勾一项）。
+**已拆到 [`docs/ROADMAP.md`](docs/ROADMAP.md)**（按优先级排列的功能台账，做完一项勾一项）。
 改功能状态时去那边勾；这里只留一句指路，避免 AGENTS.md 越滚越长、每次都整篇进上下文。
 
 

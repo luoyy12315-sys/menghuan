@@ -282,24 +282,95 @@ class UiRenderTest {
     }
 
     /**
-     * v0.43.1 语音态：点语音键 → 中间变「按住 说话」，语音键翻成键盘；
-     * 再点键盘键 → 回到打字态（用户指定的退出方式）。
+     * v0.50.0：识别模型不随包（228MB 装后下载）。没模型时点语音键**不进语音态**，
+     * 而是直接拉起「语音识别模型」下载面板——让用户按住说完才发现转写为空，比不发声更糟。
      */
     @Test
-    fun render25VoiceMode() {
+    fun render25VoiceModeBlockedByMissingModel() {
         awaitText("阿布")
         clickText("阿布") // 进单聊
 
         awaitDesc("切换到语音")
         compose.onNodeWithContentDescription("切换到语音").performClick()
-        awaitText("按住 说话") // 语音态上屏
-        snap("48-voice-hold")
+        awaitText("语音识别模型") // 下载面板上屏
+        awaitText("未就绪")
+        awaitText("model.int8.onnx")
+        awaitText("下载模型")
+        snap("48-asr-model-sheet")
+        // 语音态没进去：输入栏仍是打字态占位符
+        awaitText("发消息…")
+    }
 
-        // 语音键此刻应变成键盘图标，点它退回打字态
-        awaitDesc("切换到键盘")
-        compose.onNodeWithContentDescription("切换到键盘").performClick()
-        awaitText("发消息…") // 打字态占位符回来
-        snap("49-voice-back-to-text")
+    /**
+     * v0.50.0 AI 语音条气泡：AI 侧走「面色 + 细线」（与 AI 文字气泡同一视觉体系），
+     * 用户侧保持黑底药丸——两边必须一眼分得清谁在说话。
+     */
+    @Test
+    fun render26AiVoiceBubble() {
+        val app = compose.activity.application as MenghuanApp
+        val fake = java.io.File(app.filesDir, "voice").apply { mkdirs() }
+        java.io.File(fake, "ai_demo.mp3").writeBytes(ByteArray(1024))
+        kotlinx.coroutines.runBlocking {
+            app.db.messageDao().insert(
+                com.menghuan.app.data.model.ChatMessage(
+                    conversationId = 1, isFromUser = false,
+                    content = "别熬了，明天还要早起。去睡。",
+                    audioPath = java.io.File(fake, "ai_demo.mp3").absolutePath,
+                    audioDurationMs = 5_000,
+                    mediaKind = com.menghuan.app.data.model.MediaKind.AUDIO.name,
+                )
+            )
+            app.db.messageDao().insert(
+                com.menghuan.app.data.model.ChatMessage(
+                    conversationId = 1, isFromUser = true,
+                    content = "知道了知道了",
+                    audioPath = java.io.File(fake, "ai_demo.mp3").absolutePath,
+                    audioDurationMs = 3_000,
+                    mediaKind = com.menghuan.app.data.model.MediaKind.AUDIO.name,
+                )
+            )
+        }
+        awaitText("阿布")
+        clickText("阿布")
+        awaitText("5\"") // AI 侧时长（formatDuration 用的是直引号）
+        awaitText("3\"") // 用户侧时长
+        snap("50-voice-bubbles")
+    }
+
+    /** v0.50.0 语音面板：两个总开关 + 语音合成 / 识别模型两个二级入口 */
+    @Test
+    fun render27VoiceSettingsSheet() {
+        awaitText("阿布")
+        compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
+        awaitText("设置")
+        clickText("设置")
+        awaitText("语音")
+        clickText("语音")
+        awaitText("AI 语音条")
+        awaitText("语音通话")
+        awaitText("语音合成")
+        awaitText("识别模型")
+        snap("51-voice-settings")
+    }
+
+    /** v0.50.0 语音合成面板：三家 provider 可切 + Key/地址/模型 + 试听 + 克隆 */
+    @Test
+    fun render28TtsConfigSheet() {
+        awaitText("阿布")
+        compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
+        awaitText("设置")
+        clickText("设置")
+        awaitText("语音")
+        clickText("语音")
+        awaitText("语音合成")
+        clickText("语音合成")
+        awaitText("服务商")
+        awaitText("硅基流动")
+        awaitText("小米 MiMo")
+        awaitText("自定义端点")
+        awaitText("API Key")
+        awaitText("音色克隆")
+        snap("52-tts-config")
     }
 
 

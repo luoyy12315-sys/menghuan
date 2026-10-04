@@ -14,6 +14,11 @@ import com.menghuan.app.data.PersonaRepository
 import com.menghuan.app.data.SettingsRepository
 import com.menghuan.app.data.TaskSuggestion
 import com.menghuan.app.data.TaskSuggestionHub
+import com.menghuan.app.data.TtsClients
+import com.menghuan.app.data.TtsConfig
+import com.menghuan.app.data.TtsVoices
+import com.menghuan.app.data.VoiceNoteMarker
+import com.menghuan.app.data.VoiceRef
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.agent.AgentAccessibilityService
 import com.menghuan.app.agent.AgentPrompts
@@ -108,6 +113,9 @@ const val AGENT_ONLY_PLACEHOLDER = "（好的，交给我来操作）"
 /** 回复里只有生图标记、没有其它文字时的占位文案（App 内部用，会立刻被图片消息覆盖观感） */
 const val IMAGE_ONLY_PLACEHOLDER = "（正在为你生成图片）"
 
+/** 回复里只有 【语音条】 标记、没有正文时的占位文案（没东西可合成，只能退回文字） */
+const val VOICE_ONLY_PLACEHOLDER = "（这条没说出内容）"
+
 /**
  * 设置 · AI 提示词面板里的「生成逻辑说明」文案。
  * 与实现同源：提炼走 ExtractionEngine（攒够 8 条增量消息自动跑，
@@ -172,6 +180,30 @@ const val AGENT_CHAT_DEFAULT_STRATEGY: String =
 
 fun agentChatHint(strategy: String = AGENT_CHAT_DEFAULT_STRATEGY): String =
     if (strategy.isBlank()) AGENT_CHAT_HINT_FRAMEWORK else "$AGENT_CHAT_HINT_FRAMEWORK\n$strategy"
+
+/**
+ * AI 语音条能力提示（v0.50.0；总开关打开且 TTS 已配置时注入 system prompt）。
+ * 与生图、手机操控同构的单行标记协议，解析见 [com.menghuan.app.data.VoiceNoteMarker]。
+ *
+ * 分层（同生图 v0.36.0 机制）：
+ * - [VOICE_NOTE_FRAMEWORK]：标记格式硬约束（不可改，改了 parse 匹配不到整条流程就断）
+ * - [VOICE_NOTE_DEFAULT_STRATEGY]：什么时候该用说的、什么时候必须打字（用户可在设置里覆盖）
+ */
+const val VOICE_NOTE_FRAMEWORK: String =
+    "语音条触发标记格式（严格不可改）：当你决定这条回复用「说」的而不是打字时，" +
+        "在回复里单独加一行 【语音条】，正文照常写。App 会把正文合成为一条语音气泡，" +
+        "正文不会另外显示（用户长按语音条可以看到文字）。" +
+        "标记只用于触发合成，不要在正文里解释这个标记，也不要重复它；一次回复最多一个标记。"
+
+const val VOICE_NOTE_DEFAULT_STRATEGY: String =
+    "语音条是你可以主动使用的能力，但要克制：适合用说的是短、口语化、带情绪的回复" +
+        "（问候、安慰、鼓励、道晚安、一句提醒），一两句话能说完的那种；" +
+        "不适合用说的是长回答、清单、步骤说明、任何用户需要照着做或反复看的内容——那些一律用文字。" +
+        "同一段对话里不要连续每条都发语音条；用户说过「打字告诉我」「发文字」之后就一直用文字。" +
+        "正文不要写「我发条语音给你」这类旁白，直接说要说的话。"
+
+fun voiceNoteHint(strategy: String = VOICE_NOTE_DEFAULT_STRATEGY): String =
+    if (strategy.isBlank()) VOICE_NOTE_FRAMEWORK else "$VOICE_NOTE_FRAMEWORK\n$strategy"
 
 /**
  * 历史字数预算（v0.39.0，对齐 (0, 200000) 计费档）：
@@ -419,36 +451,11 @@ class ChatViewModel(
         runCatching { personaRepository.save(p) }
     }
 
-    // ---- v0.49.0：AI 回复语音朗读（右上角喇叭开关；音色用人设的通话音色）----
-
-    private var readAloudJob: kotlinx.coroutines.Job? = null
-
-    /** 喇叭关闭 / 用户新发消息时调用：立即掐掉朗读 */
-    fun stopReadAloud() {
-        readAloudJob?.cancel()
-        readAloudJob = null
-    }
-
-    private fun readAloudIfEnabled(text: String) {
-        viewModelScope.launch {
-            val enabled = runCatching { settingsRepository.chatReadAloud.first() }.getOrDefault(false)
-            if (!enabled) return@launch
-            stopReadAloud() // 新回复打断旧朗读
-            val clean = cleanForSpeech(text)
-            if (clean.isBlank()) return@launch
-            readAloudJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                val voice = runCatching { settingsRepository.callVoiceFor(personaId).first() }
-                    .getOrDefault("").ifBlank { "zh-CN-XiaoxiaoNeural" }
-                val mp3 = runCatching {
-                    com.menghuan.app.realtime.EdgeTtsClient(voice).synthesize(clean)
-                }.getOrNull() ?: return@launch
-                val pcm = com.menghuan.app.realtime.Mp3Decoder.decode(mp3) ?: return@launch
-                com.menghuan.app.realtime.ReadAloudPlayer.play(pcm.samples, pcm.sampleRate)            }
-        }
-    }
-
-    /** 朗读文本清洗：剥生成标记与 Markdown 记号，只留 TTS 读起来自然的话 */
-    private fun cleanForSpeech(text: String): String = text
+    /**
+     * TTS 文本清洗：剥掉生成标记与 Markdown 记号，只留读起来自然的话。
+     * AI 语音条与通话合成共用（原名 cleanForSpeech，v0.50.0 随朗读功能一起改名）。
+     */
+    private fun cleanForTts(text: String): String = text
         .replace(Regex("\\[生图:[^\\]]*\\]"), "")
         .replace(Regex("\\[操作手机:[^\\]]*\\]"), "")
         .replace(Regex("[*#`>~]"), "")
@@ -493,25 +500,6 @@ class ChatViewModel(
      * 消息列表渲染语音条、不显示这段文字（用户明确要求）。
      * 识别失败时 transcript 为空，`reply()` 里会退化成"（用户发了一段语音）"提示。
      */
-    /**
-     * 语音转文字（v0.43.1 新增）：**用本会话生效的 AI 接口做云端转写**。
-     *
-     * 为什么放在 ViewModel 而不是 UI 层：转写需要当前会话的 API 配置
-     * （`apiConfigFor(personaId)`，长按头像可切换、只影响本会话），
-     * 而配置只在这里能干净地取到。
-     *
-     * 返回 null = 走不通（没配接口 / 服务商不支持 `/audio/transcriptions` / 网络失败），
-     * 由调用方降级到系统识别器（见 `SpeechToText.transcribe`）。
-     */
-    suspend fun cloudTranscribe(file: java.io.File): String? {
-        val config = runCatching { settingsRepository.apiConfigFor(personaId).first() }.getOrNull()
-            ?: return null
-        if (!config.isComplete) return null
-        return runCatching {
-            OpenAiClient(config.baseUrl, config.apiKey, config.model).transcribe(file)
-        }.getOrNull()
-    }
-
     fun sendVoice(audioPath: String, durationMs: Long, transcript: String) {
         if (audioPath.isBlank() || _uiState.value.isStreaming) return
         send(
@@ -568,7 +556,6 @@ class ChatViewModel(
 
     /** 发送共用链路：乐观上屏 → 落库 → LLM 回复 */
     private fun send(userMsg: ChatMessage, clearInput: Boolean) {
-        stopReadAloud() // 用户开口（新消息）掐掉上一条朗读
         _uiState.update {
             it.copy(
                 input = if (clearInput) "" else it.input,
@@ -695,6 +682,26 @@ class ChatViewModel(
                     AGENT_CHAT_DEFAULT_STRATEGY
                 }
                 append(agentChatHint(strategy))
+            }
+            // AI 语音条能力说明（v0.50.0）：总开关打开且 TTS 配齐才注入——
+            // 没配语音合成时告诉模型它能发语音，用户只会收到一条合成失败的提示。
+            val voiceNoteReady = try {
+                settingsRepository.voiceNoteEnabled.first() && ttsConfig().isComplete
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
+            if (voiceNoteReady) {
+                if (isNotEmpty()) append("\n\n")
+                val strategy = try {
+                    settingsRepository.voiceNoteStrategy.first()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    VOICE_NOTE_DEFAULT_STRATEGY
+                }
+                append(voiceNoteHint(strategy))
             }
             if (isEmpty()) {
                 val base = try {
@@ -841,9 +848,10 @@ class ChatViewModel(
         }
         // 落库并返回原始回复（含 [生图:…] 标记）：文字已剥标记落库，
         // 这里把原串带回去供生图解析
-        val rawReply = persistReply(sb, reasoning)
+        val (rawReply, replyId) = persistReply(sb, reasoning)
         finishStream()
-        readAloudIfEnabled(rawReply)
+        // AI 语音条（v0.50.0）：回复里带 【语音条】 标记 → 合成语音，把刚落库那条文字原地升级成语音条
+        maybeGenerateVoiceNote(rawReply, replyId)
         // 生图（v0.35.0）：模型按 system prompt 约定输出 [生图:提示词] 标记时，
         // 文字已剥掉标记落库，这里再把图生出来落盘并挂成一条图片消息
         maybeGenerateImage(rawReply)
@@ -903,6 +911,90 @@ class ChatViewModel(
      * 再插入一条 imagePath 消息（气泡渲染图片，content 存提示词）。
      * 生图接口未配置或调用失败：只提示，不影响已落库的文字。
      */
+    private suspend fun ttsConfig(): TtsConfig =
+        runCatching { settingsRepository.ttsConfig.first() }.getOrDefault(TtsConfig())
+
+    /**
+     * 本会话该用哪个音色：人设专属音色优先，但它必须是**当前 provider** 的——
+     * 用户换了服务商之后，旧音色 ID 在新家根本不认，这时回落该 provider 的默认预置音色。
+     */
+    private suspend fun voiceRefFor(config: TtsConfig): VoiceRef =
+        runCatching { settingsRepository.voiceRefFor(personaId).first() }.getOrNull()
+            ?.takeIf { it.provider == config.provider && !it.isBlank }
+            ?: VoiceRef(config.provider, TtsVoices.defaultVoiceId(config.provider))
+
+    /**
+     * 回复里带 `【语音条】` → 合成语音，把**刚落库的那条文字消息原地升级**成语音条（v0.50.0）。
+     *
+     * ## 为什么是"升级同一条"而不是像生图那样另插一条
+     * 语音条与文字是同一句话的两种形态，另插一条用户就会看到"一段文字 + 一条说同样内容的语音"
+     * （参考实现专门做了个"自动去重"开关来治这个病）。升级同一条天然不重复，
+     * 而且**合成失败时什么都不用回滚**——那条消息本来就是文字，降级是免费的，只需把原因说一次。
+     *
+     * ## 为什么失败一定要出声
+     * 静默失败是这个项目踩过的坑（云端 Whisper 兜底三个版本一直返回空，用户只看到"AI 没反应"）。
+     */
+    private suspend fun maybeGenerateVoiceNote(rawReply: String, messageId: Long) {
+        if (messageId <= 0L) return
+        val decision = VoiceNoteMarker.parse(rawReply)
+        if (!decision.wantsVoice) return
+        val text = cleanForTts(decision.cleanText)
+        if (text.isBlank()) return
+
+        val config = ttsConfig()
+        if (!config.isComplete) {
+            _uiState.update {
+                it.copy(
+                    error = "AI 想发语音，但语音合成未配置（设置 · 语音）",
+                    errorKind = ErrorBar.KIND_API,
+                )
+            }
+            return
+        }
+        val client = TtsClients.from(config)
+        val audio = client.synthesize(text, voiceRefFor(config))
+        if (audio == null) {
+            _uiState.update {
+                it.copy(
+                    error = "语音合成失败，已保留文字：${client.lastFailure ?: "未知原因"}",
+                    errorKind = ErrorBar.KIND_RETRY,
+                )
+            }
+            return
+        }
+        withContext(NonCancellable) {
+            val written = runCatching {
+                val dir = java.io.File(filesDir, "voice").apply { if (!exists()) mkdirs() }
+                val file = java.io.File(dir, "ai_${System.currentTimeMillis()}.${audio.format.extension}")
+                file.writeBytes(audio.bytes)
+                db.messageDao().updateVoice(
+                    id = messageId,
+                    mediaKind = MediaKind.AUDIO.name,
+                    audioPath = file.absolutePath,
+                    audioDurationMs = probeDurationMs(file),
+                )
+                true
+            }.getOrDefault(false)
+            if (!written) {
+                _uiState.update {
+                    it.copy(error = "语音已合成但写入失败，已保留文字", errorKind = ErrorBar.KIND_RETRY)
+                }
+            }
+        }
+    }
+
+    /** 语音时长（语音条上要显示）；取不到就 0，气泡会显示 0″——比编一个数字诚实 */
+    private fun probeDurationMs(file: java.io.File): Long = runCatching {
+        val retriever = android.media.MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(file.absolutePath)
+            retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }.getOrDefault(0L)
+
     private suspend fun maybeGenerateImage(rawReply: String) {
         val client = imageClient()
         val prompt = client.findPromptIn(rawReply) ?: return
@@ -963,17 +1055,25 @@ class ChatViewModel(
      * 手机操作另由 [maybeRunAgent] 起执行卡。
      * [reasoning] = 思考链全文（可为空），随正文一起落库，只在长按菜单里按需查看。
      */
-    private suspend fun persistReply(sb: StringBuilder, reasoning: String = ""): String {
-        if (sb.isEmpty()) return ""
+    private suspend fun persistReply(sb: StringBuilder, reasoning: String = ""): Pair<String, Long> {
+        if (sb.isEmpty()) return "" to 0L
         val raw = sb.toString()
         val imgClient = imageClient()
         val hasImageMarker = imgClient.findPromptIn(raw) != null
-        val text = AgentPrompts.stripMarker(imgClient.stripMarker(raw)).ifBlank {
-            // 整条回复只有标记、没有正文：给一句占位（图/执行卡随后接管观感）
-            if (hasImageMarker) IMAGE_ONLY_PLACEHOLDER else AGENT_ONLY_PLACEHOLDER
+        val voiceNote = VoiceNoteMarker.parse(raw)
+        // 【语音条】也要在这一层剥掉：合成成功与否都不该让用户看见标记本身
+        val withoutVoiceNote = if (voiceNote.wantsVoice) voiceNote.cleanText else raw
+        val text = AgentPrompts.stripMarker(imgClient.stripMarker(withoutVoiceNote)).ifBlank {
+            // 整条回复只有标记、没有正文：给一句占位（图/执行卡/语音条随后接管观感）
+            when {
+                hasImageMarker -> IMAGE_ONLY_PLACEHOLDER
+                voiceNote.wantsVoice -> VOICE_ONLY_PLACEHOLDER
+                else -> AGENT_ONLY_PLACEHOLDER
+            }
         }
+        var messageId = 0L
         withContext(NonCancellable) {
-            runCatching {
+            messageId = runCatching {
                 db.messageDao().insert(
                     ChatMessage(
                         conversationId = personaId,
@@ -982,9 +1082,9 @@ class ChatViewModel(
                         reasoning = reasoning,
                     )
                 )
-            }
+            }.getOrDefault(0L)
         }
-        return raw
+        return raw to messageId
     }
 
     /** 生图客户端（每次现取配置：用户可能在设置里改过） */

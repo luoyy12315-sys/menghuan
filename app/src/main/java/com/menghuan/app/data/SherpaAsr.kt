@@ -1,125 +1,120 @@
 package com.menghuan.app.data
 
 import android.content.Context
-import android.content.res.AssetManager
 import android.util.Log
-import com.k2fsa.sherpa.onnx.OnlineRecognizer
-import com.k2fsa.sherpa.onnx.OnlineRecognizerConfig
-import com.k2fsa.sherpa.onnx.OnlineModelConfig
-import com.k2fsa.sherpa.onnx.OnlineTransducerModelConfig
+import com.k2fsa.sherpa.onnx.FeatureConfig
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
+import com.k2fsa.sherpa.onnx.OfflineSenseVoiceModelConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 端侧离线语音识别（v0.44.1 引入，成为转写链的**主力**）。
+ * 端侧离线语音识别（v0.50.0 换成 SenseVoice 离线非流式；v0.44.1 起是转写链的唯一一级）。
  *
- * ## 方案来源（用户拍板"先抄 GitHub 成熟案例"）
- * 引擎：`k2-fsa/sherpa-onnx`（10.9k+ star，Apache-2.0，2026 年仍在发版，
- * next-gen Kaldi 官方 Android AAR，中文流式识别 / VAD / 标点一应俱全，有国内镜像）。
- * 模型：`sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23`（中文流式 Zipformer，
- * 1400 万参数，**全套 int8 量化**，四个文件共 25MB，APK 内置）。
- * 换它的原因：原定 small-bilingual 中英包的 release 归档 458MB（下不动、也塞不进 APK），
- * 14M 版 74MB 包体里只有 25MB 是真正要用的 int8 四件套，中文场景完全够用。
- * 参考实现：官方 Android 示例 + `saysrytoyou/Android-Offline-ASR-TTS-Deploy`
- * （中文端侧离线流式 ASR 完整示例）+ `zst50/voice-chatbot-android`（端侧语音 bot 管线）。
+ * ## 为什么从流式 zipformer-14M 换成离线 SenseVoice
+ * 旧模型 1400 万参数、官方定性"准确率不佳"，而且梦欢是**录完再识别**——用流式模型
+ * 等于拿错了工具：流式的 chunk 缓冲要补尾部静音才不丢字，长录音内存峰值还高。
+ * SenseVoice（int8 228MB）中文 CER 约 8%，一次吃完整段音频，形态与用法对得上。
+ * 顺带能出情绪标签与音频事件（`OfflineRecognizerResult.emotion/event`），本期只取 text。
  *
- * ## 为什么端侧当主力（用户四条语音全部转写为空之后的结论）
- *   ① 云端 Whisper 依赖用户配置的接口支持 `/audio/transcriptions`，实测不支持；
- *   ② 系统 `SpeechRecognizer` 的文件输入在国产 ROM 上普遍不生效（v0.43.1 老结论）；
- *   ③ 端侧识别**同时绕开这两者**：不碰网络、不碰系统识别服务，模型就在 APK 里，
- *      任何设备行为一致 —— 还顺带满足"数据只存本机"。
+ * ## 为什么语音消息与通话共用这一个实例（不再各建一个 CallAsr）
+ * 228MB 权重会被 onnxruntime 读进 session，两个实例 ≈ 500MB，中低端机直接 OOM。
+ * 而这两条链路**从不同时工作**（通话中不触发语音条），所以进程内单例 + 互斥解码就够了。
  *
- * ## 工作方式
- * 按住说话录出的 WAV（16bit PCM，见 [VoiceRecorder]）→ [WavPcm] 解析成
- * 16kHz 单声道采样 → 喂给流式识别器一次性解码 → 文本。
- * 模型懒加载（首次转写约几百毫秒），进程内复用；加载/解码全部兜
- * `runCatching` —— **识别失败绝不炸发送链**（JVM 单测没有 native 库，同样安静返回 null）。
+ * ## 模型不随包
+ * 权重在 `filesDir/asr_sensevoice/`，由 [AsrModelManager] 下载安装。没下载时
+ * [warmUp] / [transcribeWav] 安静返回失败，UI 层据此弹下载入口——不静默、也不崩。
+ *
+ * ## API 签名经 javap 核对（sherpa-onnx 1.13.8 AAR）
+ * `OfflineRecognizer(AssetManager?, OfflineRecognizerConfig)`：第一个参数**可为 null**
+ * （字节码只对 config 做了 `checkNotNullParameter`），传 null 即从文件系统路径读模型。
+ * `OfflineSenseVoiceModelConfig(model, language, useInverseTextNormalization, qnnConfig)`。
  */
 object SherpaAsr {
 
     private const val TAG = "SherpaAsr"
-    private const val ASSET_DIR = "asr"
     private const val SAMPLE_RATE = 16_000
 
-    private const val ENCODER = "encoder-epoch-99-avg-1.int8.onnx"
-    private const val DECODER = "decoder-epoch-99-avg-1.int8.onnx"
-    private const val JOINER = "joiner-epoch-99-avg-1.int8.onnx"
-    private const val TOKENS = "tokens.txt"
-
     @Volatile
-    private var recognizer: OnlineRecognizer? = null
+    private var recognizer: OfflineRecognizer? = null
     private val lock = Any()
 
-    /** assets 里是否有模型文件（APK 内置了才有；快速预检，避免每次转写白跑初始化） */
-    fun modelPresent(context: Context): Boolean = runCatching {
-        context.assets.open("$ASSET_DIR/$TOKENS").use { it.read() > 0 }
-    }.getOrDefault(false)
+    /**
+     * 强制加载模型并报告是否可用。通话页在 start() 时调它，好把"模型没下载/加载失败"
+     * 在拨号那一刻就亮出来，而不是等用户说完第一句才发现整通电话都识别不了。
+     */
+    fun warmUp(context: Context): Boolean = obtain(context) != null
 
-    private fun obtain(context: Context): OnlineRecognizer? = runCatching {
-        recognizer ?: synchronized(lock) {
+    private fun obtain(context: Context): OfflineRecognizer? {
+        recognizer?.let { return it }
+        if (!AsrModelManager.isReady(context)) {
+            Log.w(TAG, "model not ready, skip init")
+            return null
+        }
+        return synchronized(lock) {
             recognizer ?: runCatching {
-                // 位置传参：assetManager 在前（签名经 javap 核对：AssetManager + Config）
-                OnlineRecognizer(
-                    context.assets,
-                    OnlineRecognizerConfig(
-                        modelConfig = OnlineModelConfig(
-                            transducer = OnlineTransducerModelConfig(
-                                encoder = "$ASSET_DIR/$ENCODER",
-                                decoder = "$ASSET_DIR/$DECODER",
-                                joiner = "$ASSET_DIR/$JOINER",
+                OfflineRecognizer(
+                    null,
+                    OfflineRecognizerConfig(
+                        featConfig = FeatureConfig(sampleRate = SAMPLE_RATE, featureDim = 80),
+                        modelConfig = OfflineModelConfig(
+                            senseVoice = OfflineSenseVoiceModelConfig(
+                                model = AsrModelManager.fileOf(context, AsrModelFile.MODEL).absolutePath,
+                                language = "auto",
+                                useInverseTextNormalization = true,
                             ),
-                            tokens = "$ASSET_DIR/$TOKENS",
+                            tokens = AsrModelManager.fileOf(context, AsrModelFile.TOKENS).absolutePath,
                             numThreads = 2,
+                            debug = false,
                         ),
                         decodingMethod = "greedy_search",
                     ),
                 )
             }.onFailure {
-                Log.e(TAG, "init recognizer failed: ${it.javaClass.simpleName} ${it.message.orEmpty().take(120)}")
+                Log.e(TAG, "init recognizer failed: ${it.javaClass.simpleName} ${it.message.orEmpty().take(160)}")
             }.getOrNull()?.also { recognizer = it }
         }
-    }.getOrNull()
+    }
 
-    /**
-     * 录好的 WAV → 文字。失败（模型缺失 / native 库不可用 / 解析失败）一律返回 null，
-     * 由调用方降级到云端 / 系统识别。
-     */
+    /** 录好的 WAV → 文字。模型缺失 / native 不可用 / 解析失败一律 null，由调用方决定怎么提示 */
     suspend fun transcribeWav(context: Context, wavPath: String): String? =
         withContext(Dispatchers.IO) {
-            val rec = obtain(context) ?: return@withContext null
             val samples = runCatching { WavPcm.readMonoAt(java.io.File(wavPath), SAMPLE_RATE) }
                 .getOrNull()
                 ?.takeIf { it.isNotEmpty() }
                 ?: return@withContext null
+            transcribeSamples(context, samples)
+        }
 
+    /** 一段 16kHz 单声道采样 → 文字（通话按 VAD 分段后走这条） */
+    suspend fun transcribeSamples(context: Context, samples: FloatArray): String? =
+        withContext(Dispatchers.IO) {
+            if (samples.isEmpty()) return@withContext null
+            val rec = obtain(context) ?: return@withContext null
             synchronized(lock) {
                 runCatching {
                     val stream = rec.createStream()
-                    // 流式模型按 0.1s 分片喂（官方示例做法）：一次性灌整段会让
-                    // encoder 的 chunk 缓冲一次性堆积，长录音内存峰值高、也没法边喂边解码。
-                    val chunk = SAMPLE_RATE / 10
-                    var offset = 0
-                    while (offset < samples.size) {
-                        val end = minOf(offset + chunk, samples.size)
-                        stream.acceptWaveform(samples.copyOfRange(offset, end), SAMPLE_RATE)
-                        while (rec.isReady(stream)) rec.decode(stream)
-                        offset = end
-                    }
-                    // 尾部补 0.3s 静音：zipformer 是流式模型，末尾那一小段还在 chunk
-                    // 缓冲里没被算完，不补就直接 inputFinished 会丢最后几个字。
-                    stream.acceptWaveform(FloatArray(SAMPLE_RATE * 3 / 10), SAMPLE_RATE)
-                    stream.inputFinished()
-                    while (rec.isReady(stream)) rec.decode(stream)
-                    val text = rec.getResult(stream).text.trim()
+                    stream.acceptWaveform(samples, SAMPLE_RATE)
+                    rec.decode(stream)
+                    val text = stripSenseVoiceTags(rec.getResult(stream).text)
                     stream.release()
-                    // 留一条成功日志 + 采样数：真机上"转写还是空的"时，
-                    // 靠这条能立刻分清是「没读到音频」还是「模型没识别出来」。
                     Log.i(TAG, "sample=${samples.size} text=${text.take(80)}")
                     text.takeIf { it.isNotBlank() }
                 }.getOrElse {
-                    Log.e(TAG, "decode failed: ${it.javaClass.simpleName} ${it.message.orEmpty().take(120)}")
+                    Log.e(TAG, "decode failed: ${it.javaClass.simpleName} ${it.message.orEmpty().take(160)}")
                     null
                 }
             }
         }
+
+    /**
+     * SenseVoice 的输出可能带 `<|zh|><|NEUTRAL|><|Speech|><|withitn|>` 这类特殊标记。
+     * sherpa-onnx 的 C++ 侧一般会剥掉，这里再兜一层——漏一个进用户可见的转写文本就是脏数据。
+     */
+    internal fun stripSenseVoiceTags(raw: String): String =
+        raw.replace(TAG_PATTERN, "").trim()
+
+    private val TAG_PATTERN = Regex("<\\|[^|>]*\\|>")
 }

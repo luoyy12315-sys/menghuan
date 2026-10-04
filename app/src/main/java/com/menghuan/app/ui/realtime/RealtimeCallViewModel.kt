@@ -7,6 +7,11 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.AiPrompts
+import com.menghuan.app.data.AsrModelManager
+import com.menghuan.app.data.TtsClients
+import com.menghuan.app.data.TtsConfig
+import com.menghuan.app.data.TtsVoices
+import com.menghuan.app.data.VoiceRef
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.llm.OpenAiClient
 import com.menghuan.app.realtime.CallTurnData
@@ -37,6 +42,10 @@ data class RealtimeCallUiState(
     val error: String? = null,
     /** 对话接口未配置（不进引擎，页面给出明确提示） */
     val llmMissing: Boolean = false,
+    /** 语音合成未配置：电话能打通、能识别、能出字幕，但 AI 不出声 */
+    val ttsMissing: Boolean = false,
+    /** 端侧识别模型未下载：整通电话识别不了，页面给一键跳转下载 */
+    val asrMissing: Boolean = false,
 )
 
 class RealtimeCallViewModel(
@@ -76,6 +85,11 @@ class RealtimeCallViewModel(
                 _ui.update { it.copy(llmMissing = true) }
                 return@launch
             }
+            // 识别模型不随包（228MB 装后下载）：没模型这通电话一句都识别不了，
+            // 进页就先说清楚并给下载入口，别让用户对着电话讲半天发现 AI 全聋。
+            if (!AsrModelManager.isReady(app)) {
+                _ui.update { it.copy(asrMissing = true) }
+            }
 
             // system prompt 组装与文字聊天同源（ChatViewModel.reply 同语义）：
             // 人设设定词（空则基础提示词）+ 档案注入说明 + 用户档案；不注入生图/手机操控能力
@@ -96,16 +110,26 @@ class RealtimeCallViewModel(
                 append("不要使用 Markdown、列表、代码或颜文字，不要一次问多个问题。")
             }
 
-            // 音色按人设（编辑人设弹层里选，call_voice_<personaId>），空 = 默认晓晓
-            val voice = runCatching { settings.callVoiceFor(personaId).first() }
-                .getOrDefault("")
-                .ifBlank { RealtimeCallConfig.DEFAULT_TTS_VOICE }
+            // 音色按人设（编辑人设弹层里选，tts_voice_<personaId>）；
+            // 换了 provider 之后旧音色 ID 在新家不认，回落该 provider 的默认预置音色。
+            val ttsConfig = runCatching { settings.ttsConfig.first() }.getOrDefault(TtsConfig())
+            val voice = runCatching { settings.voiceRefFor(personaId).first() }.getOrNull()
+                ?.takeIf { it.provider == ttsConfig.provider && !it.isBlank }
+                ?: VoiceRef(ttsConfig.provider, TtsVoices.defaultVoiceId(ttsConfig.provider))
             val client = OpenAiClient(config.baseUrl, config.apiKey, config.model)
             val repo = RealtimeCallRepository(db)
-            val eng = PipelineVoiceCallEngine(app, client, app.applicationScope) { p, st, et, turns, status ->
+            val eng = PipelineVoiceCallEngine(
+                app,
+                client,
+                TtsClients.from(ttsConfig),
+                app.applicationScope,
+            ) { p, st, et, turns, status ->
                 repo.saveCall(p, st, et, turns, status)
             }
             engine = eng
+            // TTS 没配齐也能打通电话：识别与 LLM 照常，只是不出声、全靠字幕。
+            // 但必须**明确告诉用户**为什么没声——静默无声是这个项目排查最久的问题。
+            _ui.update { it.copy(ttsMissing = !ttsConfig.isComplete) }
             viewModelScope.launch {
                 eng.events.collect { onEvent(it) }
             }

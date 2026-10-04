@@ -97,6 +97,9 @@ fun RealtimeCallScreen(
         hasPermission = granted
         if (granted) vm.start()
     }
+    // 缺模型 / 缺 TTS 配置时直接在通话页拉起对应面板，不用让用户自己退回「我的 · 设置」翻
+    var showAsrSheet by remember { mutableStateOf(false) }
+    var showTtsSheet by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if (hasPermission) vm.start() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
@@ -154,20 +157,27 @@ fun RealtimeCallScreen(
                     Text(ui.error ?: "", fontSize = 12.sp, color = NeuDanger)
                 }
             }
-            if (ui.llmMissing || !hasPermission) {
+            if (ui.llmMissing || ui.asrMissing || ui.ttsMissing || !hasPermission) {
                 Spacer(Modifier.height(14.dp))
                 Box(
                     Modifier
                         .neuSurface(999.dp, color = NeuAccent)
                         .clickable {
-                            if (!hasPermission) permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            when {
+                                !hasPermission -> permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                ui.asrMissing -> showAsrSheet = true
+                                ui.ttsMissing -> showTtsSheet = true
+                                // llmMissing 没有可跳的页面（接口配置在「我的 · 设置 · API 配置」），只提示
+                            }
                         }
                         .padding(horizontal = 22.dp, vertical = 10.dp),
                 ) {
                     Text(
                         when {
+                            !hasPermission -> "授予麦克风权限"
                             ui.llmMissing -> "实时通话尚未配置，先在聊天里配好 AI 接口"
-                            else -> "授予麦克风权限"
+                            ui.asrMissing -> "语音识别模型未下载，点这里下载"
+                            else -> "语音合成未配置：只有字幕没有声音，点这里配置"
                         },
                         fontSize = 13.sp, fontWeight = FontWeight.Medium, color = AccentInk,
                     )
@@ -237,6 +247,13 @@ fun RealtimeCallScreen(
                 onClick = { vm.hangUp() },
             )
         }
+    }
+
+    if (showAsrSheet) {
+        com.menghuan.app.ui.settings.AsrModelSheet(onDismiss = { showAsrSheet = false })
+    }
+    if (showTtsSheet) {
+        com.menghuan.app.ui.settings.TtsConfigSheet(onDismiss = { showTtsSheet = false })
     }
 }
 

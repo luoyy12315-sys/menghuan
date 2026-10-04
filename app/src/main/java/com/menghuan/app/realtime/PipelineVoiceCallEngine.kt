@@ -2,6 +2,8 @@ package com.menghuan.app.realtime
 
 import android.content.Context
 import android.util.Log
+import com.menghuan.app.data.SherpaAsr
+import com.menghuan.app.data.TtsClient
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.llm.OpenAiClient
 import com.menghuan.app.llm.StreamEvent
@@ -36,23 +38,24 @@ interface VoiceCallEngine {
 }
 
 /**
- * 管道式语音通话引擎（v0.46.0）：
+ * 管道式语音通话引擎（v0.46.0；v0.50.0 换识别与合成）：
  *
  *   AudioRecord(VOICE_COMMUNICATION, 16k) 持续采样
  *     ├─ Silero VAD：话语分段 + 打断检测（用户开口 → barge-in）
- *     ├─ 流式 ASR：partial 字幕（边说边出字）+ 一句话收口
+ *     ├─ 端侧离线 ASR（SenseVoice）：整段吃完出字，字幕**按段出**（非流式，没有逐字 partial）
  *     ↓
- *   OpenAiClient.streamEvents（DeepSeek，persona prompt 同文字聊天）
+ *   OpenAiClient.streamEvents（人设 prompt 同文字聊天）
  *     ↓ SentenceSplitter 按句切
- *   Edge TTS（逐句合成）→ MediaCodec 解 MP3 → AudioTrack 播放
+ *   统一 TtsClient（硅基 / MiMo / 自定义，与 AI 语音条同一条链）→ 解成 PCM → AudioTrack 播放
  *
  * 状态机唯一写手（任务书 §十二）；转写只在内存，挂断时经 [saveCall] 一次性落库。
- * 所有资源（AudioRecord/AudioTrack/VAD/ASR/coroutine）在 hangUp 里全量释放，
+ * 所有资源（AudioRecord/AudioTrack/VAD/coroutine）在 hangUp 里全量释放，
  * 每次通话 = 新引擎实例，天然支持"第二次通话正常"（任务书 §二十二）。
  */
 class PipelineVoiceCallEngine(
     context: Context,
     private val llm: OpenAiClient,
+    private val tts: TtsClient,
     private val appScope: CoroutineScope,
     private val saveCall: suspend (
         personaId: Long, startedAt: Long, endedAt: Long,
@@ -72,8 +75,6 @@ class PipelineVoiceCallEngine(
     private var config: RealtimeCallConfig? = null
     private var audio: CallAudioManager? = null
     private var vad: CallVad? = null
-    private var asr: CallAsr? = null
-    private var edgeTts: EdgeTtsClient? = null
 
     private var mainLoop: Job? = null
     private var llmJob: Job? = null
@@ -85,7 +86,6 @@ class PipelineVoiceCallEngine(
     private val turns = ArrayList<CallTurnData>()
     /** 本轮 AI 回复中**已播放**的句子（打断时以此收口 AI 转写；未播出的不记） */
     private val spoken = StringBuffer()
-    private var lastPartial = ""
     private var lastMuted = false
     private var bargeInSpeechMs = 0L
     private var startedAt = 0L
@@ -106,24 +106,31 @@ class PipelineVoiceCallEngine(
             return
         }
         val v = runCatching { CallVad(appContext.assets) }.getOrNull()
-        val a = runCatching { CallAsr(appContext.assets) }.getOrNull()
-        if (v == null || a == null) {
+        if (v == null) {
             am.close(appContext)
-            v?.release()
             fail("语音组件初始化失败")
             return
         }
         audio = am
         vad = v
-        asr = a
-        edgeTts = EdgeTtsClient(config.voice)
         startedAt = System.currentTimeMillis()
-        lastPartial = ""
         lastMuted = false
         bargeInSpeechMs = 0
-        _state.value = RealtimeCallState.LISTENING
-        emitState()
-        mainLoop = scope.launch { audioLoop(am, v, a) }
+        mainLoop = scope.launch {
+            // 识别模型不随包（228MB，装后下载），加载权重要几秒——必须在 IO 线程做，
+            // 否则 start() 所在的主线程直接 ANR。这段时间状态停在 CONNECTING。
+            if (!SherpaAsr.warmUp(appContext)) {
+                am.close(appContext)
+                v.release()
+                audio = null
+                vad = null
+                fail("语音识别模型未就绪，请先在设置里下载")
+                return@launch
+            }
+            _state.value = RealtimeCallState.LISTENING
+            emitState()
+            audioLoop(am, v)
+        }
     }
 
     override fun setMuted(m: Boolean) {
@@ -143,10 +150,8 @@ class PipelineVoiceCallEngine(
         audio?.stopPlayback()
         audio?.close(appContext) // 恢复 AudioManager（任务书 §二十一）
         vad?.release()
-        asr?.release()
         audio = null
         vad = null
-        asr = null
 
         val endedAt = System.currentTimeMillis()
         val durationMs = if (startedAt > 0) endedAt - startedAt else 0
@@ -172,7 +177,7 @@ class PipelineVoiceCallEngine(
 
     // ---- 主循环：采样 → VAD/ASR → 话语收口 → respond ----
 
-    private suspend fun audioLoop(am: CallAudioManager, v: CallVad, a: CallAsr) =
+    private suspend fun audioLoop(am: CallAudioManager, v: CallVad) =
         withContext(Dispatchers.IO) {
             val f = FloatArray(CallVad.WINDOW)
             while (scope.isActive && _state.value != RealtimeCallState.ENDED) {
@@ -180,12 +185,7 @@ class PipelineVoiceCallEngine(
                 if (muted.get()) {
                     if (!lastMuted) {
                         lastMuted = true
-                        v.reset()
-                        a.finalizeUtterance() // 丢弃静音期间的半截识别
-                        if (lastPartial.isNotEmpty()) {
-                            lastPartial = ""
-                            _events.tryEmit(RealtimeCallEvent.UserPartial(""))
-                        }
+                        v.reset() // 丢弃静音期间攒下的半截语音段
                         if (_state.value == RealtimeCallState.USER_SPEAKING) {
                             _state.value = RealtimeCallState.LISTENING
                             emitState()
@@ -199,15 +199,7 @@ class PipelineVoiceCallEngine(
                 }
 
                 for (i in chunk.indices) f[i] = chunk[i] / 32768f
-                a.feed(f) // 先喂识别器：VAD 判定段结束时，该段音频必然已全部喂入
                 val seg = v.accept(f)
-
-                // 流式 partial 字幕（文本变化才发）
-                val p = a.partial()
-                if (p.isNotEmpty() && p != lastPartial) {
-                    lastPartial = p
-                    _events.tryEmit(RealtimeCallEvent.UserPartial(p))
-                }
 
                 val st = _state.value
                 if (v.speechDetected) {
@@ -230,12 +222,11 @@ class PipelineVoiceCallEngine(
                 }
 
                 if (seg != null) {
-                    val text = a.finalizeUtterance()
-                    if (lastPartial.isNotEmpty()) {
-                        lastPartial = ""
-                        _events.tryEmit(RealtimeCallEvent.UserPartial(""))
-                    }
-                    if (text.isNotBlank()) {
+                    // 离线非流式：整段吃完才出字，所以字幕**按段出**，没有逐字 partial。
+                    // 解码这几百毫秒里音频循环暂停——此刻用户刚说完、正等 AI 接话，
+                    // 丢掉的是静音尾巴，barge-in 也不需要在这段窗口里生效。
+                    val text = SherpaAsr.transcribeSamples(appContext, seg.samples)
+                    if (!text.isNullOrBlank()) {
                         synchronized(turns) { turns += CallTurnData("user", text, System.currentTimeMillis()) }
                         _events.tryEmit(RealtimeCallEvent.UserFinal(text))
                         respond(text)
@@ -312,28 +303,29 @@ class PipelineVoiceCallEngine(
     }
 
     private suspend fun ttsPlayer(channel: Channel<String>) = withContext(Dispatchers.IO) {
+        val voice = config?.voice ?: return@withContext
         var spoke = false
         for (sentence in channel) {
-            val tts = edgeTts
-            val mp3 = runCatching { tts?.synthesize(sentence) }.getOrNull()
-                ?: runCatching { tts?.synthesize(sentence) }.getOrNull() // 失败重试一次
-            if (mp3 != null) {
-                val pcm = Mp3Decoder.decode(mp3)
-                if (pcm != null) {
-                    if (!spoke) {
-                        if (audio?.playStart() != true) {
-                            _events.tryEmit(RealtimeCallEvent.Error("声音播放初始化失败"))
-                            break
-                        }
-                        spoke = true
-                        _state.value = RealtimeCallState.AI_SPEAKING
-                        emitState()
+            var result = tts.synthesize(sentence, voice)
+            if (result == null) result = tts.synthesize(sentence, voice) // 瞬时失败重试一次
+            // 云端 TTS 回什么容器不由我们定（硅基 MP3、MiMo 默认 WAV），
+            // 一律归一化成播放轨道那个采样率的单声道 PCM 再喂 AudioTrack
+            val pcm = result?.let { TtsAudioDecoder.decode(it, CallAudioManager.OUT_RATE) }
+            if (pcm != null) {
+                if (!spoke) {
+                    if (audio?.playStart() != true) {
+                        _events.tryEmit(RealtimeCallEvent.Error("声音播放初始化失败"))
+                        break
                     }
-                    audio?.playPcm(pcm.samples) { scope.isActive && ttsJob?.isActive != false }
+                    spoke = true
+                    _state.value = RealtimeCallState.AI_SPEAKING
+                    emitState()
                 }
+                audio?.playPcm(pcm) { scope.isActive && ttsJob?.isActive != false }
             } else if (!spoke) {
-                // 整轮一句都合成不出来：把原因亮给用户（远程诊断真机无声问题）
-                _events.tryEmit(RealtimeCallEvent.Error("声音合成失败：${tts?.lastFailure ?: "未知原因"}"))
+                // 整轮一句都出不来声：把原因亮给用户（远程诊断真机无声问题），之后走字幕兜底
+                val why = if (result == null) tts.lastFailure ?: "未知原因" else "音频解码失败"
+                _events.tryEmit(RealtimeCallEvent.Error("声音合成失败：$why"))
             }
             synchronized(spoken) { spoken.append(sentence) }
         }

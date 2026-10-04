@@ -18,6 +18,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,6 +28,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.BuildConfig
+import com.menghuan.app.data.AsrModelManager
+import com.menghuan.app.data.AsrModelRules
+import com.menghuan.app.data.TtsConfig
 import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
@@ -302,11 +306,74 @@ fun AboutSheet(onDismiss: () -> Unit) {
         Spacer(Modifier.height(16.dp))
         Text(
             "AI 陪伴应用：与你自定义的人设对话，风格由你决定；档案自动注入上下文，" +
-                "任务到点提醒。\nAI 接口自配，数据仅存本机。",
+                "任务到点提醒。\nAI 接口自配。",
             fontSize = 13.sp,
             lineHeight = 21.sp,
             textAlign = TextAlign.Center,
             color = MutedText,
+        )
+        Spacer(Modifier.height(6.dp))
+    }
+}
+
+/**
+ * 设置 · 语音（v0.50.0）：两个总开关 + 语音合成 / 识别模型两个二级入口。
+ *
+ * 为什么单独收一个面板：语音这块现在有"能不能说"（TTS）、"能不能听"（识别模型）、
+ * "要不要说"（语音条）、"要不要通话"四件事，摊在设置一级会占掉四行；
+ * 收进一个「语音」入口，一级列表还是原来那么短。
+ */
+@Composable
+fun VoiceSettingsSheet(
+    onDismiss: () -> Unit,
+    onTtsConfig: () -> Unit,
+    onAsrModel: () -> Unit,
+) {
+    val context = LocalContext.current
+    val app = context.applicationContext as com.menghuan.app.MenghuanApp
+    val scope = rememberCoroutineScope()
+    val voiceNoteOn by app.settingsRepository.voiceNoteEnabled.collectAsState(initial = true)
+    val voiceCallOn by app.settingsRepository.voiceCallEnabled.collectAsState(initial = true)
+    val ttsConfig by app.settingsRepository.ttsConfig.collectAsState(initial = TtsConfig())
+    // 模型状态只在面板打开时读一次：磁盘 stat 不贵，但也不该每帧重组都去碰
+    val asrReady = remember { AsrModelManager.isReady(app) }
+    val asrPending = remember { AsrModelManager.pendingBytes(app) }
+
+    NeuSheetScaffold(title = "语音", onDismiss = onDismiss) {
+        Spacer(Modifier.height(14.dp))
+        SwitchRow(
+            title = "AI 语音条",
+            caption = "允许 AI 自己决定用语音回复，气泡可长按转文字",
+            checked = voiceNoteOn,
+            onToggle = { scope.launch { app.settingsRepository.setVoiceNoteEnabled(it) } },
+        )
+        SwitchRow(
+            title = "语音通话",
+            caption = "关掉后加号面板不再出现「通话」",
+            checked = voiceCallOn,
+            onToggle = { scope.launch { app.settingsRepository.setVoiceCallEnabled(it) } },
+        )
+        Spacer(Modifier.height(12.dp))
+        NeuSheetRow(
+            icon = MIcons.VoiceWave,
+            title = "语音合成",
+            subtitle = if (ttsConfig.isComplete) {
+                "${ttsConfig.provider.label} · ${ttsConfig.effectiveModel()}"
+            } else {
+                "未配置 · AI 与通话都不会出声"
+            },
+            onClick = onTtsConfig,
+        )
+        Spacer(Modifier.height(10.dp))
+        NeuSheetRow(
+            icon = MIcons.Mic,
+            title = "识别模型",
+            subtitle = if (asrReady) {
+                "已就绪 · SenseVoice 离线"
+            } else {
+                "未下载 · 需 ${AsrModelRules.humanSize(asrPending)}"
+            },
+            onClick = onAsrModel,
         )
         Spacer(Modifier.height(6.dp))
     }

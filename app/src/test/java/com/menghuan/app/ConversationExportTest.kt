@@ -38,6 +38,6 @@ class ConversationExportTest {
         // 多行消息逐行加引用前缀，行数不丢
         assertEquals(2, markdown.lines().count { it == "> 第一行" || it == "> 第二行" })
         assertTrue(markdown.contains("> 收到"))
-        assertTrue(markdown.endsWith("由「梦欢」App 导出 · 数据仅存本机\n"))
+        assertTrue(markdown.endsWith("由「梦欢」App 导出\n"))
     }
 }

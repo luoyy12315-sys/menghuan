@@ -8,15 +8,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.menghuan.app.BuildConfig
 import com.menghuan.app.MenghuanApp
+import com.menghuan.app.data.AsrModelManager
 import com.menghuan.app.data.DEFAULT_PROFILE_ID
 import com.menghuan.app.data.DEFAULT_THEME_MODE
 import com.menghuan.app.data.ImageApiConfig
+import com.menghuan.app.data.TtsConfig
 import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuSheetScaffold
@@ -42,6 +45,7 @@ fun SettingsSheet(
     onDataPrivacy: () -> Unit = {},
     onAbout: () -> Unit = {},
     onAppearance: () -> Unit = {},
+    onVoice: () -> Unit = {},
 ) {
     val app = LocalContext.current.applicationContext as MenghuanApp
 
@@ -54,12 +58,20 @@ fun SettingsSheet(
     val notifyOn by app.settingsRepository.notificationsEnabled.collectAsState(initial = true)
     val dailySummaryOn by app.settingsRepository.dailySummaryEnabled.collectAsState(initial = true)
     val weeklyNotifyOn by app.settingsRepository.weeklyReportNotifyEnabled.collectAsState(initial = false)
+    val ttsConfig by app.settingsRepository.ttsConfig.collectAsState(initial = TtsConfig())
 
     val activeProfileName = profiles.firstOrNull { it.id == activeProfileId }?.name
     val notifyCount = listOf(notifyOn, dailySummaryOn, weeklyNotifyOn).count { it }
+    // 识别模型不随包（228MB 装后下载），语音这行只报"缺什么"，齐了就说已就绪
+    val asrReady = remember { AsrModelManager.isReady(app) }
+    val voiceSubtitle = listOfNotNull(
+        if (asrReady) null else "识别模型未下载",
+        if (ttsConfig.isComplete) null else "语音合成未配置",
+    ).joinToString(" · ").ifBlank { "已就绪" }
 
     val items = listOf(
         MIcons.Code to ("API 配置" to apiSubtitle(activeProfileName, profiles.size, imgApi.isComplete)),
+        MIcons.VoiceWave to ("语音" to voiceSubtitle),
         MIcons.Info to ("外观" to ThemeMode.fromName(themeModeName).label),
         MIcons.Bell to ("通知与提醒" to "已开启 $notifyCount/3 项"),
         MIcons.Shield to ("数据与隐私" to "导出 · 导入 · 清除数据"),
@@ -67,10 +79,11 @@ fun SettingsSheet(
     )
     val actions: Map<Int, () -> Unit> = mapOf(
         0 to onApiConfig,
-        1 to onAppearance,
-        2 to onNotifications,
-        3 to onDataPrivacy,
-        4 to onAbout,
+        1 to onVoice,
+        2 to onAppearance,
+        3 to onNotifications,
+        4 to onDataPrivacy,
+        5 to onAbout,
     )
     NeuSheetScaffold(title = "设置", onDismiss = onDismiss) {
         Spacer(Modifier.height(14.dp))

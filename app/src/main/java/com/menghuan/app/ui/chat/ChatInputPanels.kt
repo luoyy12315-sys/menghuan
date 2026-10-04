@@ -272,6 +272,7 @@ private fun Modifier.combinedClickableSticker(
  * v0.45.0：高度再压到 104dp、四周留白收紧，并把按钮按压从 Material ripple
  * 换成与输入栏一致的缩放反馈（用户要求"跟输入框周围按钮一样改小改快"）。
  * v0.47.0：第四格（原留空）放入「语音通话」——顶栏只剩三点设置，通话入口收进这里。
+ * v0.50.0：「语音通话」总开关关掉时第四格整格不出现（其余三格自动铺满）。
  */
 @Composable
 fun PlusPanel(
@@ -279,6 +280,7 @@ fun PlusPanel(
     onCamera: () -> Unit,
     onFile: () -> Unit,
     onCall: () -> Unit,
+    callEnabled: Boolean = true,
 ) {
     Column(
         Modifier
@@ -291,7 +293,7 @@ fun PlusPanel(
             PlusAction("相册", MIcons.ImageIcon, onAlbum, Modifier.weight(1f))
             PlusAction("拍摄", MIcons.Camera, onCamera, Modifier.weight(1f))
             PlusAction("文件", MIcons.FileDoc, onFile, Modifier.weight(1f))
-            PlusAction("通话", MIcons.Phone, onCall, Modifier.weight(1f))
+            if (callEnabled) PlusAction("通话", MIcons.Phone, onCall, Modifier.weight(1f))
         }
     }
 }

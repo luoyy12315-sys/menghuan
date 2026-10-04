@@ -37,6 +37,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.menghuan.app.data.ClonedVoice
+import com.menghuan.app.data.TtsClients
+import com.menghuan.app.data.TtsConfig
+import com.menghuan.app.data.TtsProvider
+import com.menghuan.app.data.TtsVoices
+import com.menghuan.app.data.VoiceCloner
+import com.menghuan.app.data.VoiceRef
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.ToneStyle
 import com.menghuan.app.ui.common.NeuAvatar
@@ -46,6 +53,8 @@ import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
+import com.menghuan.app.ui.settings.VOICE_PREVIEW_TEXT
+import com.menghuan.app.ui.settings.playTtsPreview
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.TextPrimary
@@ -84,26 +93,18 @@ private const val PERSONA_PROMPT_TEMPLATE =
  * 人设编辑弹层：新增（persona = null）与编辑共用，名字必填。
  * 附「设定词写作规范」与「插入模板」（v0.33.0，应用内规范）。
  */
-/** 通话音色预设（Edge TTS 中文声音；任意第三方声音名走"导入第三方音色"） */
-private val PRESET_CALL_VOICES = listOf(
-    "zh-CN-XiaoxiaoNeural" to "晓晓 · 女",
-    "zh-CN-XiaoyiNeural" to "晓伊 · 女",
-    "zh-CN-YunxiNeural" to "云希 · 男",
-    "zh-CN-YunjianNeural" to "云健 · 男",
-    "zh-CN-YunyangNeural" to "云扬 · 播音",
-    "zh-CN-YunxiaNeural" to "云夏 · 少年",
-    "zh-CN-liaoning-XiaobeiNeural" to "晓北 · 东北",
-    "zh-CN-shaanxi-XiaoniNeural" to "晓妮 · 陕西",
-    "zh-TW-HsiaoChenNeural" to "晓臻 · 台湾",
-    "zh-HK-HiuMaanNeural" to "曉曼 · 粤语",
-)
-
-/** 音色行的展示标签：预设显示中文名，自定义显示声音名本身，默认显示"晓晓 · 女（默认）" */
-private fun voiceLabel(voice: String): String =
-    when {
-        voice.isBlank() -> "晓晓 · 女（默认）"
-        else -> PRESET_CALL_VOICES.firstOrNull { it.first == voice }?.second ?: voice
-    }
+/**
+ * 音色行的展示标签：预置音色显示中文描述，克隆音色显示名字，自定义显示 ID 本身。
+ * 人设存的音色若不属于当前 provider（用户换了服务商），按"默认"显示——那个 ID 在新家不认。
+ */
+private fun voiceLabel(config: TtsConfig, ref: VoiceRef?, cloned: List<ClonedVoice>): String {
+    val id = ref?.takeIf { it.provider == config.provider }?.voiceId
+        ?: return "默认 · ${TtsVoices.defaultVoiceId(config.provider)}"
+    TtsVoices.presets(config.provider).firstOrNull { it.id == id }?.let { return it.label }
+    cloned.firstOrNull { it.uri == id }?.let { return "克隆 · ${it.customName}" }
+    TtsVoices.localSamplePath(id)?.let { return "克隆 · ${File(it).nameWithoutExtension}" }
+    return id
+}
 
 @Composable
 fun PersonaEditorSheet(
@@ -124,21 +125,25 @@ fun PersonaEditorSheet(
     var avatarImagePath by remember { mutableStateOf(persona?.avatarImagePath.orEmpty()) }
 
     val context = LocalContext.current
-    // v0.47.1：人设级通话音色（在编辑人设里选，存 call_voice_<personaId>）。
+    // 音色属于人设（在编辑人设里选，存 tts_voice_<personaId>）；v0.50.0 起**通话与 AI 语音条共用**这一个音色。
     // 容器在 sheet 内自取，调用点零改动；非 App 环境（单测宿主）拿不到时整行隐藏。
-    val callSettings = remember(context) {
+    val voiceSettings = remember(context) {
         runCatching {
             (context.applicationContext as? com.menghuan.app.MenghuanApp)?.settingsRepository
         }.getOrNull()
     }
     val editorScope = rememberCoroutineScope()
-    var callVoice by remember { mutableStateOf<String?>(null) } // null = 未加载 / 不可用
+    var ttsConfig by remember { mutableStateOf(TtsConfig()) }
+    var voiceRef by remember { mutableStateOf<VoiceRef?>(null) } // null = 用当前 provider 的默认预置音色
+    var clonedVoices by remember { mutableStateOf<List<ClonedVoice>>(emptyList()) }
     var voiceMenuOpen by remember { mutableStateOf(false) }
     var customizingVoice by remember { mutableStateOf(false) }
     var customVoice by remember { mutableStateOf("") }
-    LaunchedEffect(persona?.id, callSettings) {
-        if (callSettings != null && persona != null) {
-            callVoice = callSettings.callVoiceFor(persona.id).first()
+    var previewingVoice by remember { mutableStateOf(false) }
+    LaunchedEffect(persona?.id, voiceSettings) {
+        if (voiceSettings != null && persona != null) {
+            ttsConfig = voiceSettings.ttsConfig.first()
+            voiceRef = voiceSettings.voiceRefFor(persona.id).first()
         }
     }
     val avatarPicker = rememberLauncherForActivityResult(
@@ -226,8 +231,11 @@ fun PersonaEditorSheet(
             placeholder = "例：朋友 / 陪伴者 / 教练 / 心理咨询师",
             modifier = Modifier.fillMaxWidth(),
         )
-        // v0.47.1：通话音色——展开菜单选择（不平铺），自定义第三方音色收进同一入口
-        if (callSettings != null && persona != null && callVoice != null) {
+        // 音色（v0.50.0）：当前 provider 的预置 + 我的克隆音色 + 试听。
+        // **克隆动作不在这里做**——上传是账号级操作（要实名认证、产出的 uri 谁都能用），
+        // 收在「设置 · 语音」里；人设这边只负责挑一个。
+        if (voiceSettings != null && persona != null) {
+            val currentVoiceId = voiceRef?.takeIf { it.provider == ttsConfig.provider }?.voiceId.orEmpty()
             Spacer(Modifier.height(14.dp))
             Box {
                 Row(
@@ -236,17 +244,48 @@ fun PersonaEditorSheet(
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                        ) { voiceMenuOpen = true }
+                        ) {
+                            voiceMenuOpen = true
+                            // 打开菜单才拉克隆列表：这是网络请求，别在弹层一出现就打
+                            if (ttsConfig.provider == TtsProvider.SILICONFLOW && ttsConfig.isComplete) {
+                                editorScope.launch {
+                                    runCatching { VoiceCloner.listVoices(ttsConfig) }
+                                        .onSuccess { clonedVoices = it }
+                                }
+                            }
+                        }
                         .padding(vertical = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("通话音色", fontSize = 13.sp, color = TextPrimary)
-                    Text(
-                        voiceLabel(callVoice.orEmpty()),
-                        fontSize = 12.sp,
-                        color = MutedText,
-                    )
+                    Text("音色", fontSize = 13.sp, color = TextPrimary)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            voiceLabel(ttsConfig, voiceRef, clonedVoices),
+                            fontSize = 12.sp,
+                            color = MutedText,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        NeuChip(
+                            text = if (previewingVoice) "播放中" else "试听",
+                            selected = false,
+                            onClick = {
+                                if (previewingVoice || !ttsConfig.isComplete) return@NeuChip
+                                previewingVoice = true
+                                val target = voiceRef?.takeIf { it.provider == ttsConfig.provider && !it.isBlank }
+                                    ?: VoiceRef(ttsConfig.provider, TtsVoices.defaultVoiceId(ttsConfig.provider))
+                                editorScope.launch {
+                                    val audio = TtsClients.from(ttsConfig).synthesize(VOICE_PREVIEW_TEXT, target)
+                                    if (audio != null) {
+                                        runCatching {
+                                            playTtsPreview(context, audio.bytes, audio.format.extension)
+                                        }
+                                    }
+                                    previewingVoice = false
+                                }
+                            },
+                        )
+                    }
                 }
                 DropdownMenu(
                     expanded = voiceMenuOpen,
@@ -255,26 +294,46 @@ fun PersonaEditorSheet(
                     shadowElevation = 0.dp,
                     tonalElevation = 0.dp,
                 ) {
-                    PRESET_CALL_VOICES.forEach { (voice, label) ->
+                    TtsVoices.presets(ttsConfig.provider).forEach { preset ->
                         DropdownMenuItem(
                             text = {
                                 Column {
-                                    Text(label, fontSize = 14.sp, color = TextPrimary)
-                                    Text(voice, fontSize = 10.sp, color = MutedText)
+                                    Text(preset.label, fontSize = 14.sp, color = TextPrimary)
+                                    Text(preset.id, fontSize = 10.sp, color = MutedText)
                                 }
                             },
-                            trailingIcon = if (callVoice == voice) {
+                            trailingIcon = if (currentVoiceId == preset.id) {
                                 { Text("✓", color = TextPrimary, fontSize = 13.sp) }
                             } else null,
                             onClick = {
-                                callVoice = voice
-                                editorScope.launch { callSettings.setCallVoiceFor(persona.id, voice) }
+                                val ref = VoiceRef(ttsConfig.provider, preset.id)
+                                voiceRef = ref
                                 voiceMenuOpen = false
+                                editorScope.launch { voiceSettings.setVoiceRefFor(persona.id, ref) }
+                            },
+                        )
+                    }
+                    clonedVoices.forEach { cloned ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text("克隆 · ${cloned.customName}", fontSize = 14.sp, color = TextPrimary)
+                                    Text(cloned.uri, fontSize = 10.sp, color = MutedText, maxLines = 1)
+                                }
+                            },
+                            trailingIcon = if (currentVoiceId == cloned.uri) {
+                                { Text("✓", color = TextPrimary, fontSize = 13.sp) }
+                            } else null,
+                            onClick = {
+                                val ref = VoiceRef(ttsConfig.provider, cloned.uri)
+                                voiceRef = ref
+                                voiceMenuOpen = false
+                                editorScope.launch { voiceSettings.setVoiceRefFor(persona.id, ref) }
                             },
                         )
                     }
                     DropdownMenuItem(
-                        text = { Text("导入第三方音色…", fontSize = 14.sp, color = TextPrimary) },
+                        text = { Text("填音色 ID…", fontSize = 14.sp, color = TextPrimary) },
                         onClick = {
                             customizingVoice = true
                             voiceMenuOpen = false
@@ -289,19 +348,20 @@ fun PersonaEditorSheet(
                         value = customVoice,
                         onValueChange = { customVoice = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = "粘贴任意 Edge TTS 声音名",
+                        placeholder = "粘贴该服务商认的音色 ID",
                     )
                     Spacer(Modifier.width(8.dp))
                     NeuChip(
-                        text = "导入",
+                        text = "确定",
                         selected = false,
                         onClick = {
                             val v = customVoice.trim()
                             if (v.isNotEmpty()) {
-                                callVoice = v
+                                val ref = VoiceRef(ttsConfig.provider, v)
+                                voiceRef = ref
                                 customizingVoice = false
                                 customVoice = ""
-                                editorScope.launch { callSettings.setCallVoiceFor(persona.id, v) }
+                                editorScope.launch { voiceSettings.setVoiceRefFor(persona.id, ref) }
                             }
                         },
                     )
@@ -452,7 +512,7 @@ private fun PersonaPromptGuideSheet(onDismiss: () -> Unit) {
                 GuideText("· 派发任务：让 TA 把讨论结论变成可勾选、可打卡的待办（会出现在任务页并按点提醒）")
                 GuideText("· 打卡督促：把「今天做到哪了」的复盘变成每日任务，打卡记录会回写到对话里")
                 GuideText("· 操作手机：用户授权手机 Agent 后，TA 能读屏并代替用户点击输入（有白名单围栏与敏感操作确认）")
-                GuideText("· 生成图片：需要配图时 TA 能直接出图，图片只存本机")
+                GuideText("· 生成图片：需要配图时 TA 能直接出图")
                 GuideText("· 周报与洞察：每周自动汇总任务、打卡、档案与对话，生成 AI 周报")
                 GuideText("· 记住你：档案与偏好由提炼引擎自动更新，后续对话会带上这些背景")
             }

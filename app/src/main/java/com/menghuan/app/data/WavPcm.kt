@@ -98,6 +98,31 @@ object WavPcm {
         return out
     }
 
+    /**
+     * 单声道 PCM16 → 标准 44 字节头 WAV（[parse] 的逆操作，纯函数可单测）。
+     * 音色克隆要把样本裁到 15 秒再上传，裁完得重新装成容器。
+     */
+    fun writeMono(samples: ShortArray, sampleRate: Int): ByteArray {
+        val dataLen = samples.size * 2
+        val out = java.nio.ByteBuffer.allocate(44 + dataLen).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        val byteRate = sampleRate * 2 // 单声道 × 16bit
+        out.put("RIFF".toByteArray(Charsets.US_ASCII))
+        out.putInt(36 + dataLen)
+        out.put("WAVE".toByteArray(Charsets.US_ASCII))
+        out.put("fmt ".toByteArray(Charsets.US_ASCII))
+        out.putInt(16)
+        out.putShort(1) // PCM
+        out.putShort(1) // 单声道
+        out.putInt(sampleRate)
+        out.putInt(byteRate)
+        out.putShort(2) // 块对齐 = 声道 × 位深/8
+        out.putShort(16)
+        out.put("data".toByteArray(Charsets.US_ASCII))
+        out.putInt(dataLen)
+        samples.forEach { out.putShort(it) }
+        return out.array()
+    }
+
     private fun isAscii(bytes: ByteArray, offset: Int, tag: String): Boolean {
         if (offset + tag.length > bytes.size) return false
         for (k in tag.indices) {

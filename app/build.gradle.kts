@@ -14,15 +14,16 @@ android {
         applicationId = "com.menghuan.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 97
-        versionName = "0.49.0"
+        versionCode = 98
+        versionName = "0.50.0"
         // 只保留中英文资源，去掉依赖库里几十种语言的 strings/日期符号
         resourceConfigurations.addAll(listOf("zh", "zh-rCN", "en"))
         // sherpa-onnx AAR 自带 4 套 ABI（arm64/v7a/x86/x86_64）共 127MB so，
-        // 打进一个包要 120MB+。x86 只活在模拟器/少数 x86 平板上，真机用不到 → 砍掉，
-        // 只留两个手机 ABI（arm64-v8a + armeabi-v7a，覆盖 2017 年以后的全部手机）。
+        // 打进一个包要 120MB+。x86 只活在模拟器/少数 x86 平板上，真机用不到 → 砍掉。
+        // v0.50.0 再去掉 armeabi-v7a：22MB so 只为兼容 2017 年前的 32 位老机，
+        // 而这批机器本来也跑不动 228MB 的 SenseVoice 离线识别（用户已确认取舍）。
         ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -46,9 +47,11 @@ android {
     }
 
     // sherpa-onnx 从 assets 读模型走 NDK AAssetManager：**压缩过的 asset 无法随机读**
-    // （官方示例同样关闭压缩），onnx/txt 模型文件必须原样打包
+    // （官方示例同样关闭压缩）。v0.50.0 起 assets 里只剩 silero_vad.onnx
+    // （识别大模型改成装后下载到 filesDir，走普通文件路径，不经 AAssetManager），
+    // 所以只需保 onnx；原来一起写的 txt 是给内置 tokens.txt 用的，现已无用。
     androidResources {
-        noCompress.addAll(listOf("onnx", "txt"))
+        noCompress.addAll(listOf("onnx"))
     }
 
     buildTypes {

@@ -10,7 +10,6 @@ import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -159,83 +158,7 @@ class OpenAiClient(
         }.getOrElse { NetworkStack.describeNetworkFailure(it) }
     }
 
-    /**
-     * 云端语音转文字（v0.43.1 新增）：POST `{base}/audio/transcriptions`（OpenAI Whisper 协议）。
-     *
-     * ## 为什么语音识别要走这里，而不是只靠系统 `SpeechRecognizer`
-     * 系统识别器的"文件输入"能力（`EXTRA_AUDIO_SOURCE`，API 31+）在**很多 ROM 上根本不生效** ——
-     * 尤其国内定制系统（小米/MIUI 等），识别服务通常只监听**实时麦克风**，
-     * 拿到文件路径也当没看见，于是 `onResults` 永远不回调、`onError` 也不给，
-     * 用户感受就是「语音发出去了但 AI 什么都不知道」。
-     * 而本 App **本来就已经配好了一个可用的 AI 接口**，用它做转写是最顺理成章的：
-     * 同一个 baseUrl / apiKey，走 Whisper 协议，返回准确率远高于系统识别。
-     *
-     * @param audioFile 已录好的音频（WAV / m4a 均可，Whisper 都能解）
-     * @return 识别文本；任何失败（网络/不支持/空结果）返回 null，由调用方降级到系统识别
-     */
-    suspend fun transcribe(audioFile: java.io.File, languageTag: String? = null): String? =
-        withContext(Dispatchers.IO) {
-            if (!audioFile.exists() || audioFile.length() == 0L) return@withContext null
-            runCatching {
-                val mime = when (audioFile.extension.lowercase()) {
-                    "wav" -> "audio/wav"
-                    "m4a", "mp4", "aac" -> "audio/mp4"
-                    "mp3" -> "audio/mpeg"
-                    else -> "application/octet-stream"
-                }
-                val fileBody = audioFile.asRequestBody(mime.toMediaType())
-                val form = okhttp3.MultipartBody.Builder()
-                    .setType(okhttp3.MultipartBody.FORM)
-                    .addFormDataPart("file", audioFile.name, fileBody)
-                    .addFormDataPart("model", "whisper-1")
-                    .apply {
-                        // 指定语言能显著提升短语音的识别质量；取不到系统语言就让服务端自判
-                        languageTag?.substringBefore('-')?.takeIf { it.isNotBlank() }
-                            ?.let { addFormDataPart("language", it) }
-                    }
-                    .build()
-
-                val request = Request.Builder()
-                    .url("${baseUrl.trim().trimEnd('/')}/audio/transcriptions")
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .post(form)
-                    .build()
-
-                http.newBuilder()
-                    .readTimeout(60, TimeUnit.SECONDS)
-                    .writeTimeout(60, TimeUnit.SECONDS)
-                    .build()
-                    .newCall(request).execute().use { resp ->
-                        val text = resp.body?.string().orEmpty()
-                        if (!resp.isSuccessful) {
-                            logWarn("transcribe HTTP ${resp.code}: ${text.take(200)}")
-                            return@use null
-                        }
-                        // OpenAI 协议：{"text": "..."}；部分中转商直接回纯文本
-                        runCatching { JSONObject(text).optString("text") }
-                            .getOrElse { text }
-                            .trim()
-                            .takeIf { it.isNotBlank() }
-                    }
-            }.getOrElse {
-                logWarn("transcribe failed: ${it.javaClass.simpleName} ${it.message.orEmpty().take(120)}")
-                null
-            }
-        }
-
     companion object {
-        /**
-         * 安全日志：**任何情况下都不能让日志本身把主流程搞崩**。
-         *
-         * 起因（v0.43.1）：`transcribe` 里直接调 `android.util.Log.w`，纯 JVM 单测
-         * （没有 Robolectric、未 mock `android.util.Log`）一走到失败分支就抛
-         * `Method w in android.util.Log not mocked` —— 一个"打印日志"的动作
-         * 把"安静降级返回 null"的契约破坏成了崩溃。
-         * 这里统一包一层 `runCatching`。
-         */
-        private fun logWarn(message: String) {
-            runCatching { android.util.Log.w("OpenAiClient", message) }
-        }
         /**
          * 组装 messages 数组（纯函数，JVM 可测）：
          * - system + 历史逐条展开；

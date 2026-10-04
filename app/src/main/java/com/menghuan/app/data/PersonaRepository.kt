@@ -23,7 +23,7 @@ class PersonaRepository(
     suspend fun save(persona: Persona): Long = db.personaDao().upsert(persona)
 
     /**
-     * 物理删除人设 = 级联清理：该会话全部消息 + 未读标记 + 提炼水位线 + 会话级接口覆盖。
+     * 物理删除人设 = 级联清理：该会话全部消息 + 未读标记 + 提炼水位线 + 会话级接口覆盖 + 人设音色。
      * （人设无独立闹钟；任务闹钟按任务独立，不受影响。）
      */
     suspend fun delete(id: Long) {
@@ -32,6 +32,7 @@ class PersonaRepository(
         settingsRepository?.removeReadMark(id)
         settingsRepository?.removeExtractionWatermark(id)
         settingsRepository?.removePersonaApiProfile(id)
+        settingsRepository?.removeVoiceRef(id)
     }
 
     /** 对话风格按 persona 持久化（长按头像切换后保存） */

@@ -360,6 +360,9 @@ fun MeScreen(
     var showApiConfig by remember { mutableStateOf(false) }
     var showPromptSettings by remember { mutableStateOf(false) }
     var showAppearance by remember { mutableStateOf(false) }
+    var showVoice by remember { mutableStateOf(false) }
+    var showTtsConfig by remember { mutableStateOf(false) }
+    var showAsrModel by remember { mutableStateOf(false) }
     var showNotifications by remember { mutableStateOf(false) }
     var showDataPrivacy by remember { mutableStateOf(false) }
     var showAbout by remember { mutableStateOf(false) }
@@ -482,6 +485,10 @@ fun MeScreen(
                 showSettings = false
                 showAppearance = true
             },
+            onVoice = {
+                showSettings = false
+                showVoice = true
+            },
             onNotifications = {
                 showSettings = false
                 showNotifications = true
@@ -504,6 +511,25 @@ fun MeScreen(
     }
     if (showAppearance) {
         com.menghuan.app.ui.settings.AppearanceSheet(onDismiss = { showAppearance = false })
+    }
+    if (showVoice) {
+        com.menghuan.app.ui.settings.VoiceSettingsSheet(
+            onDismiss = { showVoice = false },
+            onTtsConfig = {
+                showVoice = false
+                showTtsConfig = true
+            },
+            onAsrModel = {
+                showVoice = false
+                showAsrModel = true
+            },
+        )
+    }
+    if (showTtsConfig) {
+        com.menghuan.app.ui.settings.TtsConfigSheet(onDismiss = { showTtsConfig = false })
+    }
+    if (showAsrModel) {
+        com.menghuan.app.ui.settings.AsrModelSheet(onDismiss = { showAsrModel = false })
     }
     if (showNotifications) {
         NotificationSettingsSheet(
