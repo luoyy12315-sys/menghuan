@@ -114,6 +114,20 @@ object MIcons {
     }.build()
 
     // ===== 语音通话（v0.46.0，feather 图标线条化移植；Mic 沿用输入栏已有图标）=====
+    /** 声音开（喇叭+声波）：聊天音效开关 */
+    val VolumeOn = strokes(
+        "VolumeOn", 1.7f,
+        "M11 5L6 9L2 9L2 15L6 15L11 19L11 5Z",
+        "M15.54 8.46a5 5 0 0 1 0 7.07",
+        "M19.07 4.93a10 10 0 0 1 0 14.14",
+    )
+    /** 声音关（喇叭+叉）：聊天音效关闭态 */
+    val VolumeOff = strokes(
+        "VolumeOff", 1.7f,
+        "M11 5L6 9L2 9L2 15L6 15L11 19L11 5Z",
+        "M23 9L17 15",
+        "M17 9L23 15",
+    )
     /** 三个点（竖排实心）：通话设置入口 */
     val MoreVert = filled(
         "MoreVert",

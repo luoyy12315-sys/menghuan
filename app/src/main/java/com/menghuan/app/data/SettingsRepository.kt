@@ -70,6 +70,8 @@ class SettingsRepository(
     // v0.47.1：按人设的通话音色，前缀键 call_voice_<personaId>（空 = 默认晓晓）。
     // 音色属于人设（在编辑人设弹层里选），不再有全局通话设置。
     private val callVoicePrefix = "call_voice_"
+    // v0.48.0：聊天音效（发送/回复提示音），右上角喇叭开关控制
+    private val keyChatSoundEnabled = booleanPreferencesKey("chat_sound_enabled")
 
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
@@ -522,6 +524,14 @@ class SettingsRepository(
             if (v.isEmpty() || v == "zh-CN-XiaoxiaoNeural") it.remove(key)
             else it[key] = v
         }
+    }
+
+    /** 聊天音效：发送/回复提示音（默认开，会话页右上角喇叭控制） */
+    val chatSoundEnabled: Flow<Boolean> =
+        store.data.map { it[keyChatSoundEnabled] ?: true }
+
+    suspend fun setChatSoundEnabled(enabled: Boolean) {
+        store.edit { it[keyChatSoundEnabled] = enabled }
     }
 
     /** 人设主动关心（默认关：每天晚间最多一条，基于档案与任务情况） */

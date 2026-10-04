@@ -117,7 +117,7 @@ class RealtimeCallViewModel(
     }
 
     fun hangUp() {
-        CallTones.play(app, CallTones.Kind.HANG_UP)
+        CallTones.play(CallTones.Kind.HANG_UP)
         engine?.hangUp()
     }
 
@@ -138,7 +138,7 @@ class RealtimeCallViewModel(
                 // 接通音：首次进入倾听态（引擎初始化完成）
                 if (ev.state == RealtimeCallState.LISTENING && !connectTonePlayed) {
                     connectTonePlayed = true
-                    CallTones.play(app, CallTones.Kind.CONNECT)
+                    CallTones.play(CallTones.Kind.CONNECT)
                 }
             }
             is RealtimeCallEvent.UserPartial -> _ui.update { it.copy(userPartial = ev.text) }

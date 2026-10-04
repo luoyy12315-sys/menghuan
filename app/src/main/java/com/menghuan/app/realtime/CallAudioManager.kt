@@ -23,17 +23,12 @@ class CallAudioManager {
 
     private var record: AudioRecord? = null
     private var track: AudioTrack? = null
-    private var prevMode = AudioManager.MODE_NORMAL
-    private var prevSpeaker = false
 
     @SuppressLint("MissingPermission") // 麦克风权限由 UI 层在启动前申请并检查
     fun start(context: Context): Boolean = runCatching {
-        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        prevMode = am.mode
-        prevSpeaker = am.isSpeakerphoneOn
-        am.mode = AudioManager.MODE_IN_COMMUNICATION
-        am.isSpeakerphoneOn = true
-
+        // **不再设 MODE_IN_COMMUNICATION / speakerphone**（v0.48.0）：通话模式下部分 ROM
+        // 把媒体音频路由进无声/听筒通道，真机表现即"AI 说话没声音"——那是硬伤；
+        // 回声消除仍由麦克风侧 VOICE_COMMUNICATION 源承担，播放走普通媒体通道保证出声。
         val minBuf = AudioRecord.getMinBufferSize(
             IN_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
         )
@@ -106,7 +101,7 @@ class CallAudioManager {
         }
     }
 
-    /** 释放全部音频资源并恢复 AudioManager 进入前状态（任务书 §二十一） */
+    /** 释放全部音频资源（v0.48.0 起不再改 AudioManager 模式，无需恢复） */
     fun close(context: Context) {
         runCatching {
             record?.stop()
@@ -116,11 +111,6 @@ class CallAudioManager {
         }
         record = null
         track = null
-        runCatching {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.mode = prevMode
-            am.isSpeakerphoneOn = prevSpeaker
-        }
     }
 
     companion object {

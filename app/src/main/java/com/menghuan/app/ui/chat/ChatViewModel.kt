@@ -419,6 +419,14 @@ class ChatViewModel(
         runCatching { personaRepository.save(p) }
     }
 
+    /** v0.48.0：聊天音效（发送"嗖"/回复"叮咚"），喇叭开关控制；音效合成本身走应用私有线程 */
+    private fun playChatToneIfEnabled(kind: com.menghuan.app.realtime.CallTones.Kind) {
+        viewModelScope.launch {
+            val enabled = runCatching { settingsRepository.chatSoundEnabled.first() }.getOrDefault(true)
+            if (enabled) com.menghuan.app.realtime.CallTones.play(kind)
+        }
+    }
+
     fun send() {
         val text = _uiState.value.input.trim()
         if (text.isEmpty() || _uiState.value.isStreaming) return
@@ -533,6 +541,7 @@ class ChatViewModel(
 
     /** 发送共用链路：乐观上屏 → 落库 → LLM 回复 */
     private fun send(userMsg: ChatMessage, clearInput: Boolean) {
+        playChatToneIfEnabled(com.menghuan.app.realtime.CallTones.Kind.SENT)
         _uiState.update {
             it.copy(
                 input = if (clearInput) "" else it.input,
@@ -807,6 +816,7 @@ class ChatViewModel(
         // 这里把原串带回去供生图解析
         val rawReply = persistReply(sb, reasoning)
         finishStream()
+        playChatToneIfEnabled(com.menghuan.app.realtime.CallTones.Kind.RECEIVED)
         // 生图（v0.35.0）：模型按 system prompt 约定输出 [生图:提示词] 标记时，
         // 文字已剥掉标记落库，这里再把图生出来落盘并挂成一条图片消息
         maybeGenerateImage(rawReply)

@@ -108,6 +108,7 @@ import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
 import com.menghuan.app.ui.theme.personaBrush
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -151,6 +152,7 @@ fun ChatScreen(
     var reasoningView by remember { mutableStateOf<ChatMessage?>(null) } // 思考链查看（v0.41.4）
     var showApiSwitch by remember { mutableStateOf(false) }
     var showPersonaEditor by remember { mutableStateOf(false) } // v0.47.1：三点 = 编辑人设
+    var soundOn by remember { mutableStateOf(true) } // v0.48.0：聊天音效开关（初始值见 appContainer 后）
     // v0.43.0 输入区面板：0=收起 1=表情 2=加号（同一时刻只开一个，与键盘互斥）
     var panel by remember { mutableStateOf(0) }
     var showCamera by remember { mutableStateOf(false) }
@@ -158,6 +160,12 @@ fun ChatScreen(
     val context = LocalContext.current
 
     val appContainer = context.applicationContext as com.menghuan.app.MenghuanApp
+    // v0.48.0：喇叭开关初始值（DataStore，异步读）
+    LaunchedEffect(Unit) {
+        soundOn = runCatching {
+            appContainer.settingsRepository.chatSoundEnabled.first()
+        }.getOrDefault(true)
+    }
     // 自定义表情（v0.43.0）：库表 → 面板真实数据源
     val stickers by appContainer.db.stickerDao().observeAll()
         .collectAsState(initial = emptyList())
@@ -399,6 +407,23 @@ fun ChatScreen(
                     }
                 },
                 actions = {
+                    // v0.48.0：喇叭 = 聊天音效开关（发送"嗖"/回复"叮咚"）；再右三个点 = 编辑人设。
+                    Icon(
+                        if (soundOn) MIcons.VolumeOn else MIcons.VolumeOff,
+                        contentDescription = if (soundOn) "关闭消息音效" else "开启消息音效",
+                        tint = if (soundOn) TextPrimary else MutedText,
+                        modifier = Modifier
+                            .size(21.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) {
+                                val next = !soundOn
+                                soundOn = next
+                                scope.launch { appContainer.settingsRepository.setChatSoundEnabled(next) }
+                            },
+                    )
+                    Spacer(Modifier.width(12.dp))
                     // v0.47.1：三个点 = 编辑人设（名字/头像/设定词/通话音色都在人设编辑里，
                     // 通话音色按人设各自保存）。通话入口在加号面板第四格。
                     Icon(

@@ -314,21 +314,28 @@ class PipelineVoiceCallEngine(
     private suspend fun ttsPlayer(channel: Channel<String>) = withContext(Dispatchers.IO) {
         var spoke = false
         for (sentence in channel) {
-            val mp3 = runCatching { edgeTts?.synthesize(sentence) }.getOrNull()
-                ?: runCatching { edgeTts?.synthesize(sentence) }.getOrNull() // 失败重试一次
+            val tts = edgeTts
+            val mp3 = runCatching { tts?.synthesize(sentence) }.getOrNull()
+                ?: runCatching { tts?.synthesize(sentence) }.getOrNull() // 失败重试一次
             if (mp3 != null) {
                 val pcm = Mp3Decoder.decode(mp3)
                 if (pcm != null) {
                     if (!spoke) {
-                        if (audio?.playStart() != true) break
+                        if (audio?.playStart() != true) {
+                            _events.tryEmit(RealtimeCallEvent.Error("声音播放初始化失败"))
+                            break
+                        }
                         spoke = true
                         _state.value = RealtimeCallState.AI_SPEAKING
                         emitState()
                     }
                     audio?.playPcm(pcm.samples) { scope.isActive && ttsJob?.isActive != false }
                 }
+            } else if (!spoke) {
+                // 整轮一句都合成不出来：把原因亮给用户（远程诊断真机无声问题）
+                _events.tryEmit(RealtimeCallEvent.Error("声音合成失败：${tts?.lastFailure ?: "未知原因"}"))
             }
-            spoken.append(sentence)
+            synchronized(spoken) { spoken.append(sentence) }
         }
         if (spoke) audio?.stopPlayback()
     }
