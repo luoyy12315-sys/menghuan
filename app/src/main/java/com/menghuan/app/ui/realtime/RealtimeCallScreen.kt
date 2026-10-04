@@ -68,6 +68,7 @@ import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
+import com.menghuan.app.ui.settings.SettingsRoutes
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.personaBrush
 import kotlinx.coroutines.delay
@@ -81,6 +82,8 @@ import kotlinx.coroutines.delay
 fun RealtimeCallScreen(
     personaId: Long,
     onBack: () -> Unit,
+    /** v0.51.0：缺模型 / 缺 TTS 配置时跳全屏设置页（设置链已从弹层改成整页） */
+    onOpenSettings: (String) -> Unit = {},
     vm: RealtimeCallViewModel = viewModel(key = "call_$personaId", factory = RealtimeCallViewModel.Factory(personaId)),
 ) {
     val ui by vm.ui.collectAsState()
@@ -97,9 +100,6 @@ fun RealtimeCallScreen(
         hasPermission = granted
         if (granted) vm.start()
     }
-    // 缺模型 / 缺 TTS 配置时直接在通话页拉起对应面板，不用让用户自己退回「我的 · 设置」翻
-    var showAsrSheet by remember { mutableStateOf(false) }
-    var showTtsSheet by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if (hasPermission) vm.start() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
@@ -165,8 +165,8 @@ fun RealtimeCallScreen(
                         .clickable {
                             when {
                                 !hasPermission -> permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                ui.asrMissing -> showAsrSheet = true
-                                ui.ttsMissing -> showTtsSheet = true
+                                ui.asrMissing -> onOpenSettings(SettingsRoutes.ASR_MODEL)
+                                ui.ttsMissing -> onOpenSettings(SettingsRoutes.TTS_CONFIG)
                                 // llmMissing 没有可跳的页面（接口配置在「我的 · 设置 · API 配置」），只提示
                             }
                         }
@@ -249,12 +249,6 @@ fun RealtimeCallScreen(
         }
     }
 
-    if (showAsrSheet) {
-        com.menghuan.app.ui.settings.AsrModelSheet(onDismiss = { showAsrSheet = false })
-    }
-    if (showTtsSheet) {
-        com.menghuan.app.ui.settings.TtsConfigSheet(onDismiss = { showTtsSheet = false })
-    }
 }
 
 /** 字幕行：text + 是否用户 + 是否已收口（partial = 正在进行） */

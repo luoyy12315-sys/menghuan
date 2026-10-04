@@ -1,7 +1,6 @@
 package com.menghuan.app.data
 
 import android.content.Context
-import android.net.Uri
 import com.menghuan.app.llm.NetworkStack
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -46,10 +45,19 @@ enum class AsrModelFile(val fileName: String, val sizeBytes: Long, val sha256: S
  * hf-mirror.com 直连 TLS 证书 SNI 校验失败，只有 modelscope.cn 秒通、
  * 回 `Accept-Ranges: bytes`（断点续传可用）并由接口给出官方 sha256。
  * hf-mirror 留作备源——本机证书报错不代表所有网络环境都报错。
+ *
+ * [webPage] 是给人看的仓库主页（不是下载直链）：两个源都连不上时，
+ * 面板把这行地址显示出来让用户自己复制去浏览器试。
  */
-enum class AsrModelSource(val label: String) {
-    MODELSCOPE("ModelScope"),
-    HF_MIRROR("hf-mirror"),
+enum class AsrModelSource(val label: String, val webPage: String) {
+    MODELSCOPE(
+        "ModelScope",
+        "https://www.modelscope.cn/models/pengzhendong/sherpa-onnx-sense-voice-zh-en-ja-ko-yue",
+    ),
+    HF_MIRROR(
+        "hf-mirror",
+        "https://hf-mirror.com/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+    ),
     ;
 
     fun urlOf(file: AsrModelFile): String = when (this) {
@@ -66,12 +74,6 @@ enum class AsrModelSource(val label: String) {
     }
 }
 
-/** 手动导入的结果：校验通过 / 大小对得上但校验值不符（仍装，但要告诉用户） / 装不上 */
-sealed interface AsrImportResult {
-    data object Verified : AsrImportResult
-    data class AcceptedWithWarning(val reason: String) : AsrImportResult
-    data class Failed(val reason: String) : AsrImportResult
-}
 
 /**
  * 纯逻辑（不碰 Android、不碰网络），供 JVM 单测直接覆盖。
@@ -126,7 +128,7 @@ object AsrModelRules {
  *
  * ## 就绪判定为什么不每次重算 sha256
  * 228MB 全量哈希在中端机上要好几秒，而 `isReady` 会在每次点语音键、每次进通话页时被调用。
- * 所以哈希只在**下载完成**与**手动导入**时各算一次，通过后写一个 `.verified` 标记；
+ * 所以哈希只在**下载完成时**算一次，通过后写一个 `.verified` 标记；
  * `isReady` 只看「两个文件都在 + 字节数与官方一致 + 标记存在」。字节数全等已经是很强的过滤。
  *
  * ## 断点续传
@@ -300,55 +302,6 @@ object AsrModelManager {
         if (missingFiles(context).isEmpty()) {
             runCatching { markFile(context).writeText(AsrModelFile.MODEL.sha256) }
         }
-    }
-
-    /** SAF 手动导入：大小必须全等（挡掉选错文件），sha256 不符时仍装但明确告警 */
-    suspend fun importFrom(
-        context: Context,
-        uri: Uri,
-        which: AsrModelFile,
-    ): AsrImportResult = withContext(Dispatchers.IO) {
-        synchronized(lock) { dir(context).mkdirs() }
-        val target = fileOf(context, which)
-        val staging = partFileOf(context, which)
-        runCatching { staging.delete() }
-
-        val copied = runCatching {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                java.io.FileOutputStream(staging).use { out -> input.copyTo(out) }
-                staging.length()
-            } ?: -1L
-        }.getOrElse {
-            return@withContext AsrImportResult.Failed("读取文件失败：${describe(it)}")
-        }
-
-        if (copied <= 0L) return@withContext AsrImportResult.Failed("文件为空")
-        if (copied != which.sizeBytes) {
-            runCatching { staging.delete() }
-            return@withContext AsrImportResult.Failed(
-                "文件大小不符：${AsrModelRules.humanSize(copied)}，" +
-                    "官方 ${which.fileName} 应为 ${AsrModelRules.humanSize(which.sizeBytes)}",
-            )
-        }
-
-        val sha = runCatching { staging.inputStream().use { AsrModelRules.sha256Hex(it) } }.getOrNull()
-        if (!sha.equals(which.sha256, ignoreCase = true)) {
-            // 大小逐字节相同却哈希不同：几乎只可能是另一个构建。用户是自己挑的文件，
-            // 装上用，但把话说清楚，不假装校验通过。
-            if (!runCatching { staging.renameTo(target) }.getOrDefault(false)) {
-                return@withContext AsrImportResult.Failed("写入 ${which.fileName} 失败")
-            }
-            finalizeIfComplete(context)
-            return@withContext AsrImportResult.AcceptedWithWarning(
-                "已导入，但校验值与官方模型不一致（可能是另一构建），识别异常时请重新下载",
-            )
-        }
-
-        if (!runCatching { staging.renameTo(target) }.getOrDefault(false)) {
-            return@withContext AsrImportResult.Failed("写入 ${which.fileName} 失败")
-        }
-        finalizeIfComplete(context)
-        AsrImportResult.Verified
     }
 
     /** 释放空间：模型与标记一起删，删完 `isReady` 立刻变 false */

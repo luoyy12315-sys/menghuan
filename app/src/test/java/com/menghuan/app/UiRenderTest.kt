@@ -283,7 +283,7 @@ class UiRenderTest {
 
     /**
      * v0.50.0：识别模型不随包（228MB 装后下载）。没模型时点语音键**不进语音态**，
-     * 而是直接拉起「语音识别模型」下载面板——让用户按住说完才发现转写为空，比不发声更糟。
+     * 而是跳去「语音识别模型」全屏页——让用户按住说完才发现转写为空，比不发声更糟。
      */
     @Test
     fun render25VoiceModeBlockedByMissingModel() {
@@ -292,13 +292,13 @@ class UiRenderTest {
 
         awaitDesc("切换到语音")
         compose.onNodeWithContentDescription("切换到语音").performClick()
-        awaitText("语音识别模型") // 下载面板上屏
+        awaitText("语音识别模型") // 已跳到全屏下载页
         awaitText("未就绪")
         awaitText("model.int8.onnx")
         awaitText("下载模型")
         snap("48-asr-model-sheet")
-        // 语音态没进去：输入栏仍是打字态占位符
-        awaitText("发消息…")
+        // 语音态没进去：此刻人在下载页，"按住 说话"那条不该存在
+        compose.onNodeWithText("按住 说话").assertDoesNotExist()
     }
 
     /**
@@ -339,7 +339,7 @@ class UiRenderTest {
 
     /** v0.50.0 语音面板：两个总开关 + 语音合成 / 识别模型两个二级入口 */
     @Test
-    fun render27VoiceSettingsSheet() {
+    fun render27VoiceScreen() {
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
@@ -355,7 +355,7 @@ class UiRenderTest {
 
     /** v0.50.0 语音合成面板：三家 provider 可切 + Key/地址/模型 + 试听 + 克隆 */
     @Test
-    fun render28TtsConfigSheet() {
+    fun render28TtsConfigScreen() {
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
@@ -644,7 +644,7 @@ class UiRenderTest {
      * 设置面板底部不再有快捷 chips。断言弹层打开且能选到「深色」。
      */
     @Test
-    fun render15AppearanceSheet() {
+    fun render15AppearanceScreen() {
         val app = compose.activity.application as MenghuanApp
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的

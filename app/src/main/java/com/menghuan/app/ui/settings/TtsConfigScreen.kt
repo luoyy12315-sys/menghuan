@@ -33,7 +33,6 @@ import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSectionTitle
-import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
@@ -54,7 +53,7 @@ internal const val VOICE_PREVIEW_TEXT = "你好，这是我的声音。"
  * 人设那边只负责"挑一个音色"。
  */
 @Composable
-fun TtsConfigSheet(onDismiss: () -> Unit) {
+fun TtsConfigScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val app = context.applicationContext as MenghuanApp
     val scope = rememberCoroutineScope()
@@ -108,7 +107,7 @@ fun TtsConfigSheet(onDismiss: () -> Unit) {
         }
     }
 
-    NeuSheetScaffold(title = "语音合成", onDismiss = onDismiss) {
+    SettingsPage(title = "语音合成", onBack = onBack) {
         Spacer(Modifier.height(14.dp))
 
         NeuSectionTitle("服务商")

@@ -43,7 +43,6 @@ import com.menghuan.app.ui.chat.insightLogicText
 import com.menghuan.app.ui.chat.reportLogicText
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
-import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
@@ -68,7 +67,7 @@ import kotlinx.coroutines.launch
  * 分层设计（v0.36.0 引入）：最终发给模型的 system prompt = 框架 + "\n" + 策略。
  */
 @Composable
-fun PromptSettingsSheet(onDismiss: () -> Unit) {
+fun PromptSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val app = context.applicationContext as MenghuanApp
     val scope = rememberCoroutineScope()
@@ -133,7 +132,7 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
                 app.settingsRepository.setAgentChatStrategy(agentChatStrategy)
                 app.settingsRepository.setVoiceNoteStrategy(voiceNoteStrategy)
             }
-            onDismiss()
+            onBack()
         }
     }
 
@@ -150,7 +149,7 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
     }
 
     if (!loaded) {
-        NeuSheetScaffold(title = "AI 提示词", onDismiss = onDismiss) {
+        SettingsPage(title = "AI 提示词", onBack = onBack) {
             Spacer(Modifier.height(24.dp))
         }
         return
@@ -165,7 +164,7 @@ fun PromptSettingsSheet(onDismiss: () -> Unit) {
     val agentChatCustomized = agentChatStrategy.trim() != AGENT_CHAT_DEFAULT_STRATEGY
     val voiceNoteCustomized = voiceNoteStrategy.trim() != VOICE_NOTE_DEFAULT_STRATEGY
 
-    NeuSheetScaffold(title = "AI 提示词", onDismiss = onDismiss) {
+    SettingsPage(title = "AI 提示词", onBack = onBack) {
         Spacer(Modifier.height(8.dp))
 
         SectionRow(

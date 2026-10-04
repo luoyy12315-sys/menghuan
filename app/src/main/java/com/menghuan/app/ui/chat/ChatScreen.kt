@@ -98,7 +98,7 @@ import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuRowPress
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
-import com.menghuan.app.ui.settings.ApiConfigSheet
+import com.menghuan.app.ui.settings.SettingsRoutes
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
@@ -139,12 +139,13 @@ fun ChatScreen(
     onBack: () -> Unit,
     showBack: Boolean = true,   // 平板双栏：右栏嵌入时隐藏返回键（会话切换走左栏点选）
     onOpenCall: () -> Unit = {}, // v0.46.0：顶栏电话图标 → 实时语音通话页
+    /** v0.51.0：设置链改成全屏页，聊天页里"去配置 / 去下载"的出口一律把路由名交出去 */
+    onOpenSettings: (String) -> Unit = {},
     vm: ChatViewModel = viewModel(key = "chat_$personaId", factory = ChatViewModel.factory(personaId)),
 ) {
     val uiState by vm.uiState.collectAsState()
     val persona by vm.activePersona.collectAsState()
     val taskSuggestions by vm.taskSuggestions.collectAsState()
-    var showApiConfig by remember { mutableStateOf(false) }
     var viewerPath by remember { mutableStateOf<String?>(null) } // 全屏图片查看（v0.39.0）
     var messageMenu by remember { mutableStateOf<ChatMessage?>(null) }
     // 语音条「已展开转文字」的消息 id 集合（v0.43.1）。
@@ -236,8 +237,6 @@ fun ChatScreen(
     var recording by remember { mutableStateOf(false) }
     // 语音态：输入框位置显示"按住 说话"，再点语音键切回打字
     var voiceMode by remember { mutableStateOf(false) }
-    // 识别模型不随包（228MB 装后下载）：没模型时点语音键直接开下载面板，不进语音态假死
-    var showAsrModelSheet by remember { mutableStateOf(false) }
 
     /**
      * 输入区「输出形态」统一切换（v0.43.1）。
@@ -759,7 +758,7 @@ fun ChatScreen(
                         message = message,
                         kind = kind,
                         onRetry = { vm.retry() },
-                        onOpenApi = { showApiConfig = true },
+                        onOpenApi = { onOpenSettings(SettingsRoutes.API_CONFIG) },
                     )
                 }
             }
@@ -824,7 +823,7 @@ fun ChatScreen(
                             // 模型没下载就进语音态，用户按住说完只会得到一条空转写——
                             // 与其让他录完才发现，不如这一下就把下载入口摆出来。
                             Toast.makeText(context, "语音识别模型未下载", Toast.LENGTH_SHORT).show()
-                            showAsrModelSheet = true
+                            onOpenSettings(SettingsRoutes.ASR_MODEL)
                         } else {
                             // 切到语音态：收键盘、收面板（三者互斥），不要键盘
                             switchOutputMode(nextPanel = 0, nextVoice = true, showKeyboard = false)
@@ -1041,10 +1040,6 @@ fun ChatScreen(
         )
     }
 
-    // 错误条「去配置」直达：不跳页，直接在这里把 API 配置弹层叠上来
-    if (showApiConfig) {
-        ApiConfigSheet(onDismiss = { showApiConfig = false })
-    }
 
     // v0.47.1：人设编辑（三点进入；音色选择在人设里，按人设各自保存）
     if (showPersonaEditor && persona != null) {
@@ -1112,9 +1107,6 @@ fun ChatScreen(
         ReasoningSheet(content = message.reasoning, onDismiss = { reasoningView = null })
     }
 
-    if (showAsrModelSheet) {
-        com.menghuan.app.ui.settings.AsrModelSheet(onDismiss = { showAsrModelSheet = false })
-    }
 }
 
 /** 错误条行（从 ChatScreen 抽出供动画包装复用）：文案 + 按错误种类给的动作按钮 */

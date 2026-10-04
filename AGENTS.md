@@ -67,6 +67,25 @@
    ⚠️ 修键盘这块**先按第 3 条问清方向**。语音栈刚在 v0.50.0 整体重做完，改前先看上面两份文档，
    别凭记忆改。
 
+5. **内置「应用助手」的使用手册必须跟着每一次版本更新走，不许滞后（2026-10-05 用户拍板）。**  
+   内置人设「应用助手」的设定词（`data/AiPrompts.kt` 的 `DEFAULT_ASSISTANT_PROMPT`）就是这款 App
+   的使用手册，用户会直接问它"这个功能怎么用 / 语音怎么配"。它一旦滞后，用户得到的就是**错答案**
+   ——比没有助手更糟。所以：
+   - **改了功能入口、加了功能、删了功能，同一个版本里必须同步改手册**；
+   - 手册是在 `DEFAULT_ASSISTANT_PROMPT_V038` 全文上做**定点 `.replace()`**（不复制整份、
+     **绝不改历史锚点常量**）。⚠️ `replace` 的子串对不上时**静默落空**、不报错不崩，
+     而锚点经 `trimIndent()` 后**段首是没有缩进的**——搜索串多写一个空格就整段白改
+     （v0.50.0 真实踩过）；
+   - 因此**每加一条 replace，必须同时在 `app/src/test/java/com/menghuan/app/AiPromptsTest.kt`
+     补一对断言**：新措辞 `contains` + 旧措辞 `assertFalse(contains)`。只写一边守不住静默失效；
+   - 涉及**外部服务配置**的功能（语音合成、生图、LLM 接口），手册必须写清"去哪家官网、拿什么、
+     填到哪一步"，给出可点击的官方地址，不能只说"去设置里看看"。用户问"语音怎么配置"时
+     要能直接引导到 `cloud.siliconflow.cn` 注册拿 Key 的完整步骤。
+6. **不替用户猜外部服务的地址与 Key。** 手册/提示词里出现的服务商网址必须是**查证过的官方地址**，
+   不确定的写"请查看服务商官网"，不要编一个看起来合理的域名。
+   （反例：参考包里的 `cloud.siliconflow.cn/i/owSKCHzC` 是**第三方作者的邀请链接**，带邀请码，
+   绝不能抄进本 App 的文案。）
+
 ## 一、项目是什么
 
 **「梦欢」**：Android 平台的 AI 陪伴应用（v0.36.0 起改名，原「导师」；vibe coding 开发中）。  
@@ -143,10 +162,14 @@
 │       ├── data/AiDetailScreen.kt # AI 洞察 + 周报 全屏详情页（v0.42.0：洞察全文 + 周报全文，最新一期默认展开）
 │       ├── data/DataViewModel.kt # 数据页 VM（含纯函数 buildWeekReview / weekReviewStreak；LedgerStatsScope MONTH/WEEK + periodStats）
 │       ├── ledger/              # 记账本（v0.42.0 建，v0.42.1 加周度统计）：LedgerScreen 全屏页（月/周可切统计卡）+ LedgerComponents 记一笔弹层/流水行 + LedgerInput 语音与解析
-│       ├── profile/MeScreen.kt  # 「我的」页（第 4 tab：人设管理/基础档案/AI 图库/AI 提示词/设置行卡 + 设置链弹层 + 档案编辑弹层 + MeViewModel；v0.45.0 AI 提示词提到一级）
+│       ├── profile/MeScreen.kt  # 「我的」页（第 4 tab：人设管理/基础档案/AI 图库/AI 提示词/设置 五张行卡 + MeViewModel；
+│       │                        #   v0.51.0 起五张卡全部跳全屏页，档案编辑与 AI 图库也在这里定义成 ProfileScreen / GalleryScreen）
 │       ├── tasks/TasksScreen.kt # 任务页（分组卡片/勾选打卡/长按删除 + TasksViewModel）
 │       ├── common/MarkdownText.kt # AI 气泡轻量 Markdown（粗体/行内码/列表/标题/代码栅栏）
-│       ├── settings/SettingsSheet.kt  # 共享设置面板 + ApiConfigSheet + PromptSettingsSheet（AI 提示词，v0.50.0 起八段含「AI 语音条策略」）+ MoreSheets.kt（通知/隐私/关于/**语音**）+ TtsConfigSheet.kt（v0.50.0 三家合成 + 试听 + 音色克隆）+ AsrModelSheet.kt（v0.50.0 识别模型下载/导入/删除）
+│       ├── settings/SettingsScreen.kt  # 设置主页（v0.51.0 起「我的」这条线全部是全屏页 + NavHost 路由，不再是弹层）
+│       ├── settings/SettingsPage.kt    # 设置链全屏页统一骨架（顶栏返回 + 可滚动 + 版心收窄）+ SettingsRoutes 路由名表
+│       ├── settings/SettingsScreens.kt # 外观 / 通知与提醒 / 数据与隐私 / 语音 / 关于 五个设置页
+│       ├── settings/ApiConfigScreen.kt + PromptSettingsScreen.kt（AI 提示词八段）+ TtsConfigScreen.kt + AsrModelScreen.kt
 ```
 
 ## 四、设计系统（Figma 风，2026-09-28 用户拍板）

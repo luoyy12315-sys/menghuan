@@ -29,7 +29,6 @@ import com.menghuan.app.llm.OpenAiClient
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
-import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
@@ -95,7 +94,7 @@ private data class EditorState(
  * 用户既然进了这个面板就已经知道要干什么。
  */
 @Composable
-fun ApiConfigSheet(onDismiss: () -> Unit) {
+fun ApiConfigScreen(onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as MenghuanApp
     val scope = rememberCoroutineScope()
 
@@ -131,7 +130,7 @@ fun ApiConfigSheet(onDismiss: () -> Unit) {
     // 生图接口是否已配置：任一字段非空即视为"已配置"（用户可能只填了部分）
     val imgConfigured = imgBaseUrl.isNotBlank() || imgApiKey.isNotBlank() || imgModel.isNotBlank()
 
-    NeuSheetScaffold(title = "API 配置", onDismiss = onDismiss) {
+    SettingsPage(title = "API 配置", onBack = onBack) {
         Spacer(Modifier.height(14.dp))
 
         // ===== 对话接口 =====

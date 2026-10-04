@@ -1,7 +1,5 @@
 package com.menghuan.app.ui.settings
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -19,7 +18,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,7 +28,6 @@ import androidx.compose.ui.unit.sp
 import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.AsrDownloadPhase
 import com.menghuan.app.data.AsrDownloadSession
-import com.menghuan.app.data.AsrImportResult
 import com.menghuan.app.data.AsrModelFile
 import com.menghuan.app.data.AsrModelManager
 import com.menghuan.app.data.AsrModelRules
@@ -39,7 +36,6 @@ import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSectionTitle
-import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MutedText
@@ -49,10 +45,9 @@ import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
-import kotlinx.coroutines.launch
 
 /**
- * 语音识别模型面板（v0.50.0）：SenseVoice int8 **不随包**，在这里下载或手动导入。
+ * 语音识别模型面板（v0.50.0）：SenseVoice int8 **不随包**，在这里下载。
  *
  * 挂在「设置」里，也会被"点语音键却没模型"的提示直接拉起——所以它必须能独立工作，
  * 不依赖任何聊天/通话上下文。
@@ -61,10 +56,9 @@ import kotlinx.coroutines.launch
  * 重开面板还能看到同一次下载的百分比。
  */
 @Composable
-fun AsrModelSheet(onDismiss: () -> Unit) {
+fun AsrModelScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val app = context.applicationContext as MenghuanApp
-    val scope = rememberCoroutineScope()
 
     val phase by AsrDownloadSession.phase.collectAsState()
     val running = AsrDownloadSession.isRunning
@@ -79,27 +73,8 @@ fun AsrModelSheet(onDismiss: () -> Unit) {
 
     var source by remember { mutableStateOf(AsrModelSource.MODELSCOPE) }
     var notice by remember { mutableStateOf<String?>(null) }
-    var importError by remember { mutableStateOf<String?>(null) }
-    var confirmDelete by remember { mutableStateOf(false) }
-    var importTarget by remember { mutableStateOf<AsrModelFile?>(null) }
-
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        val which = importTarget ?: return@rememberLauncherForActivityResult
-        importTarget = null
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            importError = null
-            notice = null
-            when (val result = AsrModelManager.importFrom(context, uri, which)) {
-                AsrImportResult.Verified -> notice = "${which.fileName} 已导入，校验通过"
-                is AsrImportResult.AcceptedWithWarning -> notice = result.reason
-                is AsrImportResult.Failed -> importError = result.reason
-            }
-            refresh()
-        }
-    }
-
-    NeuSheetScaffold(title = "语音识别模型", onDismiss = onDismiss) {
+        var confirmDelete by remember { mutableStateOf(false) }
+    SettingsPage(title = "语音识别模型", onBack = onBack) {
         Spacer(Modifier.height(14.dp))
 
         NeuSectionTitle(if (ready) "已就绪" else "未就绪")
@@ -144,7 +119,6 @@ fun AsrModelSheet(onDismiss: () -> Unit) {
                 kind = NeuButtonKind.Primary,
                 onClick = {
                     notice = null
-                    importError = null
                     AsrDownloadSession.clearFailure()
                     AsrDownloadSession.start(context, app.applicationScope, source)
                 },
@@ -154,29 +128,16 @@ fun AsrModelSheet(onDismiss: () -> Unit) {
         (phase as? AsrDownloadPhase.Failed)?.let {
             Spacer(Modifier.height(8.dp))
             Text(it.reason, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
-        }
-        importError?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
+            // 两个源都连不上时用户没有别的出路（手动导入已删——普通人不知道该下哪个文件），
+            // 至少把官方仓库主页给出来：长按选中即可复制，去浏览器里自己试
+            Spacer(Modifier.height(6.dp))
+            SelectionContainer {
+                Text(source.webPage, fontSize = 11.sp, lineHeight = 16.sp, color = TextSecondary)
+            }
         }
         notice?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = MutedText)
-        }
-
-        Spacer(Modifier.height(16.dp))
-        NeuSectionTitle("手动导入")
-        Spacer(Modifier.height(8.dp))
-        AsrModelFile.entries.forEach { file ->
-            NeuButton(
-                text = "导入 ${file.fileName}",
-                kind = NeuButtonKind.Secondary,
-                onClick = {
-                    importTarget = file
-                    picker.launch("*/*")
-                },
-            )
-            Spacer(Modifier.height(8.dp))
         }
 
         if (ready || pending < AsrModelFile.entries.sumOf { it.sizeBytes }) {

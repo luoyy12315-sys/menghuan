@@ -133,7 +133,7 @@ class MenghuanApp : Application() {
         }
         // 注意：生图记录的一次性回填**不放在这里**——它曾与启动期的其它协程并发争抢
         // Room 查询线程池，把会话列表流的首值堵死（Robolectric 实测红）。改为图库打开时懒回填
-        // （见 MeScreen.GallerySheet），低频、串行、不占启动路径。
+        // （见 MeScreen.GalleryScreen（v0.51.0 起是全屏页）），低频、串行、不占启动路径。
         // 今日任务小组件随启动刷新一次（任务数据可能被导入等旁路改过）
         com.menghuan.app.widget.TodayWidgetRefresher.refresh(this)
     }

@@ -91,7 +91,20 @@ import com.menghuan.app.ui.common.isExpandedWindow
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.data.DataScreen
 import com.menghuan.app.ui.persona.PersonaManageScreen
+import com.menghuan.app.ui.profile.GalleryScreen
 import com.menghuan.app.ui.profile.MeScreen
+import com.menghuan.app.ui.profile.ProfileScreen
+import com.menghuan.app.ui.settings.AboutScreen
+import com.menghuan.app.ui.settings.ApiConfigScreen
+import com.menghuan.app.ui.settings.AppearanceScreen
+import com.menghuan.app.ui.settings.AsrModelScreen
+import com.menghuan.app.ui.settings.DataPrivacyScreen
+import com.menghuan.app.ui.settings.NotificationSettingsScreen
+import com.menghuan.app.ui.settings.PromptSettingsScreen
+import com.menghuan.app.ui.settings.SettingsRoutes
+import com.menghuan.app.ui.settings.SettingsScreen
+import com.menghuan.app.ui.settings.TtsConfigScreen
+import com.menghuan.app.ui.settings.VoiceScreen
 import com.menghuan.app.ui.realtime.RealtimeCallScreen
 import com.menghuan.app.ui.tasks.TasksScreen
 import com.menghuan.app.ui.theme.AccentInk
@@ -317,6 +330,7 @@ private fun MenghuanAppRoot() {
                         personaId = pId,
                         onBack = { navController.popBackStack() },
                         onOpenCall = { navController.navigate("call/$pId") },
+                        onOpenSettings = { route -> navController.navigate(route) },
                     )
                 }
             }
@@ -339,6 +353,7 @@ private fun MenghuanAppRoot() {
                     RealtimeCallScreen(
                         personaId = callId,
                         onBack = { navController.popBackStack() },
+                        onOpenSettings = { route -> navController.navigate(route) },
                     )
                 }
             }
@@ -388,7 +403,88 @@ private fun MenghuanAppRoot() {
             ) {
                 AiDetailRoute(onBack = { navController.popBackStack() })
             }
+
+            // ===== 设置链全屏页（v0.51.0）=====
+            // 「我的」这条线原来是 13 个 ModalBottomSheet 弹层，最深要叠三层
+            // （设置 → 语音 → 语音合成），弹层叠弹层既盖屏又说不清返回退到哪层；
+            // 而识别模型下载要跑几分钟，用户需要能退出去干别的再回来——那只有整页做得到。
+            // 转场与单聊/人设管理同一套手感。
+            settingsComposables(navController)
         }
+    }
+}
+
+/**
+ * 设置链 12 个全屏页的路由注册（v0.51.0）。
+ *
+ * 单独抽出来是因为这批路由的转场参数完全一样，摊在 NavHost 里会重复 12 遍样板代码。
+ */
+private fun androidx.navigation.NavGraphBuilder.settingsComposables(navController: NavHostController) {
+    val push = androidx.compose.animation.slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it }
+    val pop = androidx.compose.animation.slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it }
+    val scalePop = androidx.compose.animation.scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+    val open: (String) -> Unit = { route -> navController.navigate(route) }
+    val back: () -> Unit = { navController.popBackStack() }
+
+    composable(SettingsRoutes.SETTINGS, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { SettingsScreen(onBack = back, onOpen = open) }
+    }
+    composable(SettingsRoutes.API_CONFIG, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { ApiConfigScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.APPEARANCE, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { AppearanceScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.NOTIFICATIONS, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { NotificationSettingsScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.DATA_PRIVACY, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { DataPrivacyScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.ABOUT, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { AboutScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.VOICE, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { VoiceScreen(onBack = back, onOpen = open) }
+    }
+    composable(SettingsRoutes.TTS_CONFIG, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { TtsConfigScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.ASR_MODEL, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { AsrModelScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.PROMPTS, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { PromptSettingsScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.PROFILE, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { ProfileScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.GALLERY, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { GalleryScreen(onBack = back) }
     }
 }
 
@@ -454,7 +550,10 @@ private fun HomePages(
             }
             2 -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) { TasksScreen() }
             else -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {
-                MeScreen(onManagePersonas = { navController.navigate("personas") })
+                MeScreen(
+                    onManagePersonas = { navController.navigate("personas") },
+                    onOpen = { route -> navController.navigate(route) },
+                )
             }
         }
     }

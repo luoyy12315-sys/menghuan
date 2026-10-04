@@ -1,8 +1,6 @@
 package com.menghuan.app.ui.profile
 
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -60,19 +58,15 @@ import com.menghuan.app.data.model.TaskItem
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuSheetRow
-import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuSurface
-import com.menghuan.app.ui.settings.AboutSheet
-import com.menghuan.app.ui.settings.ApiConfigSheet
-import com.menghuan.app.ui.settings.DataPrivacySheet
-import com.menghuan.app.ui.settings.DataStats
-import com.menghuan.app.ui.settings.NotificationSettingsSheet
-import com.menghuan.app.ui.settings.SettingsSheet
 import com.menghuan.app.ui.chat.ImageViewerOverlay
 import com.menghuan.app.ui.chat.rememberLocalBitmap
+import com.menghuan.app.ui.settings.SettingsPage
+import com.menghuan.app.ui.settings.SettingsRoutes
+import com.menghuan.app.ui.settings.DataStats
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
@@ -347,6 +341,8 @@ class MeViewModel(
 @Composable
 fun MeScreen(
     onManagePersonas: () -> Unit,
+    /** v0.51.0：「我的」这条线全部改成全屏页，行卡点击一律交路由名给 NavHost */
+    onOpen: (String) -> Unit,
     vm: MeViewModel = viewModel(factory = MeViewModel.Factory),
 ) {
     val facts by vm.facts.collectAsState()
@@ -355,36 +351,7 @@ fun MeScreen(
     val weeklyNotifyEnabled by vm.weeklyNotifyEnabled.collectAsState()
     val dataStats by vm.dataStats.collectAsState()
     val importMessage by vm.importMessage.collectAsState()
-    var showProfileEdit by remember { mutableStateOf(false) }
-    var showSettings by remember { mutableStateOf(false) }
-    var showApiConfig by remember { mutableStateOf(false) }
-    var showPromptSettings by remember { mutableStateOf(false) }
-    var showAppearance by remember { mutableStateOf(false) }
-    var showVoice by remember { mutableStateOf(false) }
-    var showTtsConfig by remember { mutableStateOf(false) }
-    var showAsrModel by remember { mutableStateOf(false) }
-    var showNotifications by remember { mutableStateOf(false) }
-    var showDataPrivacy by remember { mutableStateOf(false) }
-    var showAbout by remember { mutableStateOf(false) }
-    var showGallery by remember { mutableStateOf(false) }
-    var galleryViewerPath by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
-    // Android 13+ 打开「周报生成提醒」需先拿通知权限；拒绝则开关落回关
-    val notifPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted -> vm.setWeeklyReportNotifyEnabled(granted) }
-
-    fun onToggleWeeklyNotify(enabled: Boolean) {
-        if (enabled &&
-            android.os.Build.VERSION.SDK_INT >= 33 &&
-            context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) {
-            notifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-        } else {
-            vm.setWeeklyReportNotifyEnabled(enabled)
-        }
-    }
 
     Column(
         Modifier
@@ -415,7 +382,7 @@ fun MeScreen(
                         icon = MIcons.FileText,
                         title = "基础档案",
                         subtitle = "注入聊天的用户画像 · 仅在此维护",
-                        onClick = { showProfileEdit = true },
+                        onClick = { onOpen(SettingsRoutes.PROFILE) },
                     )
                 },
                 {
@@ -423,7 +390,7 @@ fun MeScreen(
                         icon = MIcons.ImageIcon,
                         title = "AI 图库",
                         subtitle = "AI 生成的图片合集 · 点开查看",
-                        onClick = { showGallery = true },
+                        onClick = { onOpen(SettingsRoutes.GALLERY) },
                     )
                 },
                 {
@@ -432,15 +399,15 @@ fun MeScreen(
                         icon = MIcons.ChatBubble,
                         title = "AI 提示词",
                         subtitle = "人设设定词 · 基础提示词 · 档案注入说明",
-                        onClick = { showPromptSettings = true },
+                        onClick = { onOpen(SettingsRoutes.PROMPTS) },
                     )
                 },
                 {
                     NeuSheetRow(
                         icon = MIcons.Sliders,
                         title = "设置",
-                        subtitle = "API · 外观 · 通知 · 数据与隐私 · 关于",
-                        onClick = { showSettings = true },
+                        subtitle = "API · 语音 · 外观 · 通知 · 数据与隐私 · 关于",
+                        onClick = { onOpen(SettingsRoutes.SETTINGS) },
                     )
                 },
             )
@@ -458,131 +425,31 @@ fun MeScreen(
         }
     }
 
-    if (showProfileEdit) {
-        ProfileEditSheet(
-            facts = facts,
-            onSave = { items, removed ->
-                vm.saveEdits(items, removed)
-                showProfileEdit = false
-            },
-            onDismiss = { showProfileEdit = false },
-        )
-    }
-    if (showGallery) {
-        GallerySheet(onDismiss = { showGallery = false })
-    }
-    galleryViewerPath?.let { path ->
-        ImageViewerOverlay(path = path, onDismiss = { galleryViewerPath = null })
-    }
-    if (showSettings) {
-        SettingsSheet(
-            onDismiss = { showSettings = false },
-            onApiConfig = {
-                showSettings = false
-                showApiConfig = true
-            },
-            onAppearance = {
-                showSettings = false
-                showAppearance = true
-            },
-            onVoice = {
-                showSettings = false
-                showVoice = true
-            },
-            onNotifications = {
-                showSettings = false
-                showNotifications = true
-            },
-            onDataPrivacy = {
-                showSettings = false
-                showDataPrivacy = true
-            },
-            onAbout = {
-                showSettings = false
-                showAbout = true
-            },
-        )
-    }
-    if (showApiConfig) {
-        ApiConfigSheet(onDismiss = { showApiConfig = false })
-    }
-    if (showPromptSettings) {
-        com.menghuan.app.ui.settings.PromptSettingsSheet(onDismiss = { showPromptSettings = false })
-    }
-    if (showAppearance) {
-        com.menghuan.app.ui.settings.AppearanceSheet(onDismiss = { showAppearance = false })
-    }
-    if (showVoice) {
-        com.menghuan.app.ui.settings.VoiceSettingsSheet(
-            onDismiss = { showVoice = false },
-            onTtsConfig = {
-                showVoice = false
-                showTtsConfig = true
-            },
-            onAsrModel = {
-                showVoice = false
-                showAsrModel = true
-            },
-        )
-    }
-    if (showTtsConfig) {
-        com.menghuan.app.ui.settings.TtsConfigSheet(onDismiss = { showTtsConfig = false })
-    }
-    if (showAsrModel) {
-        com.menghuan.app.ui.settings.AsrModelSheet(onDismiss = { showAsrModel = false })
-    }
-    if (showNotifications) {
-        NotificationSettingsSheet(
-            enabled = notificationsEnabled,
-            onToggle = { vm.setNotificationsEnabled(it) },
-            dailySummaryEnabled = dailySummaryEnabled,
-            onToggleDailySummary = { enabled ->
-                vm.setDailySummaryEnabled(enabled)
-                if (enabled) {
-                    com.menghuan.app.notify.AlarmScheduler.scheduleDailySummary(context)
-                } else {
-                    com.menghuan.app.notify.AlarmScheduler.cancelDailySummary(context)
-                }
-            },
-            weeklyNotifyEnabled = weeklyNotifyEnabled,
-            onToggleWeeklyNotify = { onToggleWeeklyNotify(it) },
-            onDismiss = { showNotifications = false },
-        )
-    }
-    if (showDataPrivacy) {
-        DataPrivacySheet(
-            stats = dataStats,
-            onClearData = { vm.clearAllData(context) },
-            onExport = { vm.exportData(context) },
-            onImport = { uri -> vm.importData(context, uri) },
-            importMessage = importMessage,
-            onResetAll = {
-                showDataPrivacy = false
-                vm.resetAll(context)
-            },
-            onDismiss = { showDataPrivacy = false },
-        )
-    }
-    if (showAbout) {
-        AboutSheet(onDismiss = { showAbout = false })
-    }
 }
 
-/** 档案编辑弹层（自数据页迁入）：每行 key/value 可改，可增删，保存后写入 Room 并注入聊天 prompt */
+/**
+ * 我的 · 基础档案（v0.51.0 起全屏页）：每行 key/value 可改、可增删，
+ * 保存后写入 Room 并注入聊天 system prompt。
+ */
 @Composable
-private fun ProfileEditSheet(
-    facts: List<ProfileFact>,
-    onSave: (items: List<DraftFact>, removedIds: List<Long>) -> Unit,
-    onDismiss: () -> Unit,
+fun ProfileScreen(
+    onBack: () -> Unit,
+    vm: MeViewModel = viewModel(factory = MeViewModel.Factory),
 ) {
-    val drafts = remember {
-        mutableStateListOf<DraftFact>().apply {
-            facts.forEach { add(DraftFact(it.id, it.key, it.value)) }
+    val facts by vm.facts.collectAsState()
+    val drafts = remember { mutableStateListOf<DraftFact>() }
+    val removedIds = remember { mutableStateListOf<Long>() }
+    // 档案是 Flow，首帧还是空表；只在**第一次拿到真实数据**时播种一次，
+    // 之后绝不再覆盖——否则用户正在编辑的内容会被 Flow 的下一帧冲掉。
+    var seeded by remember { mutableStateOf(false) }
+    LaunchedEffect(facts) {
+        if (!seeded && facts.isNotEmpty()) {
+            facts.forEach { drafts.add(DraftFact(it.id, it.key, it.value)) }
+            seeded = true
         }
     }
-    val removedIds = remember { mutableStateListOf<Long>() }
 
-    NeuSheetScaffold(title = "编辑档案", onDismiss = onDismiss) {
+    SettingsPage(title = "基础档案", onBack = onBack) {
         Spacer(Modifier.height(14.dp))
         drafts.forEachIndexed { index, draft ->
             Row(
@@ -629,13 +496,16 @@ private fun ProfileEditSheet(
         Row(Modifier.fillMaxWidth()) {
             NeuButton(
                 text = "取消",
-                onClick = onDismiss,
+                onClick = onBack,
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(10.dp))
             NeuButton(
                 text = "保存",
-                onClick = { onSave(drafts.toList(), removedIds.toList()) },
+                onClick = {
+                    vm.saveEdits(drafts.toList(), removedIds.toList())
+                    onBack()
+                },
                 kind = NeuButtonKind.Primary,
                 modifier = Modifier.weight(1f),
             )
@@ -650,7 +520,7 @@ private fun ProfileEditSheet(
  * 数据源 = image_generations 表（成功/失败都留痕）；成功但文件已不在磁盘的标「已丢失」。
  */
 @Composable
-private fun GallerySheet(onDismiss: () -> Unit) {
+fun GalleryScreen(onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as MenghuanApp
     var records by remember { mutableStateOf<List<com.menghuan.app.data.model.ImageGenerationRecord>>(emptyList()) }
     var viewerPath by remember { mutableStateOf<String?>(null) }
@@ -685,7 +555,7 @@ private fun GallerySheet(onDismiss: () -> Unit) {
             dao.getAll()
         }.getOrDefault(emptyList())
     }
-    NeuSheetScaffold(title = "AI 图库", onDismiss = onDismiss) {
+    SettingsPage(title = "AI 图库", onBack = onBack) {
         if (records.isEmpty()) {
             Text(
                 "还没有生成记录",
