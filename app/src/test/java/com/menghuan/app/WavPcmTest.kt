@@ -77,12 +77,75 @@ class WavPcmTest {
     }
 
     @Test
-    fun `立体声取首声道`() {
-        // 左声道恒 0.5，右声道恒 -0.5：取首声道应全为 ~0.5
+    fun `立体声下混成单声道`() {
+        // v0.53.0 起多声道取均值（通话要的是单声道，取首声道会丢一半能量）
         val out = WavPcm.parse(wav(16_000, 2, sampleValue = { 16384 }), 16_000)
         assertNotNull(out)
         assertEquals(1600, out!!.size)
-        assertTrue("应取到左声道的 0.5", out.all { it > 0.49f })
+        assertTrue("两声道同相，均值仍应是 ~0.5", out.all { it > 0.49f })
+    }
+
+    /**
+     * v0.53.1 真机闪退的回归：流式导出的 WAV 会把 `data` 长度写成 0xFFFFFFFF（按 Int 读是 -1），
+     * 而 chunk 遍历当时用**原始 size** 推进游标 → 游标倒退、几轮后变负 →
+     * 拿负数去读 4 字节 chunk 名，抛 StringIndexOutOfBoundsException
+     * （length=69294; regionStart=-82; regionLength=4）→ 冒到通话协程 = 整个 App 没了。
+     */
+    @Test
+    fun `流式WAV的data长度为负也不许抛异常`() {
+        val bytes = wav(24_000, 1)
+        // 把 data 块的 size 改成 -1（0xFFFFFFFF）
+        val idx = String(bytes, 0, bytes.size, Charsets.ISO_8859_1).indexOf("data")
+        assertTrue(idx > 0)
+        val broken = bytes.copyOf()
+        writeLe32(broken, idx + 4, -1)
+        val out = WavPcm.parse(broken, 24_000)
+        assertNotNull("data 长度写错时应按「到文件尾」处理", out)
+        assertEquals(2400, out!!.size)
+    }
+
+    /** 中间块 size 是垃圾（负数/超大）时：安静地返回 null，绝不抛 */
+    @Test
+    fun `垃圾块长度返回null而不是抛异常`() {
+        val bytes = wav(16_000, 1)
+        val evil = bytes.copyOf()
+        writeLe32(evil, 16, -1_000_000)   // 第一个块（fmt）的 size 写成大负数
+        assertNull(WavPcm.parse(evil, 16_000))
+    }
+
+    /** 硅基回的 WAV 是 IEEE float32：v0.52.0 只认 PCM16，于是通话报"服务商回的 WAV 解不开" */
+    @Test
+    fun `float32的WAV能解`() {
+        val frames = 480
+        val out = java.io.ByteArrayOutputStream()
+        fun ascii(s: String) = out.write(s.toByteArray(Charsets.US_ASCII))
+        fun le32(v: Int) {
+            out.write(v and 0xFF); out.write((v shr 8) and 0xFF)
+            out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF)
+        }
+        fun le16(v: Int) { out.write(v and 0xFF); out.write((v shr 8) and 0xFF) }
+        val pcmSize = frames * 4
+        ascii("RIFF"); le32(36 + pcmSize); ascii("WAVE")
+        ascii("fmt "); le32(16)
+        le16(3)          // WAVE_FORMAT_IEEE_FLOAT
+        le16(1); le32(24_000); le32(24_000 * 4); le16(4); le16(32)
+        ascii("data"); le32(pcmSize)
+        for (f in 0 until frames) {
+            val v = (sin(2 * PI * 440 * f / 24_000.0) * 0.5).toFloat()
+            le32(java.lang.Float.floatToIntBits(v))
+        }
+        val parsed = WavPcm.parse(out.toByteArray(), 24_000)
+        assertNotNull("float32 必须能解（否则通话没声）", parsed)
+        assertEquals(frames, parsed!!.size)
+        assertTrue(parsed.all { it in -1.01f..1.01f })
+        assertTrue("幅度不该是静音", parsed.any { kotlin.math.abs(it) > 0.2f })
+    }
+
+    private fun writeLe32(target: ByteArray, offset: Int, value: Int) {
+        target[offset] = (value and 0xFF).toByte()
+        target[offset + 1] = ((value shr 8) and 0xFF).toByte()
+        target[offset + 2] = ((value shr 16) and 0xFF).toByte()
+        target[offset + 3] = ((value shr 24) and 0xFF).toByte()
     }
 
     @Test

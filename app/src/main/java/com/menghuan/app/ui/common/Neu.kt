@@ -510,7 +510,13 @@ fun NeuSheetRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     selected: Boolean = false,
+    /**
+     * selected 时是否画那颗 ✓。API 配置页的副标题已经写了「默认 · 」，
+     * 选中态还有虚线框，勾是多余的（v0.53.4 用户点名去掉）。
+     */
+    showCheck: Boolean = true,
     onLongClick: (() -> Unit)? = null,
+    onChevronClick: (() -> Unit)? = null,
 ) {
     val press = rememberNeuPressState(raised = 4.dp)
     Row(
@@ -554,9 +560,32 @@ fun NeuSheetRow(
                 Text(subtitle, fontSize = 12.sp, color = MutedText, maxLines = 1)
             }
         }
-        if (selected) {
+        if (selected && showCheck) {
             Text("✓", fontSize = 15.sp, color = NeuAccent, fontWeight = FontWeight.Bold)
-        } else {
+        }
+        // 给了 onChevronClick 就恒定画一颗**更大更深**的箭头：
+        // 点箭头 = 看/改这条的详情，点卡片其余地方 = 主操作（v0.53.0 用户点名"沿用箭头形状，
+        // 改大点颜色改深点明显一点"）。原来箭头是 14dp 的 FaintText，几乎看不见，也没法点。
+        if (onChevronClick != null) {
+            Spacer(Modifier.width(6.dp))
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onChevronClick,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    com.menghuan.app.ui.theme.MIcons.ChevronRight,
+                    contentDescription = "详情",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+        } else if (!selected) {
             Icon(
                 com.menghuan.app.ui.theme.MIcons.ChevronRight,
                 contentDescription = null,

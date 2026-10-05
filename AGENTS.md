@@ -42,24 +42,61 @@
        两级实测永远走不通，连同 `OpenAiClient.transcribe` 一起删除，**不要复活**。
      - **语音消息与通话共用同一个识别器实例**（`CallAsr.kt` 已删，通话改调
        `SherpaAsr.transcribeSamples`）：228MB 权重建两个 session ≈ 500MB，中低端机直接 OOM。
-     - **识别模型不随包**：`data/AsrModelManager.kt`（Range 断点续传 + 逐文件 sha256 + SAF 导入）
-       + `ui/settings/AsrModelSheet.kt`；模型落 `filesDir/asr_sensevoice/`，
-       源顺序 **ModelScope → hf-mirror → 手动导入**（实测 GitHub Releases 不可达、hf-mirror 证书异常）。
+     - **识别模型不随包**：`data/AsrModelManager.kt`（Range 断点续传 + 逐文件 sha256 + 删除）
+       + `ui/settings/AsrModelScreen.kt`；模型落 `filesDir/asr_sensevoice/`，
+       源顺序 **ModelScope → hf-mirror**（v0.51.0 去掉"手动导入"：普通人不知道该下哪个文件。
+       实测 GitHub Releases 不可达、hf-mirror 证书异常）。
        就绪判定 = `.verified` 标记 + 两文件字节数全等，**不是每次重算 228MB 哈希**（点语音键就要调）。
        `assets/asr/` 只剩 `silero_vad.onnx`（1.8MB 继续内置）。
      - 合成：`data/TtsClient.kt` 三家可切（硅基流动 CosyVoice2 / 小米 MiMo / 自定义 OpenAI 兼容），
        **三家协议不统一、逐家一个实现**（MiMo 走 `/chat/completions` 且目标文本必须放 `assistant`；
        硅基预置音色要拼 `<model>:<alias>`、回裸二进制；自定义端点只发四个最小字段）。
-       `data/TtsConfig.kt`（`VoiceRef` 编解码 / 容器嗅探 / 上限换算，纯函数）、
-       `data/VoiceCloner.kt`（硅基 App 内克隆：裁 15 秒 → **端侧 ASR 自动出逐字稿** → multipart 上传换 uri）、
-       `ui/settings/TtsConfigSheet.kt`。
-     - 通话播放新增 `realtime/TtsAudioDecoder.kt`：按容器嗅探分流解码 + **下混单声道 + 重采样到 OUT_RATE**。
+       `synthesize(text, voice, target)` 的 **`target` 决定要什么格式**（v0.52.0）：
+       `TtsTarget.CALL` = **WAV + `sample_rate=24000`**（正好等于播放轨道采样率，通话链路
+       **根本不解 MP3**），`TtsTarget.NOTE` = MP3（语音条落盘给 MediaPlayer 播）；
+       MiMo 两个目标都要 wav（它那个 mp3 枚举没人用过，不赌）。24000 的唯一来源是
+       `data/TtsConfig.kt` 的顶层常量 `TTS_CALL_SAMPLE_RATE`，`CallAudioManager.OUT_RATE` 引用它——
+       两边写成两个数就会每句白做一次重采样（变速变调）。
+     - **每家一套独立配置（v0.52.0）**：DataStore 键按 provider 分桶 `tts_<家>_api_key_enc/plain`、
+       `_base_url`、`_model`、`_default_voice`、`_manual_voice_id`，`tts_provider` 只记"当前生效哪家"。
+       老单桶键虚拟归属到**当时生效的那一家**（`ttsConfigOf(provider)` 读），写桶时
+       `migrateLegacyTtsLocked` 先搬再清老键——**保存别家时把老键直接清掉会抹掉硅基填好的 Key**
+       （这条是 `TtsProviderConfigTest` 抓的）。只有配齐的家才能成为"当前生效"。
+     - **音色**：预置音色每家只留**一男一女**（硅基 `alex`/`anna`，小米 `白桦`/`冰糖`，
+       自定义无预置）。名单与标签都在 `TtsConfig.kt` 的 `TtsVoices.library()` / `labelOf()`（纯函数），
+       「设置 → 语音 → 音色」板块和「编辑人设」的候选**共用同一个函数**，两边不会各说各话。
+       板块 = 预置 + 我克隆的 + 手填 ID，右上角「克隆音色」，点一行 = 设为默认，行尾「试听」；
+       人设页只挑、不试听不添加。音色三级回落集中在 `SettingsRepository.voiceForConversation()`
+       （人设专属 → 板块默认 → 该家第一个预置），聊天与通话都走它。
+     - `data/VoiceCloner.kt`（硅基 App 内克隆：裁样本 → **端侧 ASR 自动出逐字稿** → multipart 上传换 uri）。
+       **样本格式不再限死 mp3/wav**：v0.52.0 起统一用 `realtime/MediaAudioDecoder.kt`
+       （`MediaExtractor` 自己读真实采样率/声道），mp3 / wav / m4a / **mp4** 都收——
+       用户上传 mp4 时直接抽里面的音轨，不需要写 MP3 编码器。
+       ⚠️ **v0.53.3 两条不许回退**：① 重采样必须走 `WavPcm.resample`（降采样前做低通），
+       不能用裸 `resampleLinear`——48k→24k 隔点取样的混叠会烘进参考音频，
+       克隆出来发抖变调（预置音色正常、只有克隆怪，就是这个）；
+       ② 样本必须 `trimToSpeech`（跳前导静音 + 在能量谷下刀，上限 10 秒）——
+       CosyVoice2 是零样本克隆，切在半句话上参考与逐字稿就对不上。
+       样本还必须是**干净单人声**：带背景音乐代码救不了，弹层里已写明。
+     - 通话播放 `realtime/TtsAudioDecoder.kt`：按容器嗅探分流 + **下混单声道 + 重采样到 OUT_RATE**。
        以前 Edge TTS 恒定 24kHz 单声道 MP3 刚好等于 `OUT_RATE` 所以没这层；换三家后不归一化会变速变调。
+       MP3 分支落临时文件交给 `MediaAudioDecoder`（网关不守 `response_format` 时的兜底）。
+     - **`data/WavPcm.kt` 位深不挑（v0.53.0）**：PCM 8/16/24/32 与 IEEE float 32/64 都解，
+       `WAVE_FORMAT_EXTENSIBLE` 从 SubFormat GUID 取真编码，流式 WAV 的 `data` 长度写成 0 / 0xFFFFFFFF
+       时按"到文件尾"处理。v0.52.0 只认 PCM16，硅基回的 float32 WAV 被判"解不开" →
+       通话整场没声（真机反馈"服务商回的 WAV 解不开"）。**别再把它收窄回去。**
+     - **克隆音色的名字**：服务端 `customName` 只收字母/数字/`_`/`-`（HTTP 400 原文），
+       所以上传发 `VoiceCloner.asciiVoiceName(中文名)`，用户起的中文名存本机
+       （`SettingsRepository.cloneVoiceNames()` 那张 `uri → 名字` 表）只用于显示。
+       直接把中文当 customName 发出去 = 100% 400（v0.52.0 真机踩过）。
      - AI 语音条：`data/VoiceNoteMarker.kt` 解析 `【语音条】` 标记，合成成功后把刚落库那条
        **原地升级**成语音条（不另插一条，否则文字与语音说同一件事）；`VoiceBubble(isUser=…)`
-       AI 侧走面色细线、用户侧保持黑底药丸。
+       AI 侧走面色细线、用户侧保持黑底药丸。播完一定复位不再只靠 `MediaPlayer.onCompletion`
+       （MP3 尾部 padding 时那个回调可能整场不来）——`ChatScreen` 有按 position/duration 的看门狗。
      - **已删除、不要复活**：Edge TTS（`EdgeTtsClient.kt`）、AI 回复朗读（`ReadAloudPlayer.kt` +
-       单聊右上角喇叭 + `chat_read_aloud` 键）——用户明确作废朗读功能。
+       单聊右上角喇叭 + `chat_read_aloud` 键）、**`realtime/Mp3Decoder.kt`**（v0.52.0）——
+       它把**输入** `MediaFormat` 硬写成 `24000Hz/单声道`，真实流不符就吐 0 帧，
+       同时是"通话：声音合成失败/音频解码失败"与"克隆：文件格式不对"两条真机反馈的同一个根因。
      - 构建配置三处硬约束：`noCompress` **只剩 `onnx`**（`txt` 随内置 tokens 一起移除）、
        `ndk.abiFilters` **只剩 `arm64-v8a`**（去 v7a 省 22MB，用户已确认放弃 32 位老机）、
        `proguard-rules.pro` 的 `-keep class com.k2fsa.sherpa.onnx.**` **保持不变**（JNI 字段被混淆会崩）。
@@ -72,12 +109,20 @@
    的使用手册，用户会直接问它"这个功能怎么用 / 语音怎么配"。它一旦滞后，用户得到的就是**错答案**
    ——比没有助手更糟。所以：
    - **改了功能入口、加了功能、删了功能，同一个版本里必须同步改手册**；
-   - 手册是在 `DEFAULT_ASSISTANT_PROMPT_V038` 全文上做**定点 `.replace()`**（不复制整份、
-     **绝不改历史锚点常量**）。⚠️ `replace` 的子串对不上时**静默落空**、不报错不崩，
-     而锚点经 `trimIndent()` 后**段首是没有缩进的**——搜索串多写一个空格就整段白改
+   - 手册是在 `DEFAULT_ASSISTANT_PROMPT_V038`（**底稿，不要再改它的措辞**）全文上做**定点 `.replace()`**，
+     不把整份文案复制第二遍。⚠️ `replace` 的子串对不上时**静默落空**、不报错不崩，
+     而底稿经 `trimIndent()` 后**段首是没有缩进的**——搜索串多写一个空格就整段白改
      （v0.50.0 真实踩过）；
    - 因此**每加一条 replace，必须同时在 `app/src/test/java/com/menghuan/app/AiPromptsTest.kt`
      补一对断言**：新措辞 `contains` + 旧措辞 `assertFalse(contains)`。只写一边守不住静默失效；
+   - **启动升级机制（v0.51.1 重写，别再改回去）：改手册不需要登记任何"历史版本全文"。**
+     只要用户没亲手改过助手的设定词，启动时一律刷成最新 `DEFAULT_ASSISTANT_PROMPT`
+     （`PersonaRepository.refreshAssistantPromptIfNeeded` + DataStore 三态标记
+     `assistant_prompt_customized`；用户在提示词页/人设编辑里存过自定义内容 = 改过 = 从此不覆盖，
+     点「全部恢复默认」则重新纳管）。旧做法是"库里这段是否**精确等于**某个历史默认文案"，
+     而每版都是在原地追加 replace、中间态从未登记，于是 v0.41~v0.50 之间升过级的用户再也匹配不上，
+     手册永久卡死——v0.50.0 写了整章语音配置教程，真机上助手依然答不上"语音怎么配"，
+     就是这个机制漏的（回归测试：`AssistantManualUpgradeTest`）。
    - 涉及**外部服务配置**的功能（语音合成、生图、LLM 接口），手册必须写清"去哪家官网、拿什么、
      填到哪一步"，给出可点击的官方地址，不能只说"去设置里看看"。用户问"语音怎么配置"时
      要能直接引导到 `cloud.siliconflow.cn` 注册拿 Key 的完整步骤。
@@ -233,6 +278,14 @@
   「配置 AI 接口后即可生成」这类前置说明一律不留；**数据标签保留**（现金余额、收入/支出/结余、日期）。
 - **数据页不挂手动生成/提炼动作**（v0.42.2）：区块头右侧不留任何动作文字，  
   今日建议的生成走点击弹窗，洞察/周报由水位线与定时任务自动产出。
+- **API 配置是「卡片 + 点箭头看详情」，不是折叠段（v0.53.0 用户两次纠正，别再改回去）**：
+  对话接口 / 生图接口 / 语音合成三家一律——每条配置是一张 `NeuSheetRow` 卡片，
+  **点卡片本体 = 切换当前生效**，**点卡片右侧那颗箭头 = 用 `SettingsCardDialog` 从屏幕中间弹出这条的详细信息**
+  （改字段、测试连接、保存、删除都在弹窗里）。卡片下面**不放**「编辑」「删除」文字按钮（容易误触）。
+  语音合成页只列**已配好的模型卡片**（标题=模型名），底部一个「＋ 添加接入」→ 选服务商 → 同一个弹窗填。
+  ⚠️ v0.52.0 曾把"对话接口/生图接口"两段做成折叠手风琴，用户明确说"不是这个样子的展开折叠"——
+  手风琴 `SettingsSectionRow` 现在只留给「AI 提示词」那种名单页。
+  箭头要**够大够明显**（40dp 命中区 + 21dp 图标 + `TextSecondary` 色），`NeuSheetRow(onChevronClick=…)` 已内置。
 - **输入区按钮一律走缩放反馈、不用 Material ripple**（v0.45.0）：输入栏图标键用
   `ChatScreen.NeuFlatIconButton`、面板格子用 `tapNoRipple` / `rememberNeuPressState`。
   默认 ripple 是无界水波、淡出 300ms+，用户反馈"灰色阴影太久太大"；全应用语言是"无涟漪 + 轻微缩放"。
@@ -349,6 +402,12 @@
 
 本机已具备完整工具链，**不要下载 Android Studio，也不要用 `./gradlew`**（项目无 wrapper，gradlew 会联网拉 190MB 发行包）。
 
+⚠️ **编译 / 测试 / 打包一律由用户发话才做（2026-10-05 用户拍板，最高优先级）**：
+AI 改完代码**只交付源码**——**不主动跑单元测试、不主动跑截图测试、不主动编译、不主动出包**；
+只有用户明确说"编译 / 测试 / 打包 / 出包"时才执行对应动作。
+（用户原话："不用 AI 去跑测试了；打包让用户决定什么时候打包。"）
+下面这些命令与流程**保留为"用户叫了就照它做"的操作手册**，不是"每轮必做"的清单。
+
 | 组件 | 路径 |
 |---|---|
 | JDK 17 | `C:/Users/16621/.workbuddy//toolchains//jdk17` |
@@ -391,11 +450,12 @@ SDK="C:/Users/16621/.workbuddy/toolchains/android-sdk"
 **版本节奏规定（2026-10-01 用户拍板，最高优先级，勿违反）**：**用户说一次需求 = 一次版本更新。**
 - 收到一批需求（哪怕含十几条子项、横跨 UI/数据/AI 多层）就在**同一个 versionName** 内一次做完，
   **严禁按子功能拆成 v0.35.0 / v0.36.0 / v0.37.0 一串版本**（那是 2026-09-29~30 期间 AI 自主迭代的毛病，用户已明确纠正）。
-- 一批需求 = 一次 minor+1（功能项占多数）或 patch+1（纯修复），中间**不 bump version、不出包**；
-  全部子项做完、测试与截图自检通过后才出一个包。
+- 一批需求 = 一次 minor+1（功能项占多数）或 patch+1（纯修复），中间**不 bump version、不出包**。
+- **改完 = 交付，就地停手**：代码改完**不主动跑测试、不主动编译、不主动出包**；
+  **打包时机完全由用户决定**（他说打包才打包）。
 - 版本号只在用户新需求到来时才 +1；不要为了"显得有进展"主动升版。
 
-**JVM 截图测试（无真机时"亲眼"验证 UI，2026-09-28 新增）**：`app/src/test/java/com/menghuan/app/UiRenderTest.kt` 启动真实 MainActivity、按用户路径点击导航各页，Roborazzi 用真机同款 Skia 管线出 PNG。用法：
+**JVM 截图测试（无真机时"亲眼"验证 UI，2026-09-28 新增；⚠️ 2026-10-05 起 AI **不主动跑**，仅用户点名时执行）**：`app/src/test/java/com/menghuan/app/UiRenderTest.kt` 启动真实 MainActivity、按用户路径点击导航各页，Roborazzi 用真机同款 Skia 管线出 PNG。用法（用户要求时）：
 
 ```bash
 # 中文路径坑之五：Gradle 测试 worker 经 java @argfile 传 classpath，JDK17 启动器按系统 GBK

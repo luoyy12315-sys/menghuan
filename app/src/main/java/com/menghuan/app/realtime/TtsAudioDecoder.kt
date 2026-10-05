@@ -3,6 +3,7 @@ package com.menghuan.app.realtime
 import com.menghuan.app.data.TtsAudio
 import com.menghuan.app.data.TtsAudioFormat
 import com.menghuan.app.data.WavPcm
+import java.io.File
 
 /**
  * TTS 产物 → AudioTrack 能直接吃的 PCM（v0.50.0）。
@@ -15,18 +16,27 @@ import com.menghuan.app.data.WavPcm
  * **不重采样/不下混就会变速变调**（44.1kHz 的音频按 24kHz 播 = 慢近一倍、音调低下去）。
  *
  * 所以统一在这里归一化：解容器 → 下混单声道 → 线性重采样到 [outRate]。
+ *
+ * ## v0.52.0：通话已经直接要 WAV
+ * 老的 `Mp3Decoder` 把输入 `MediaFormat` 硬写成 24kHz/单声道，真实流是 44.1kHz 立体声时
+ * 解出 0 帧 → 通话报"声音合成失败：音频解码失败"（真机反馈）。两条改进：
+ * ① 请求侧对通话改要 `response_format=wav` + `sample_rate=outRate`，**根本不解 MP3**；
+ * ② 万一网关不给力仍回 MP3，这里落到临时文件用 [MediaAudioDecoder]（MediaExtractor 自己
+ * 读真实采样率/声道）兜底。
  */
 object TtsAudioDecoder {
 
     /** @return 单声道 PCM16 采样；解不出来（格式不认 / 数据损坏）返回 null，该句降级为纯字幕 */
-    fun decode(audio: TtsAudio, outRate: Int): ShortArray? {
+    fun decode(audio: TtsAudio, outRate: Int, cacheDir: File? = null): ShortArray? {
         val raw = when (audio.format) {
-            // MP3：系统 MediaCodec 解码（与旧 Edge TTS 同一条路，已验证）
-            TtsAudioFormat.MP3 ->
-                Mp3Decoder.decode(audio.bytes)?.let { RawPcm(it.samples, it.sampleRate, it.channels) }
             // WAV：不用解码器，直接解 RIFF 头 + 重采样（复用录音链路那套已单测过的解析）
             TtsAudioFormat.WAV ->
                 WavPcm.parse(audio.bytes, outRate)?.let { RawPcm(toShort(it), outRate, 1) }
+            // MP3：MediaExtractor 自己读真实采样率/声道；没有 cache 目录就解不了，判失败
+            TtsAudioFormat.MP3 -> cacheDir?.let { dir ->
+                MediaAudioDecoder.decodeBytes(audio.bytes, dir, "tts_decode")
+                    ?.let { RawPcm(it.samples, it.sampleRate, 1) }
+            }
         } ?: return null
         return normalize(raw, outRate)
     }
@@ -39,7 +49,9 @@ object TtsAudioDecoder {
         if (raw.sampleRate == outRate) return mono
 
         val floats = FloatArray(mono.size) { mono[it] / 32768f }
-        val resampled = WavPcm.resampleLinear(floats, raw.sampleRate, outRate)
+        // 带低通：网关不守我们请求的 sample_rate 时（比如回 48kHz），
+        // 裸线性插值抽到 24k 会把高频折成毛刺，听感就是"声音发抖"
+        val resampled = WavPcm.resample(floats, raw.sampleRate, outRate)
         return toShort(resampled)
     }
 

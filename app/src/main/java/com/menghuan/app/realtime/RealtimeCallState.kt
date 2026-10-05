@@ -48,6 +48,12 @@ data class RealtimeCallConfig(
     val systemPrompt: String,
     /** 音色（v0.50.0 起是 [VoiceRef]：哪家 provider + 该家认的音色串；通话与 AI 语音条共用） */
     val voice: com.menghuan.app.data.VoiceRef,
+    /**
+     * v0.53.7：这通电话**是不是 AI 主动打来的**。
+     * 它决定两件事：① 通话记录卡落在 AI 那一侧还是我这一侧；
+     * ② 接通后是 AI 先开口（是它打的）还是等用户先说（我打给它的）。
+     */
+    val initiatedByAi: Boolean = false,
 )
 
 /** 通话期间内存暂存的一轮对话（挂断时一次性写 Room，partial 绝不入库） */

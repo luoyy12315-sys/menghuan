@@ -32,6 +32,40 @@ enum class TtsProvider(val label: String, val defaultBaseUrl: String, val defaul
 data class PresetVoice(val id: String, val label: String)
 
 /**
+ * 通话播放轨道的采样率（唯一来源：[TtsTarget.CALL] 用它，`CallAudioManager.OUT_RATE` 也引用它）。
+ * 两边必须是同一个数，否则每句话都要多做一次重采样——变速变调的老坑。
+ * 顶层常量而不是枚举里的：枚举项初始化时自己的 companion object 还没就绪，引用不到。
+ */
+const val TTS_CALL_SAMPLE_RATE = 24_000
+
+/**
+ * 合成目标（v0.52.0）：同样是"把这句念出来"，但**要什么响应格式**差别很大。
+ *
+ * | 目标 | 格式 | 为什么 |
+ * |---|---|---|
+ * | [NOTE] | MP3 | 语音条落盘给 `MediaPlayer` 播，系统自己协商格式，MP3 体积小 8 倍 |
+ * | [CALL] | WAV @ [CALL_SAMPLE_RATE] | 通话要**逐句立刻**喂 AudioTrack。以前要 MP3，得自己解一遍；
+ *   而旧 MP3 解码器把输入格式硬写成 24kHz/单声道，硅基真实回的是 44.1kHz → 0 帧 →
+ *   真机"声音合成失败：音频解码失败"。直接要 WAV 后**通话链路根本不解 MP3** |
+ *
+ * ⚠️ [CALL] 的采样率取自 [TTS_CALL_SAMPLE_RATE]，必须等于 `CallAudioManager.OUT_RATE`
+ * （那个常量正是从这里取的），两边不一致就会在每句话上多做一次重采样——变速变调的老坑。
+ */
+enum class TtsTarget(val format: TtsAudioFormat, val sampleRate: Int?) {
+    NOTE(TtsAudioFormat.MP3, null),
+    CALL(TtsAudioFormat.WAV, TTS_CALL_SAMPLE_RATE),
+    ;
+
+    /**
+     * 该家实际请求的格式。MiMo **永远要 WAV**：官方示例全是 wav/pcm16，
+     * 它 enum 里那个 mp3 没有任何成熟实现用过（`docs/RESEARCH-v0.50.0-TTS协议查证.md` §2），
+     * 不拿真机去赌。
+     */
+    fun formatFor(provider: TtsProvider): TtsAudioFormat =
+        if (provider == TtsProvider.XIAOMI_MIMO) TtsAudioFormat.WAV else format
+}
+
+/**
  * 一次合成的产物。
  *
  * [format] 必须带着走：MiMo 默认回 **WAV**，硅基/通用回 **MP3**，
@@ -121,29 +155,21 @@ object TtsVoices {
     /** MiMo 克隆样本的本地引用前缀，见 [VoiceRef] 第 3 种取值 */
     const val MIMO_LOCAL_PREFIX = "local:"
 
-    /** 硅基 CosyVoice2-0.5B 系统预置音色（官方逐字，共 8 个；alias 就是英文小写，没有中文别名） */
+    /**
+     * 预置音色**每家只留两个，一男一女**（2026-10-05 用户拍板："其他都不要"）。
+     * 官方那 8 / 9 个的长列表在设置页里纯属噪音——想听别的声音走「克隆音色」。
+     * ID 是官方逐字值（`docs/RESEARCH-v0.50.0-TTS协议查证.md` §音色）；
+     * ⚠️ 别家的人设存过某个现在删掉的预置 ID 时，[voiceLabel] 会显示 ID 本身，不会崩。
+     */
     val SILICONFLOW_PRESETS: List<PresetVoice> = listOf(
-        PresetVoice("anna", "Anna · 沉稳女声"),
-        PresetVoice("bella", "Bella · 激情女声"),
-        PresetVoice("claire", "Claire · 温柔女声"),
-        PresetVoice("diana", "Diana · 欢快女声"),
-        PresetVoice("alex", "Alex · 沉稳男声"),
-        PresetVoice("benjamin", "Benjamin · 低沉男声"),
-        PresetVoice("charles", "Charles · 磁性男声"),
-        PresetVoice("david", "David · 欢快男声"),
+        PresetVoice("alex", "Alex · 男声"),
+        PresetVoice("anna", "Anna · 女声"),
     )
 
-    /** MiMo 预置音色（官方逐字，共 9 个）。⚠️ 中文音色的 ID **就是中文字符串本身**，不是拼音 */
+    /** MiMo 的中文音色 ID **就是中文字符串本身**，不是拼音 */
     val MIMO_PRESETS: List<PresetVoice> = listOf(
-        PresetVoice("mimo_default", "MiMo 默认"),
-        PresetVoice("冰糖", "冰糖 · 中文女声"),
-        PresetVoice("茉莉", "茉莉 · 中文女声"),
-        PresetVoice("苏打", "苏打 · 中文男声"),
-        PresetVoice("白桦", "白桦 · 中文男声"),
-        PresetVoice("Mia", "Mia · 英文女声"),
-        PresetVoice("Chloe", "Chloe · 英文女声"),
-        PresetVoice("Milo", "Milo · 英文男声"),
-        PresetVoice("Dean", "Dean · 英文男声"),
+        PresetVoice("白桦", "白桦 · 男声"),
+        PresetVoice("冰糖", "冰糖 · 女声"),
     )
 
     fun presets(provider: TtsProvider): List<PresetVoice> = when (provider) {
@@ -206,4 +232,81 @@ object TtsVoices {
 
     fun localSamplePath(voiceId: String): String? =
         voiceId.takeIf { it.startsWith(MIMO_LOCAL_PREFIX) }?.removePrefix(MIMO_LOCAL_PREFIX)
+
+    /**
+     * 「音色板块」的全部条目（v0.52.0）。设置页的音色段与人设编辑页的候选**共用这一个函数**——
+     * 用户点名"人设页音色选择就只放音色板块里有的"，两边读同一份才不会各说各话。
+     *
+     * @param cloned 硅基那边从 `/audio/voice/list` 拉回来的克隆音色（账号级，谁都能用）
+     * @param localSamples 本机 `filesDir/voices/` 里的样本文件名（MiMo 没有上传接口，样本随请求内联）
+     * @param manualId 该家手填的音色 ID（空串 = 不给这一行）
+     * @param aliases 克隆音色的**中文显示名**（uri → 名字）。硅基的 customName 只收 ASCII，
+     *   用户起的中文名存在本机（`SettingsRepository.cloneVoiceNames`）；不传就退回显示 ASCII 名
+     */
+    fun library(
+        provider: TtsProvider,
+        cloned: List<ClonedVoice> = emptyList(),
+        localSamples: List<String> = emptyList(),
+        manualId: String = "",
+        aliases: Map<String, String> = emptyMap(),
+    ): List<VoiceItem> {
+        val out = ArrayList<VoiceItem>()
+        presets(provider).forEach { out += VoiceItem(VoiceRef(provider, it.id), it.label) }
+        if (provider == TtsProvider.SILICONFLOW) {
+            cloned.forEach {
+                out += VoiceItem(
+                    VoiceRef(provider, it.uri),
+                    "克隆 · ${aliases[it.uri] ?: it.customName}",
+                    detail = it.uri,
+                )
+            }
+        }
+        if (provider == TtsProvider.XIAOMI_MIMO) {
+            localSamples.forEach { name ->
+                out += VoiceItem(
+                    localVoiceRef(provider, name),
+                    "克隆 · ${aliases[name] ?: name.substringBeforeLast('.')}",
+                    local = true,
+                )
+            }
+        }
+        if (manualId.isNotBlank()) {
+            out += VoiceItem(VoiceRef(provider, manualId.trim()), "手动 · ${manualId.trim()}", local = true)
+        }
+        return out
+    }
+
+    /**
+     * 音色行上给用户看的标签（[ref] 不属于当前 provider 时回落到"默认"——
+     * 用户换了服务商，那个 ID 在新家不认，但人设行里还存着旧值）。
+     */
+    fun labelOf(
+        provider: TtsProvider,
+        ref: VoiceRef?,
+        cloned: List<ClonedVoice> = emptyList(),
+        manualId: String = "",
+        aliases: Map<String, String> = emptyMap(),
+    ): String {
+        val id = ref?.takeIf { it.provider == provider }?.voiceId
+            ?: return "默认 · ${defaultVoiceId(provider).ifBlank { "（该家无预置，用手动音色）" }}"
+        presets(provider).firstOrNull { it.id == id }?.let { return it.label }
+        cloned.firstOrNull { it.uri == id }?.let { return "克隆 · ${aliases[id] ?: it.customName}" }
+        localSamplePath(id)?.let { path ->
+            val fileKey = path.substringAfterLast('/')
+            return "克隆 · ${aliases[path] ?: aliases[fileKey] ?: fileKey.substringBeforeLast('.')}"
+        }
+        if (id == manualId.trim()) return "手动 · $id"
+        return id
+    }
 }
+
+/**
+ * 音色板块里的一行。[ref] 是存进 DataStore / 人设的那份引用，[label] 给用户看，
+ * [local] 为真表示这行没有服务商端的实体（本地样本或手填 ID），因此不随"重新拉取"消失。
+ */
+data class VoiceItem(
+    val ref: VoiceRef,
+    val label: String,
+    val detail: String = "",
+    val local: Boolean = false,
+)

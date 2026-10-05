@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -230,27 +231,30 @@ fun NeuAvatar(
         contentAlignment = Alignment.Center,
     ) {
         if (accentRing) {
+            // 环不再加 padding：就画在最外圈，内容内缩到环内侧（v0.53.4）
             Box(
                 Modifier
                     .fillMaxSize()
-                    .padding(2.5.dp)
                     .drawRing(HeroBrush),
             )
         } else if (ringBrush != null) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .padding(2.dp)
                     .drawRing(ringBrush),
             )
         }
+        val ringed = accentRing || ringBrush != null
         if (bitmap != null) {
             androidx.compose.foundation.Image(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = null,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(if (accentRing || ringBrush != null) 3.dp else 1.dp),
+                    // 有环时图片内缩到环内侧（4.5dp），环才不会被图压住；
+                    // 顺手 clip 成圆：部分调用点（会话列表 / 聊天顶栏）没有在外面套 clip
+                    .padding(if (ringed) 4.5.dp else 1.dp)
+                    .clip(androidx.compose.foundation.shape.CircleShape),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
             )
         } else {
@@ -278,11 +282,18 @@ private fun decodeSampledBitmap(path: String, targetPx: Int): android.graphics.B
 }
 
 /** 渐变环（头像点缀：英雄渐变 / 人设专属品牌色） */
+/**
+ * 头像**外圈**的品牌渐变环（v0.53.4 改成贴最外圈）。
+ *
+ * 以前的画法：环画在距边缘 2~3dp 的地方，而自定义图片内缩 3dp——
+ * 图片正好把环压住，看起来"环在头像里面"，用了自定义图更是几乎看不见。
+ * 现在环贴最外圈（外缘距边 1.5dp），内容再内缩到环内侧，环一定露在头像外面。
+ */
 private fun Modifier.drawRing(brush: androidx.compose.ui.graphics.Brush): Modifier = this.then(
     Modifier.drawBehind {
         drawCircle(
             brush = brush,
-            radius = (size.minDimension - 3.dp.toPx()) / 2,
+            radius = (size.minDimension - 5.dp.toPx()) / 2,
             style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()),
         )
     },

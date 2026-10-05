@@ -3,7 +3,7 @@ package com.menghuan.app.data
 import android.content.Context
 import android.net.Uri
 import com.menghuan.app.llm.NetworkStack
-import com.menghuan.app.realtime.Mp3Decoder
+import com.menghuan.app.realtime.MediaAudioDecoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -28,10 +28,12 @@ data class ClonedVoice(val customName: String, val uri: String, val model: Strin
  * 本项目 v0.50.0 步骤 1 正好装了端侧离线识别，克隆前跑一次即可，零额外依赖、不额外联网。
  * 转写不出来时把输入框露给用户手填，**不传空串去赌服务端容忍**（官方标 required）。
  *
- * ## 为什么只收 mp3 / wav
- * 这两家接受的样本格式本来就窄（硅基 mp3/wav/pcm/opus，MiMo 只有 mp3/wav），
- * 而这两种容器我们**已经有解码器**（[Mp3Decoder] / [WavPcm]），能精确裁到 15 秒；
- * m4a 之类要另起 MediaExtractor 管线，收益不抵复杂度——直接拒收并说清原因。
+ * ## 为什么收 mp3 / wav / m4a / mp4
+ * v0.52.0 起样本一律先经 [MediaAudioDecoder]（`MediaExtractor` 自己读真实采样率与声道）抽音轨，
+ * 所以凡是系统能解的容器都收——包括用户点名的 **mp4**（直接拿视频文件当样本，抽音轨、裁 15 秒、
+ * 重写成 WAV 上传，不需要另写 MP3 编码器）。
+ * 旧实现只认 mp3/wav 且用 `MediaCodec` 手搓解码（输入格式硬写 24kHz/单声道），
+ * 真实流不符就吐 0 帧，用户拿一个正常 MP3 也会被告知"文件格式不对"——那是本次重写的起因。
  *
  * ## 关于「实名认证」
  * 硅基官方明写「使用用户预置音色，需要进行实名认证」。未认证时的错误码与文案**没有公开**，
@@ -39,8 +41,12 @@ data class ClonedVoice(val customName: String, val uri: String, val model: Strin
  */
 object VoiceCloner {
 
-    /** 样本裁剪上限：官方要求 <30s、建议 8~10s，取 15s 是安全中值 */
-    const val MAX_SAMPLE_SECONDS = 15
+    /**
+     * 样本长度上限。官方要求 <30s、建议 3~10s：
+     * v0.53.3 从 15 秒收到 10 秒——参考音频越长并不越好，CosyVoice2 是零样本克隆，
+     * 参考一长就容易跨到下一句/带进背景音乐，真机表现是克隆出来的声音发抖、变调。
+     */
+    const val MAX_SAMPLE_SECONDS = 10
 
     private const val OUT_RATE = 24_000
 
@@ -58,7 +64,11 @@ object VoiceCloner {
     /**
      * 把用户选的样本裁到前 [MAX_SAMPLE_SECONDS] 秒，统一落成 24kHz 单声道 16bit WAV。
      *
-     * @return 落盘文件；格式不支持 / 解码失败时抛 [IllegalStateException]，消息可直接给用户看
+     * **收哪些格式**：凡是系统 `MediaExtractor` 能抽到音轨的都收——mp3 / wav / m4a / aac /
+     * **mp4** / flac / ogg（v0.52.0 起，用户点名要能传 mp4）。不写 MP3 编码器：上传接口收 wav，
+     * 而抽音轨本来就要解码，解完直接重写成 WAV 反而更小更稳。
+     *
+     * @return 落盘文件；解不出音轨时抛 [IllegalStateException]，消息可直接给用户看
      */
     suspend fun prepareSample(context: Context, uri: Uri, name: String): File =
         withContext(Dispatchers.IO) {
@@ -69,55 +79,94 @@ object VoiceCloner {
 
             val decoded = runCatching { decodeToPcm(source) }.getOrElse {
                 source.delete()
-                throw IllegalStateException("解码音频失败：${it.javaClass.simpleName}")
+                throw IllegalStateException("解码失败：${it.javaClass.simpleName}")
             }
             source.delete()
             if (decoded == null) {
-                throw IllegalStateException("只支持 mp3 / wav 样本，请换一个文件")
+                throw IllegalStateException("这个文件里解不出音轨（支持 mp3 / wav / m4a / mp4）")
             }
 
             val (samples, rate) = decoded
             if (samples.isEmpty()) throw IllegalStateException("音频里没有采样数据")
-            val limit = rate * MAX_SAMPLE_SECONDS
-            val trimmed = if (samples.size > limit) samples.copyOf(limit) else samples
-            val wav = WavPcm.writeMono(trimmed, rate)
+            // 先挑"一句完整的话"再重采样：硬切 10 秒很可能切在半句话上，
+            // 那样参考音频与逐字稿对不上，零样本克隆出来就会发抖/变调（真机反馈）
+            val trimmed = trimToSpeech(samples, rate, MAX_SAMPLE_SECONDS)
+            // 统一到 24kHz 再落盘：上传体积小一半，两家都收 wav。
+            // 必须走带低通的 resample——裸线性插值从 48kHz 抽到 24kHz 会把高频折成毛刺，
+            // 毛刺进了参考音频就被克隆继承
+            val floats = FloatArray(trimmed.size) { trimmed[it] / 32768f }
+            val atOutRate = WavPcm.resample(floats, rate, OUT_RATE)
+            val shorts = ShortArray(atOutRate.size) {
+                (atOutRate[it].coerceIn(-1f, 1f) * 32767f).toInt().toShort()
+            }
+            val wav = WavPcm.writeMono(shorts, OUT_RATE)
 
             val out = File(voiceDir(context), "${sanitize(name)}.wav")
             out.writeBytes(wav)
             out
         }
 
-    /** @return (单声道 PCM16, 采样率)；容器不认返回 null */
+    /**
+     * 从样本里取"一段完整的人声"：跳过开头的静音，在 [maxSeconds] 之内**找最近的能量谷下刀**，
+     * 而不是从中间切断一句话。纯函数，JVM 可测。
+     *
+     * 阈值按整段最大能量的比例取（不是绝对值），这样安静的样本和响的样本行为一致。
+     */
+    fun trimToSpeech(samples: ShortArray, rate: Int, maxSeconds: Int): ShortArray {
+        val limit = (rate * maxSeconds).coerceAtMost(samples.size)
+        if (limit <= rate) return samples.copyOf(limit)          // 不足 1 秒，没什么可裁的
+        val frame = (rate * FRAME_MS / 1000).coerceAtLeast(1)
+        val frames = limit / frame
+        if (frames <= 0) return samples.copyOf(limit)
+
+        val energy = IntArray(frames)
+        for (f in 0 until frames) {
+            var sum = 0L
+            val start = f * frame
+            val end = minOf(start + frame, limit)
+            var n = 0
+            var i = start
+            while (i < end) {
+                val v = samples[i].toInt()
+                sum += v * v
+                n++
+                i++
+            }
+            energy[f] = if (n == 0) 0 else kotlin.math.sqrt(sum.toDouble() / n).toInt()
+        }
+        val peak = energy.maxOrNull() ?: 0
+        if (peak <= 0) return samples.copyOf(limit)              // 全静音：原样交给服务端
+        val quiet = (peak * QUIET_RATIO).toInt().coerceAtLeast(200)
+
+        var first = 0
+        while (first < frames - 1 && energy[first] < quiet) first++
+        var last = frames - 1
+        while (last > first && energy[last] >= quiet) last--
+        // 结尾留 120ms 呼吸，别把最后一个字切掉
+        val tail = (rate * 120 / 1000)
+        val from = first * frame
+        val to = minOf(limit, last * frame + tail)
+        // 找不到谷（整段没停过）就退回硬切上限；切出来太短也退回上限，别裁成半句
+        if (to - from < rate) return samples.copyOf(limit)
+        return samples.copyOfRange(from, to)
+    }
+
+    private const val FRAME_MS = 20
+    private const val QUIET_RATIO = 0.06f
+
+    /**
+     * @return (单声道 PCM16, 采样率)；容器不认 / 没有音轨返回 null。
+     * WAV 先走 [WavPcm] 直解（不依赖系统解码器，JVM 单测也能跑），其余交给
+     * [MediaAudioDecoder]（v0.52.0：旧的 Mp3Decoder 把输入格式硬写成 24kHz/单声道，
+     * 真实流不符就吐 0 帧，克隆因此谎报"只支持 mp3/wav"）。
+     */
     private fun decodeToPcm(source: File): Pair<ShortArray, Int>? {
-        val bytes = source.readBytes()
-        // WAV：直接解 RIFF 头，顺手重采样到 24k（上传体积小一半，两家都收 wav）
-        WavPcm.parse(bytes, OUT_RATE)?.let { floats ->
+        WavPcm.parse(source.readBytes(), OUT_RATE)?.let { floats ->
             val shorts = ShortArray(floats.size) { (floats[it].coerceIn(-1f, 1f) * 32767f).toInt().toShort() }
             return shorts to OUT_RATE
         }
-        // MP3：系统 MediaCodec 解码（与通话播放同一条路）
-        Mp3Decoder.decode(bytes)?.let { pcm ->
-            val mono = if (pcm.channels > 1) downmix(pcm.samples, pcm.channels) else pcm.samples
-            return if (pcm.sampleRate == OUT_RATE) {
-                mono to OUT_RATE
-            } else {
-                val floats = FloatArray(mono.size) { mono[it] / 32768f }
-                val resampled = WavPcm.resampleLinear(floats, pcm.sampleRate, OUT_RATE)
-                ShortArray(resampled.size) { (resampled[it].coerceIn(-1f, 1f) * 32767f).toInt().toShort() } to OUT_RATE
-            }
-        }
+        MediaAudioDecoder.decodeFile(source)?.let { return it.samples to it.sampleRate }
         return null
-    }
-
-    private fun downmix(interleaved: ShortArray, channels: Int): ShortArray {
-        val frames = interleaved.size / channels
-        val out = ShortArray(frames)
-        for (i in 0 until frames) {
-            var sum = 0
-            for (c in 0 until channels) sum += interleaved[i * channels + c]
-            out[i] = (sum / channels).toShort()
-        }
-        return out
     }
 
     /** 端侧转写样本，拿到上传接口必填的 `text`。识别模型没下载 / 转不出来返回 null，由 UI 让用户手填 */
@@ -125,7 +174,21 @@ object VoiceCloner {
         SherpaAsr.transcribeWav(context, sample.absolutePath)?.takeIf { it.isNotBlank() }
 
     /**
+     * 服务端认的 `customName`：**只收字母、数字、`_`、`-`，不超过 64 字符**
+     * （真机 HTTP 400 原文："Invalid custom name. only letters and digits and _ and - are supported.
+     * Should not exceed 64 chars"）。用户起的中文名（"永雏塔菲"）一个字符都发不出去，
+     * 所以这里只用来生成一个 ASCII 标识，中文名另存本机显示（`SettingsRepository.cloneVoiceNames`）。
+     */
+    fun asciiVoiceName(display: String): String {
+        val kept = display.trim().toCharArray()
+            .filter { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '_' || it == '-' }
+            .joinToString("").take(40)
+        return if (kept.isNotBlank()) kept else "voice_${System.currentTimeMillis()}"
+    }
+
+    /**
      * 上传样本换 `uri`（硅基 `POST /uploads/audio/voice`，multipart 形态）。
+     * @param customName 必须是 [asciiVoiceName] 出来的 ASCII 名，中文会被服务端 400 拒收
      * @return `speech:<customName>:<accountId>:<voiceId>`，原样存进 [VoiceRef.voiceId]
      */
     suspend fun upload(config: TtsConfig, sample: File, customName: String, transcript: String): String =

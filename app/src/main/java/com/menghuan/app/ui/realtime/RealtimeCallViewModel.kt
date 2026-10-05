@@ -10,8 +10,6 @@ import com.menghuan.app.data.AiPrompts
 import com.menghuan.app.data.AsrModelManager
 import com.menghuan.app.data.TtsClients
 import com.menghuan.app.data.TtsConfig
-import com.menghuan.app.data.TtsVoices
-import com.menghuan.app.data.VoiceRef
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.llm.OpenAiClient
 import com.menghuan.app.realtime.CallTurnData
@@ -51,6 +49,10 @@ data class RealtimeCallUiState(
 class RealtimeCallViewModel(
     private val app: MenghuanApp,
     private val personaId: Long,
+    /** v0.53.7：这通电话是不是 AI 主动打来的（决定谁先开口 + 记录卡落哪一侧） */
+    private val initiatedByAi: Boolean = false,
+    /** v0.53.7：AI 打来时已经生成好的开场白，作为它第一句的参考 */
+    private val greeting: String = "",
 ) : ViewModel() {
 
     private val db = app.db
@@ -108,14 +110,24 @@ class RealtimeCallViewModel(
                 // 通话措辞：回复会被朗读，Markdown/列表/长篇都会变成糟糕的听觉体验
                 append("\n\n当前是实时语音通话：用自然口语回答，每次只说两三句短句，")
                 append("不要使用 Markdown、列表、代码或颜文字，不要一次问多个问题。")
+                // v0.53.7：**必须告诉它这通电话是谁打的** —— 否则它会当成自己接到的电话，
+                // 出现"喂？你找我什么事"这种完全错位的开场（用户反馈"AI 不知道是他给我打的电话"）。
+                if (initiatedByAi) {
+                    append("\n\n⚠️ 这通电话是**你主动打给用户的**（不是用户打给你）。")
+                    append("接通后由你先开口，直接说你想说的话，")
+                    append("不要问「喂？」「你找我有事吗」这类接电话的话。")
+                    if (greeting.isNotBlank()) {
+                        append("\n你原本想说的第一句是：").append(greeting)
+                        append("（照这个意思自然说出来即可，不用一字不差）")
+                    }
+                } else {
+                    append("\n\n这通电话是**用户打给你的**，接通后先听用户开口，不要抢先长篇大论。")
+                }
             }
 
-            // 音色按人设（编辑人设弹层里选，tts_voice_<personaId>）；
-            // 换了 provider 之后旧音色 ID 在新家不认，回落该 provider 的默认预置音色。
+            // 音色与聊天里的语音条走同一个三级回落（人设专属 → 音色板块默认 → 该家第一个预置）
             val ttsConfig = runCatching { settings.ttsConfig.first() }.getOrDefault(TtsConfig())
-            val voice = runCatching { settings.voiceRefFor(personaId).first() }.getOrNull()
-                ?.takeIf { it.provider == ttsConfig.provider && !it.isBlank }
-                ?: VoiceRef(ttsConfig.provider, TtsVoices.defaultVoiceId(ttsConfig.provider))
+            val voice = settings.voiceForConversation(personaId, ttsConfig)
             val client = OpenAiClient(config.baseUrl, config.apiKey, config.model)
             val repo = RealtimeCallRepository(db)
             val eng = PipelineVoiceCallEngine(
@@ -123,8 +135,9 @@ class RealtimeCallViewModel(
                 client,
                 TtsClients.from(ttsConfig),
                 app.applicationScope,
-            ) { p, st, et, turns, status ->
-                repo.saveCall(p, st, et, turns, status)
+            ) { p, st, et, turns, status, _ ->
+                // 第 6 个参数（谁打的）用闭包里的 initiatedByAi，引擎那边只是转发
+                repo.saveCall(p, st, et, turns, status, initiatedByAi)
             }
             engine = eng
             // TTS 没配齐也能打通电话：识别与 LLM 照常，只是不出声、全靠字幕。
@@ -135,7 +148,7 @@ class RealtimeCallViewModel(
             }
             // 模型加载 / 麦克风启动在 IO 线程做，别卡主线程进页动画
             withContext(Dispatchers.IO) {
-                eng.start(RealtimeCallConfig(personaId, persona.name, systemPrompt, voice))
+                eng.start(RealtimeCallConfig(personaId, persona.name, systemPrompt, voice, initiatedByAi))
             }
         }
     }
@@ -163,6 +176,8 @@ class RealtimeCallViewModel(
                 if (ev.state == RealtimeCallState.LISTENING && !connectTonePlayed) {
                     connectTonePlayed = true
                     CallTones.play(CallTones.Kind.CONNECT)
+                    // v0.53.7：AI 主动打来的电话，接通音之后由 **AI 先开口**（不等用户说话）
+                    if (initiatedByAi) engine?.speakFirst()
                 }
             }
             is RealtimeCallEvent.UserPartial -> _ui.update { it.copy(userPartial = ev.text) }
@@ -189,10 +204,14 @@ class RealtimeCallViewModel(
     }
 
     companion object {
-        fun Factory(personaId: Long) = viewModelFactory {
+        fun Factory(
+            personaId: Long,
+            initiatedByAi: Boolean = false,
+            greeting: String = "",
+        ) = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MenghuanApp
-                RealtimeCallViewModel(app, personaId)
+                RealtimeCallViewModel(app, personaId, initiatedByAi, greeting)
             }
         }
     }

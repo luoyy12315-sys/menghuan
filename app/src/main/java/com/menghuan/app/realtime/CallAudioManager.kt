@@ -115,6 +115,8 @@ class CallAudioManager {
 
     companion object {
         const val IN_RATE = 16_000
-        const val OUT_RATE = 24_000
+
+        /** 播放轨道采样率 = TTS 通话目标采样率（同一个常量，两边不一致就会每句多做一次重采样） */
+        const val OUT_RATE = com.menghuan.app.data.TTS_CALL_SAMPLE_RATE
     }
 }

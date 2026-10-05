@@ -19,8 +19,11 @@ data class ApiProfile(
 }
 
 /**
- * 生图接口配置（与对话接口相互独立）。
+ * 生图模型配置（与对话模型相互独立）。
  * 走 OpenAI 兼容的 `/images/generations`（各家路径不同，baseUrl 填到版本段为止）。
+ *
+ * v0.53.4 起生图也支持**多条模型**，存储形态与对话模型完全一致（复用 [ApiProfile] /
+ * [ApiProfileCodec]），本类型退化为"当前默认那条"的读侧投影，供只需要一个配置的调用方使用。
  */
 data class ImageApiConfig(
     val baseUrl: String = "",
@@ -35,6 +38,9 @@ data class ImageApiConfig(
 
 /** 默认接口的固定 id（老版本单接口配置迁过来时用它，保证升级后 id 稳定） */
 const val DEFAULT_PROFILE_ID = "default"
+
+/** 默认生图模型的固定 id（老版本单条生图配置迁过来时用它，保证升级后 id 稳定） */
+const val DEFAULT_IMAGE_PROFILE_ID = "img_default"
 
 /**
  * 落盘形态：密钥优先存 Keystore 密文（keyEnc）；

@@ -357,6 +357,14 @@ class BootReceiver : BroadcastReceiver() {
                 app.weeklyReportGenerator.ensureReport(monday.minusDays(7))
                 // 每日建议闹钟重排（补生成由到点 Receiver 做，这里不主动发请求，避免开机风暴）
                 AlarmScheduler.scheduleDailySuggestion(context)
+                // AI 主动打电话（v0.53.5）：定时 + 智能检查两个闹钟一起重排（只排钟，不发请求）
+                runCatching { com.menghuan.app.data.AiCall.rearm(app.settingsRepository, context) }
+                // 定时主动消息（v0.53.5）：每条一个闹钟，全部重排
+                runCatching {
+                    app.settingsRepository.scheduledMessages.first()
+                        .filter { it.enabled }
+                        .forEach { AlarmScheduler.scheduleScheduledMessage(context, it.id, it.time) }
+                }
             } finally {
                 pending.finish()
             }

@@ -58,6 +58,14 @@ class VoiceRecorder(private val context: Context) {
     /** 语音落盘目录 */
     fun voiceDir(): File = File(context.filesDir, "voice").apply { if (!exists()) mkdirs() }
 
+    /**
+     * 最近一块 PCM 的峰值幅度（0..1），给录音蒙层的波形条用（v0.53.4）。
+     * 抽水线程写、UI 线程读，所以是 `@Volatile`；只要相对高低，不做响度校准。
+     */
+    @Volatile
+    var lastAmplitude: Float = 0f
+        private set
+
     val isRecording: Boolean get() = recorder != null
 
     /**
@@ -66,6 +74,7 @@ class VoiceRecorder(private val context: Context) {
      */
     fun start(): Boolean {
         stopInternal(discard = true)
+        lastAmplitude = 0f
         val dir = voiceDir()
         val stamp = System.currentTimeMillis()
 
@@ -139,6 +148,7 @@ class VoiceRecorder(private val context: Context) {
                         try {
                             out.write(buffer, 0, n)
                             written += n
+                            lastAmplitude = peakAmplitude(buffer, n)
                         } catch (e: Exception) {
                             Log.e(TAG, "write failed", e)
                             break
@@ -267,6 +277,22 @@ class VoiceRecorder(private val context: Context) {
             val totalSec = (ms / 1000).coerceAtLeast(1)
             return if (totalSec < 60) "$totalSec\""
             else "${totalSec / 60}'${(totalSec % 60).toString().padStart(2, '0')}\""
+        }
+
+        /**
+         * 一块 16bit 小端 PCM 的峰值幅度（0..1）。
+         * 只取绝对值最大那个样点：波形条看的是"这一小格多高"，不是响度。
+         */
+        private fun peakAmplitude(buf: ByteArray, len: Int): Float {
+            var peak = 0
+            var i = 0
+            while (i + 1 < len) {
+                val v = ((buf[i].toInt() and 0xFF) or (buf[i + 1].toInt() shl 8)).toShort().toInt()
+                val a = if (v < 0) -v else v
+                if (a > peak) peak = a
+                i += 2
+            }
+            return (peak / 32767f).coerceIn(0f, 1f)
         }
     }
 }

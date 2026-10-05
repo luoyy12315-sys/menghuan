@@ -219,7 +219,7 @@ data class ImageGenerationRecord(
     val timestamp: Long = System.currentTimeMillis(),
     val personaId: Long,           // 发起会话（人设）
     val personaName: String,       // 冗余存名字：人设删了记录还在
-    val model: String,             // 生图接口的模型名
+    val model: String,             // 生图模型的模型名
     val prompt: String,            // 画面提示词
     val success: Boolean,
     val imagePath: String = "",    // 成功时的本机路径；失败为空

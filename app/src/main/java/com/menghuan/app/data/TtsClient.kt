@@ -62,7 +62,11 @@ interface TtsClient {
     /** 配置是否齐（Key + 地址 + 模型）。没配齐就别发请求，也别告诉模型"你能发语音" */
     val isConfigured: Boolean
 
-    suspend fun synthesize(text: String, voice: VoiceRef): TtsAudio?
+    /**
+     * [target] 决定我们要什么响应格式（v0.52.0）：语音条要 MP3（小、`MediaPlayer` 直接播），
+     * 通话要 WAV + 与播放轨道同采样率（**通话链路从此不解 MP3**）。默认 [TtsTarget.NOTE]。
+     */
+    suspend fun synthesize(text: String, voice: VoiceRef, target: TtsTarget = TtsTarget.NOTE): TtsAudio?
 
     val lastFailure: String?
 }
@@ -86,7 +90,7 @@ abstract class HttpTtsClient(protected val config: TtsConfig) : TtsClient {
             .build()
     }
 
-    override suspend fun synthesize(text: String, voice: VoiceRef): TtsAudio? =
+    override suspend fun synthesize(text: String, voice: VoiceRef, target: TtsTarget): TtsAudio? =
         withContext(Dispatchers.IO) {
             failure = null
             if (!isConfigured) {
@@ -98,12 +102,12 @@ abstract class HttpTtsClient(protected val config: TtsConfig) : TtsClient {
                 failure = "要合成的文字为空"
                 return@withContext null
             }
-            runCatching { doSynthesize(clean, voice) }
+            runCatching { doSynthesize(clean, voice, target) }
                 .onFailure { failure = TtsErrors.describe(it) }
                 .getOrNull()
         }
 
-    protected abstract fun doSynthesize(text: String, voice: VoiceRef): TtsAudio
+    protected abstract fun doSynthesize(text: String, voice: VoiceRef, target: TtsTarget): TtsAudio
 
     /**
      * 读「裸二进制音频」型响应（硅基 / 通用端点）。
@@ -146,16 +150,18 @@ abstract class HttpTtsClient(protected val config: TtsConfig) : TtsClient {
  */
 class SiliconFlowTts(config: TtsConfig) : HttpTtsClient(config) {
 
-    override fun doSynthesize(text: String, voice: VoiceRef): TtsAudio {
+    override fun doSynthesize(text: String, voice: VoiceRef, target: TtsTarget): TtsAudio {
         val model = config.effectiveModel()
         val alias = voice.voiceId.ifBlank { TtsVoices.defaultVoiceId(TtsProvider.SILICONFLOW) }
+        val format = target.formatFor(TtsProvider.SILICONFLOW)
         val body = jsonBody(
             "model" to model,
             "input" to text,
             "voice" to TtsVoices.siliconVoice(model, alias),
-            "response_format" to TtsAudioFormat.MP3.name.lowercase(),
-            // 官方文档自相矛盾（正文说默认 44100、API 参考的 Default 栏印 32000）→ 一律显式传，不赌默认值
-            "sample_rate" to 44100,
+            "response_format" to format.name.lowercase(),
+            // 官方文档自相矛盾（正文说默认 44100、API 参考的 Default 栏印 32000）→ 一律显式传，不赌默认值。
+            // 通话传 24000 = 播放轨道采样率，回来正好直接用，不必重采样（v0.52.0）
+            "sample_rate" to (target.sampleRate ?: 44_100),
             "stream" to false,
         )
         val request = Request.Builder()
@@ -176,12 +182,12 @@ class SiliconFlowTts(config: TtsConfig) : HttpTtsClient(config) {
  */
 class CustomOpenAiTts(config: TtsConfig) : HttpTtsClient(config) {
 
-    override fun doSynthesize(text: String, voice: VoiceRef): TtsAudio {
+    override fun doSynthesize(text: String, voice: VoiceRef, target: TtsTarget): TtsAudio {
         val body = jsonBody(
             "model" to config.effectiveModel(),
             "input" to text,
             "voice" to voice.voiceId,
-            "response_format" to TtsAudioFormat.MP3.name.lowercase(),
+            "response_format" to target.formatFor(TtsProvider.CUSTOM).name.lowercase(),
         )
         val request = Request.Builder()
             .url("${config.effectiveBaseUrl()}/audio/speech")
@@ -208,7 +214,8 @@ class CustomOpenAiTts(config: TtsConfig) : HttpTtsClient(config) {
  */
 class XiaomiMimoTts(config: TtsConfig) : HttpTtsClient(config) {
 
-    override fun doSynthesize(text: String, voice: VoiceRef): TtsAudio {
+    override fun doSynthesize(text: String, voice: VoiceRef, target: TtsTarget): TtsAudio {
+        // MiMo 永远要 wav（见 TtsTarget.formatFor）：官方示例全是 wav/pcm16，mp3 没人用过，不赌
         val body = JSONObject().apply {
             put("model", config.effectiveModel())
             put(

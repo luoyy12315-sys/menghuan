@@ -3,6 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- AI 主动打电话（v0.53.6）：Android 14+ 全屏来电（锁屏直接弹来电界面）需要它，
+         且要在系统设置里由用户手动允许；拿不到就自动降级成"高优先级通知 + 铃声" -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- 定时督促：精确闹钟（Android 12+ 需用户授权） -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 重启后重排任务提醒 -->
@@ -54,6 +57,23 @@
         <receiver
             android:name=".notify.TaskReminderReceiver"
             android:exported="false" />
+
+        <!-- AI 主动打电话（v0.53.6）：定时 / 智能检查 / 口头约定三路闹钟都落在这里 -->
+        <receiver
+            android:name=".notify.AiCallReceiver"
+            android:exported="false" />
+
+        <!-- 定时主动消息（v0.53.7）：每条一个闹钟，到点让指定人设主动发言 -->
+        <receiver
+            android:name=".notify.ScheduledMessageReceiver"
+            android:exported="false" />
+
+        <!-- 来电页（v0.53.6）：独立 Activity，锁屏上也能直接盖上来（setShowWhenLocked） -->
+        <activity
+            android:name=".ui.call.IncomingCallActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Menghuan" />
 
         <receiver
             android:name=".notify.TaskSnoozeReceiver"

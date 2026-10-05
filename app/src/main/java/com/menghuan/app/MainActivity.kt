@@ -78,6 +78,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.navDeepLink
+import com.menghuan.app.ui.chat.ChatHistoryScreen
 import com.menghuan.app.ui.chat.ChatListScreen
 import com.menghuan.app.ui.chat.ChatScreen
 import com.menghuan.app.ui.common.AdaptiveScreen
@@ -90,21 +91,25 @@ import com.menghuan.app.ui.common.WideMaxContentWidth
 import com.menghuan.app.ui.common.isExpandedWindow
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.data.DataScreen
+import com.menghuan.app.ui.persona.PersonaEditorScreen
 import com.menghuan.app.ui.persona.PersonaManageScreen
 import com.menghuan.app.ui.profile.GalleryScreen
 import com.menghuan.app.ui.profile.MeScreen
 import com.menghuan.app.ui.profile.ProfileScreen
 import com.menghuan.app.ui.settings.AboutScreen
+import com.menghuan.app.ui.settings.AiCallSettingsScreen
 import com.menghuan.app.ui.settings.ApiConfigScreen
-import com.menghuan.app.ui.settings.AppearanceScreen
 import com.menghuan.app.ui.settings.AsrModelScreen
+import com.menghuan.app.ui.settings.CallRingtoneScreen
 import com.menghuan.app.ui.settings.DataPrivacyScreen
-import com.menghuan.app.ui.settings.NotificationSettingsScreen
+import com.menghuan.app.ui.settings.PermissionScreen
 import com.menghuan.app.ui.settings.PromptSettingsScreen
+import com.menghuan.app.ui.settings.ScheduledMessageScreen
 import com.menghuan.app.ui.settings.SettingsRoutes
 import com.menghuan.app.ui.settings.SettingsScreen
 import com.menghuan.app.ui.settings.TtsConfigScreen
-import com.menghuan.app.ui.settings.VoiceScreen
+import android.content.Intent
+import com.menghuan.app.ui.settings.VoiceLibraryScreen
 import com.menghuan.app.ui.realtime.RealtimeCallScreen
 import com.menghuan.app.ui.tasks.TasksScreen
 import com.menghuan.app.ui.theme.AccentInk
@@ -118,9 +123,44 @@ import com.menghuan.app.ui.theme.resolveDarkTheme
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+
+    /**
+     * v0.53.5：来电页按「接听」后带回的目标人设 id（0 = 无）。
+     * 来电是一个独立 Activity，接听后把本页 CLEAR_TOP 起来并带上这个 extra，
+     * 由 Compose 侧一次性消费后清零。
+     */
+    private val pendingCallPersona = mutableStateOf(0L)
+
+    /** v0.53.7：接听 AI 来电时一并带过来的"是它打的"与开场白（用户主动打给 AI 时会被清掉） */
+    private val pendingCallGreeting = mutableStateOf("")
+    private val pendingCallByAi = mutableStateOf(false)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readCallExtras(intent)
+    }
+
+    /** 来电页接听后带回来的三个 extra 一起读（缺一不可，否则通话页不知道谁先开口） */
+    private fun readCallExtras(intent: Intent?) {
+        val id = intent?.getLongExtra(com.menghuan.app.data.AiCall.EXTRA_OPEN_CALL_PERSONA, 0L) ?: 0L
+        if (id <= 0L) return
+        pendingCallPersona.value = id
+        pendingCallGreeting.value = intent?.getStringExtra(com.menghuan.app.data.AiCall.EXTRA_OPEN_CALL_GREETING).orEmpty()
+        pendingCallByAi.value = intent?.getBooleanExtra(com.menghuan.app.data.AiCall.EXTRA_OPEN_CALL_BY_AI, false) == true
+    }
+
+    /** 用户自己点电话图标打给 AI：清掉"AI 打来的"标记，避免上一次来电的痕迹串进来 */
+    private fun clearCallExtrasForUserCall() {
+        pendingCallGreeting.value = ""
+        pendingCallByAi.value = false
+    }
+
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 冷启动也读一次：来电页可能把整个 App 冷启起来
+        readCallExtras(intent)
         setContent {
             // 主题层：跟随系统 / 强制浅色 / 强制深色（设置 · 外观）。
             // 首帧同步取值（见 settingsRepository.themeModeBlocking），避免启动时先亮后暗闪一下。
@@ -128,7 +168,13 @@ class MainActivity : ComponentActivity() {
                 // 窗口宽度等级：>=600dp（Medium/Expanded）切平板宽版式（双栏消息 / 两列网格）
                 val windowSizeClass = calculateWindowSizeClass(this)
                 CompositionLocalProvider(LocalWindowWidthClass provides windowSizeClass.widthSizeClass) {
-                    MenghuanAppRoot()
+                    MenghuanAppRoot(
+                        pendingCallPersona = pendingCallPersona.value,
+                        callByAi = pendingCallByAi.value,
+                        callGreeting = pendingCallGreeting.value,
+                        onCallOpened = { pendingCallPersona.value = 0L },
+                        onCallConsumed = { clearCallExtrasForUserCall() },
+                    )
                 }
             }
         }
@@ -203,7 +249,16 @@ private val topLevelRoutes = listOf(
 )
 
 @Composable
-private fun MenghuanAppRoot() {
+private fun MenghuanAppRoot(
+    /** v0.53.5：来电页按接听带回来的目标 id（0 = 无） */
+    pendingCallPersona: Long = 0L,
+    /** v0.53.7：这通电话是 AI 打来的吗 + 它准备的开场白 */
+    callByAi: Boolean = false,
+    callGreeting: String = "",
+    onCallOpened: () -> Unit = {},
+    /** v0.53.7：通话页已经把"谁打的/开场白"接过去了 → Activity 清掉这两个标记（一次性） */
+    onCallConsumed: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState(pageCount = { topLevelRoutes.size })
@@ -214,6 +269,14 @@ private fun MenghuanAppRoot() {
     var appliedDeepLinkEntry by rememberSaveable { mutableStateOf<String?>(null) }
     // 双栏右栏当前会话（0 = 未选中显示占位；rememberSaveable 保旋转/进程重建）
     var twoPaneChatId by rememberSaveable { mutableStateOf(0L) }
+
+    // v0.53.5：来电接听后直达通话页 —— 一次性消费，导航完立刻清零（防止返回时又跳一次）
+    LaunchedEffect(pendingCallPersona) {
+        if (pendingCallPersona > 0L) {
+            navController.navigate("call/$pendingCallPersona")
+            onCallOpened()
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -312,14 +375,24 @@ private fun MenghuanAppRoot() {
                 arguments = listOf(navArgument("personaId") { type = NavType.LongType }),
                 // v0.38.0：Agent 进度通知 / 主动关心通知点击直达对应会话
                 deepLinks = listOf(navDeepLink { uriPattern = "menghuan://chat/{personaId}" }),
+                // v0.53.7：**微信式转场** —— 整页统一"从右往左平移"，不做淡入淡出/缩放。
+                // 以前 enter 挂 fadeIn、exit 只 fadeOut、popExit 还叠 scaleOut，
+                // 于是进对话页时"消息垂直弹一遍 + 整页横向滑入"两套动作叠在一起，
+                // 观感与微信完全不符（用户反馈"聊天记录从上往下弹出、输入框从右上斜滑下来"）。
                 enterTransition = {
-                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it }
                 },
-                exitTransition = { fadeOut(tween(200)) },
-                popEnterTransition = { fadeIn(tween(260)) },
+                // 旧页（会话列表）向左移出 1/3 —— 微信就是这个位移量，不淡出
+                exitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { -it / 3 }
+                },
+                // 返回：上一层从左侧 1/3 处滑回原位
+                popEnterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { -it / 3 }
+                },
+                // 返回：当前页整块向右滑出
                 popExitTransition = {
-                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
-                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it }
                 },
             ) { entry ->
                 // 单聊页底部避让交给输入栏自己做（max(ime, navBars) 合并动画），
@@ -349,11 +422,19 @@ private fun MenghuanAppRoot() {
                 },
             ) { entry ->
                 val callId = entry.arguments?.getLong("personaId") ?: 1L
+                // v0.53.7：这两个值只在"这一次进入"有效 —— 先冻结一份给本页用，
+                // 随即让 Activity 清掉；否则下次用户自己点电话图标打给 AI 时，
+                // 还会带着上一次来电的"是 AI 打的"痕迹（开场白和记录卡方向都会错）。
+                val byAiThisCall = remember { callByAi }
+                val greetingThisCall = remember { callGreeting }
+                LaunchedEffect(Unit) { onCallConsumed() }
                 AdaptiveScreen {
                     RealtimeCallScreen(
                         personaId = callId,
                         onBack = { navController.popBackStack() },
                         onOpenSettings = { route -> navController.navigate(route) },
+                        initiatedByAi = byAiThisCall,
+                        greeting = greetingThisCall,
                     )
                 }
             }
@@ -371,7 +452,48 @@ private fun MenghuanAppRoot() {
                         scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
                 },
             ) {
-                AdaptiveScreen { PersonaManageScreen(onBack = { navController.popBackStack() }) }
+                AdaptiveScreen {
+                    PersonaManageScreen(
+                        onBack = { navController.popBackStack() },
+                        onEdit = { id -> navController.navigate("persona_editor/$id") },
+                    )
+                }
+            }
+            // 编辑人设（v0.53.5）：**真正的整页**，新增（personaId=0）与编辑共用一条路由
+            composable(
+                route = "persona_editor/{personaId}",
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                val pid = entry.arguments?.getString("personaId")?.toLongOrNull() ?: 0L
+                AdaptiveScreen {
+                    PersonaEditorScreen(personaId = pid, onBack = { navController.popBackStack() })
+                }
+            }
+            // 聊天记录搜索页（v0.53.6）：对话页三点 →「查看聊天记录」
+            composable(
+                route = "chat_history/{personaId}",
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                val pid = entry.arguments?.getString("personaId")?.toLongOrNull() ?: 0L
+                AdaptiveScreen {
+                    ChatHistoryScreen(personaId = pid, onBack = { navController.popBackStack() })
+                }
             }
             // 记账本（v0.42.0）：数据页底部入口进入的全屏页
             composable(
@@ -436,16 +558,6 @@ private fun androidx.navigation.NavGraphBuilder.settingsComposables(navControlle
         popExitTransition = { pop + scalePop }) {
         AdaptiveScreen { ApiConfigScreen(onBack = back) }
     }
-    composable(SettingsRoutes.APPEARANCE, enterTransition = { push + fadeIn(tween(260)) },
-        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
-        popExitTransition = { pop + scalePop }) {
-        AdaptiveScreen { AppearanceScreen(onBack = back) }
-    }
-    composable(SettingsRoutes.NOTIFICATIONS, enterTransition = { push + fadeIn(tween(260)) },
-        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
-        popExitTransition = { pop + scalePop }) {
-        AdaptiveScreen { NotificationSettingsScreen(onBack = back) }
-    }
     composable(SettingsRoutes.DATA_PRIVACY, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
         popExitTransition = { pop + scalePop }) {
@@ -456,15 +568,42 @@ private fun androidx.navigation.NavGraphBuilder.settingsComposables(navControlle
         popExitTransition = { pop + scalePop }) {
         AdaptiveScreen { AboutScreen(onBack = back) }
     }
-    composable(SettingsRoutes.VOICE, enterTransition = { push + fadeIn(tween(260)) },
-        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
-        popExitTransition = { pop + scalePop }) {
-        AdaptiveScreen { VoiceScreen(onBack = back, onOpen = open) }
-    }
+    // v0.54.0：AppearanceScreen / NotificationSettingsScreen / VoiceScreen 三个路由已删
+    //（外观三胶囊与通知三开关都并进了设置主页，语音 5 个子项上提为一级卡）。
     composable(SettingsRoutes.TTS_CONFIG, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
         popExitTransition = { pop + scalePop }) {
         AdaptiveScreen { TtsConfigScreen(onBack = back) }
+    }
+    // 音色页（v0.53.5）：从「语音」页的「音色」卡片进入，顶栏右侧是克隆音色与 ID
+    composable(SettingsRoutes.VOICE_LIBRARY, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        VoiceLibraryScreen(onBack = back)
+    }
+    // AI 主动打电话（v0.53.5）：开关 / 时间 / 阈值 / 选人设 / 全屏来电权限都在这一页
+    composable(SettingsRoutes.AI_CALL, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { AiCallSettingsScreen(onBack = back) }
+    }
+    // 定时主动消息（v0.53.5）：自己配「谁、几点、发什么」，可配多条、可联网搜最新
+    composable(SettingsRoutes.SCHEDULED_MESSAGE, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { ScheduledMessageScreen(onBack = back) }
+    }
+    // 语音通话铃声（v0.53.7）：来电与去电共用，可传音频或视频
+    composable(SettingsRoutes.CALL_RINGTONE, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { CallRingtoneScreen(onBack = back) }
+    }
+    // 权限（v0.53.8）：把应用会用到授权集中一处，逐项说明用途 + 直达系统设置
+    composable(SettingsRoutes.PERMISSIONS, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { PermissionScreen(onBack = back) }
     }
     composable(SettingsRoutes.ASR_MODEL, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
@@ -518,6 +657,7 @@ private fun HomePages(
                         left = {
                             ChatListScreen(
                                 onOpen = onTwoPaneChatChange,
+                                onOpenPersonaEditor = { id -> navController.navigate("persona_editor/$id") },
                                 onSelect = onTwoPaneChatChange,
                                 selectedPersonaId = twoPaneChatId,
                             )
@@ -531,13 +671,17 @@ private fun HomePages(
                                     onBack = { onTwoPaneChatChange(0L) },
                                     showBack = false,
                                     onOpenCall = { navController.navigate("call/$twoPaneChatId") },
+                                    onOpenSettings = { route -> navController.navigate(route) },
                                 )
                             }
                         },
                     )
                 } else {
                     AdaptiveScreen {
-                        ChatListScreen(onOpen = { id -> navController.navigate("chat/$id") })
+                        ChatListScreen(
+                            onOpen = { id -> navController.navigate("chat/$id") },
+                            onOpenPersonaEditor = { id -> navController.navigate("persona_editor/$id") },
+                        )
                     }
                 }
             1 -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {

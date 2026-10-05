@@ -83,11 +83,11 @@ class PersonaManageViewModel(private val repository: PersonaRepository) : ViewMo
 @Composable
 fun PersonaManageScreen(
     onBack: () -> Unit,
+    /** v0.53.5：编辑人设是独立整页，这里只把 id 交出去（0 = 新建） */
+    onEdit: (Long) -> Unit,
     vm: PersonaManageViewModel = viewModel(factory = PersonaManageViewModel.Factory),
 ) {
     val personas by vm.personas.collectAsState(initial = emptyList())
-    var editing by remember { mutableStateOf<Persona?>(null) }
-    var showEditor by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<Persona?>(null) }
 
     Column(
@@ -103,7 +103,7 @@ fun PersonaManageScreen(
                 }
             },
             actions = {
-                NeuCircleButton(onClick = { editing = null; showEditor = true }, size = 38.dp) {
+                NeuCircleButton(onClick = { onEdit(0L) }, size = 38.dp) {
                     Icon(MIcons.Plus, contentDescription = "新增人设", tint = TextPrimary, modifier = Modifier.size(19.dp))
                 }
             },
@@ -123,10 +123,7 @@ fun PersonaManageScreen(
                 Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 50).coerceAtMost(300)))) {
                     PersonaCard(
                         persona = persona,
-                        onClick = {
-                            editing = persona
-                            showEditor = true
-                        },
+                        onClick = { onEdit(persona.id) },
                         onLongClick = { deleteTarget = persona },
                     )
                 }
@@ -135,22 +132,7 @@ fun PersonaManageScreen(
         }
     }
 
-    if (showEditor) {
-        val target = editing
-        PersonaEditorSheet(
-            persona = target,
-            onSave = { vm.save(it); showEditor = false },
-            // v0.12.0 起预置人设也可删：弹层「删除」→ 关弹层 → 二次确认
-            onDelete = target?.let { persona ->
-                {
-                    showEditor = false
-                    deleteTarget = persona
-                }
-            },
-            onDismiss = { showEditor = false },
-        )
-    }
-
+    // v0.53.5：编辑人设走独立路由（整页），这里只剩列表自己的长按删除确认
     deleteTarget?.let { target ->
         AlertDialog(
             tonalElevation = 0.dp, // v0.42.1 全应用去阴影（该重载阴影来自 tonalElevation）

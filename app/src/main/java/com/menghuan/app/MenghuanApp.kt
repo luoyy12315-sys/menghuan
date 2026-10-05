@@ -47,6 +47,8 @@ class MenghuanApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 崩溃现场先落盘（「关于」页能看堆栈），再干别的——晚装就漏掉启动期的崩
+        com.menghuan.app.data.CrashLog.install(this)
         db = Room.databaseBuilder(this, AppDatabase::class.java, "menghuan.db")
             .addMigrations(
                 AppDatabase.MIGRATION_1_2,
@@ -90,6 +92,17 @@ class MenghuanApp : Application() {
             runCatching {
                 if (settingsRepository.proactiveEnabled.first()) {
                     com.menghuan.app.notify.AlarmScheduler.scheduleProactive(this@MenghuanApp)
+                }
+                // AI 主动打电话（v0.53.5）：开关开着才排两个闹钟（只排钟，不发请求）
+                runCatching { com.menghuan.app.data.AiCall.rearm(settingsRepository, this@MenghuanApp) }
+                // 定时主动消息（v0.53.5）：每条一个闹钟，全部重排（只排钟，不发请求）
+                runCatching {
+                    settingsRepository.scheduledMessages.first()
+                        .filter { it.enabled }
+                        .forEach {
+                            com.menghuan.app.notify.AlarmScheduler
+                                .scheduleScheduledMessage(this@MenghuanApp, it.id, it.time)
+                        }
                 }
             }
         }

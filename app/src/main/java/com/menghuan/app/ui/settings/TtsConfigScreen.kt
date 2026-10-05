@@ -1,8 +1,5 @@
 package com.menghuan.app.ui.settings
 
-import android.content.Context
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,289 +18,239 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.menghuan.app.MenghuanApp
-import com.menghuan.app.data.ClonedVoice
 import com.menghuan.app.data.TtsClients
 import com.menghuan.app.data.TtsConfig
 import com.menghuan.app.data.TtsProvider
+import com.menghuan.app.data.TtsTarget
 import com.menghuan.app.data.TtsVoices
-import com.menghuan.app.data.VoiceCloner
 import com.menghuan.app.data.VoiceRef
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
-import com.menghuan.app.ui.common.NeuSectionTitle
+import com.menghuan.app.ui.common.NeuSheetRow
+import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
+import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
+import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuDanger
-import com.menghuan.app.ui.theme.TextPrimary
-import com.menghuan.app.ui.theme.TextSecondary
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.io.File
 
-/** 试听文案：TTS 配置面板与人设编辑器共用同一句，听得出音色差别就够了 */
+/** 试听文案：语音合成页与音色板块共用同一句，听得出音色差别就够了 */
 internal const val VOICE_PREVIEW_TEXT = "你好，这是我的声音。"
 
+/** 展示用：去掉协议头，一行放得下 */
+private fun shortUrl(url: String): String =
+    url.trim().removePrefix("https://").removePrefix("http://")
+
 /**
- * 设置 · 语音合成（v0.50.0）：三家 provider 可切 + 试听 + 音色克隆。
+ * 设置 · 语音合成（v0.53.0：与「API 配置」同一套卡片交互）。
  *
- * 通话与 AI 语音条**共用这一套配置**（以前 Edge TTS 朗读与通话各一套，是"语音栈越搞越乱"的一半原因）。
+ * 用户点名：**不要**把"硅基流动 / 小米 MiMo / 自定义端点"三段摊在页面上，
+ * 而是**只显示已经配好的模型卡片**，卡片下面一个「＋ 添加接入」，点了再选是哪家——
+ * 原理与对话接口一模一样。点卡片 = 切换当前生效，点卡片右侧箭头 = 中间弹窗改这条（含删除）。
  *
- * 克隆放在这里而不是人设编辑器：上传是**账号级**操作（要实名认证、产出的 `uri` 谁都能用），
- * 人设那边只负责"挑一个音色"。
+ * 每家一份独立配置（v0.52.0 起）：切到哪家看到的就是那家自己填过的 Key/地址/模型。
  */
 @Composable
 fun TtsConfigScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    val app = context.applicationContext as MenghuanApp
+    val app = settingsContainer()
     val scope = rememberCoroutineScope()
 
     val saved by app.settingsRepository.ttsConfig.collectAsState(initial = TtsConfig())
-    var provider by remember { mutableStateOf(saved.provider) }
-    var apiKey by remember { mutableStateOf(saved.apiKey) }
-    var baseUrl by remember { mutableStateOf(saved.baseUrl) }
-    var model by remember { mutableStateOf(saved.model) }
-    LaunchedEffect(saved) {
-        provider = saved.provider
-        apiKey = saved.apiKey
-        baseUrl = saved.baseUrl
-        model = saved.model
-    }
-
+    var configs by remember { mutableStateOf<Map<TtsProvider, TtsConfig>>(emptyMap()) }
+    var loaded by remember { mutableStateOf(false) }
+    var editor by remember { mutableStateOf<TtsConfig?>(null) }
+    var picking by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var busy by remember { mutableStateOf(false) }
 
-    val current = TtsConfig(provider = provider, baseUrl = baseUrl, apiKey = apiKey, model = model)
-
-    // ===== 克隆流程状态 =====
-    var sample by remember { mutableStateOf<File?>(null) }
-    var transcript by remember { mutableStateOf("") }
-    var voiceName by remember { mutableStateOf("") }
-    var cloned by remember { mutableStateOf<List<ClonedVoice>>(emptyList()) }
-
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            busy = true
-            error = null
-            message = null
-            val name = voiceName.trim().ifBlank { "我的音色" }
-            runCatching { VoiceCloner.prepareSample(context, uri, name) }
-                .onSuccess { file ->
-                    sample = file
-                    voiceName = name
-                    // 上传接口把 text（样本逐字稿）标成必填 → 用端侧 SenseVoice 自动转写。
-                    // 转不出来（识别模型没下载 / 样本没人声）就把输入框留给用户手填，不传空串去赌。
-                    transcript = VoiceCloner.transcribeSample(context, file).orEmpty()
-                    message = if (transcript.isBlank()) {
-                        "样本已裁到 ${VoiceCloner.MAX_SAMPLE_SECONDS} 秒内。请补一句这段样本说了什么（服务端必填）"
-                    } else {
-                        "样本已就绪，逐字稿由端侧识别自动填好，可修改后上传"
-                    }
-                }
-                .onFailure { error = it.message ?: "处理样本失败" }
-            busy = false
-        }
+    LaunchedEffect(Unit) {
+        configs = TtsProvider.entries.associateWith { app.settingsRepository.ttsConfigOf(it).first() }
+        loaded = true
     }
+    // 删掉当前生效那条之后要跟着刷新，否则卡片列表与"当前生效"会各说各话
+    LaunchedEffect(saved.provider) {
+        if (loaded) configs = TtsProvider.entries.associateWith { app.settingsRepository.ttsConfigOf(it).first() }
+    }
+
+    val configured = TtsProvider.entries.filter { configs[it]?.isComplete == true }
 
     SettingsPage(title = "语音合成", onBack = onBack) {
         Spacer(Modifier.height(14.dp))
-
-        NeuSectionTitle("服务商")
-        Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth()) {
-            TtsProvider.entries.forEach { p ->
-                NeuChip(text = p.label, selected = provider == p, onClick = { provider = p })
-                Spacer(Modifier.width(8.dp))
-            }
+        if (!loaded) {
+            Text("读取中…", fontSize = 12.sp, color = MutedText)
+            Spacer(Modifier.height(24.dp))
+            return@SettingsPage
         }
-
-        Spacer(Modifier.height(14.dp))
-        NeuTextField(
-            value = apiKey,
-            onValueChange = { apiKey = it },
-            label = "API Key",
-            placeholder = "必填",
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(10.dp))
-        NeuTextField(
-            value = baseUrl,
-            onValueChange = { baseUrl = it },
-            label = "接口地址",
-            placeholder = provider.defaultBaseUrl.ifBlank { "https://api.xxx.com/v1" },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(10.dp))
-        NeuTextField(
-            value = model,
-            onValueChange = { model = it },
-            label = "模型",
-            placeholder = provider.defaultModel.ifBlank { "例：tts-1" },
-            modifier = Modifier.fillMaxWidth(),
-        )
-
-        Spacer(Modifier.height(14.dp))
-        Row(Modifier.fillMaxWidth()) {
-            NeuButton(
-                text = "保存",
-                kind = NeuButtonKind.Primary,
-                enabled = !busy,
-                modifier = Modifier.weight(1f),
-                onClick = {
-                    scope.launch {
-                        app.settingsRepository.saveTtsConfig(current)
-                        message = "已保存"
-                        error = null
-                    }
-                },
-            )
-            Spacer(Modifier.width(10.dp))
-            NeuButton(
-                text = if (busy) "处理中…" else "试听",
-                kind = NeuButtonKind.Secondary,
-                enabled = !busy && current.isComplete,
-                modifier = Modifier.weight(1f),
-                onClick = {
-                    scope.launch {
-                        busy = true
-                        error = null
-                        message = null
-                        val client = TtsClients.from(current)
-                        val voice = VoiceRef(provider, TtsVoices.defaultVoiceId(provider))
-                        val audio = client.synthesize(VOICE_PREVIEW_TEXT, voice)
-                        if (audio == null) {
-                            error = "试听失败：${client.lastFailure ?: "未知原因"}"
-                        } else {
-                            runCatching { playTtsPreview(context, audio.bytes, audio.format.extension) }
-                                .onFailure { error = "播放失败：${it.javaClass.simpleName}" }
-                                .onSuccess { message = "试听已播放（${audio.format.extension}）" }
-                        }
-                        busy = false
-                    }
-                },
+        if (configured.isEmpty()) {
+            Text(
+                "还没有接入语音模型",
+                fontSize = 13.sp,
+                color = MutedText,
+                modifier = Modifier.height(30.dp),
             )
         }
-
+        configured.forEach { provider ->
+            val config = configs.getValue(provider)
+            NeuSheetRow(
+                icon = MIcons.VoiceWave,
+                title = config.effectiveModel(),
+                subtitle = shortUrl(config.effectiveBaseUrl()),
+                selected = provider == saved.provider,
+                onClick = {
+                    scope.launch {
+                        app.settingsRepository.setActiveTtsProvider(provider)
+                        message = "已切换到「${provider.label}」"
+                    }
+                },
+                onChevronClick = { message = null; editor = config },
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        NeuTextButton("＋ 添加接入", onClick = { message = null; picking = true })
         message?.let {
             Spacer(Modifier.height(8.dp))
-            Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = MutedText)
+            Text(it, fontSize = 13.sp, color = NeuAccent)
         }
-        error?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
-        }
+        Spacer(Modifier.height(6.dp))
+    }
 
-        // ===== 音色克隆 =====
-        Spacer(Modifier.height(18.dp))
-        NeuSectionTitle("音色克隆")
-        Spacer(Modifier.height(8.dp))
-        if (provider != TtsProvider.SILICONFLOW) {
+    // 先选服务商，再填那一份配置
+    if (picking) {
+        SettingsCardDialog(title = "添加到哪一家", onDismiss = { picking = false }) {
+            Row(Modifier.fillMaxWidth()) {
+                TtsProvider.entries.forEach { p ->
+                    NeuChip(
+                        text = p.label,
+                        selected = false,
+                        onClick = {
+                            picking = false
+                            editor = configs[p] ?: TtsConfig(provider = p)
+                        },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+            }
+            Spacer(Modifier.height(10.dp))
             Text(
-                if (provider == TtsProvider.XIAOMI_MIMO) {
-                    "MiMo 没有音色上传接口，克隆要在每次合成时内联样本，暂不支持在这里管理。"
-                } else {
-                    "自定义端点的克隆协议各家不同，请直接填音色 ID。"
-                },
+                "已接入的：${if (configured.isEmpty()) "无" else configured.joinToString("、") { it.label }}",
                 fontSize = 12.sp,
                 lineHeight = 18.sp,
                 color = MutedText,
             )
-        } else {
-            NeuButton(
-                text = if (sample == null) "选择样本音频（mp3 / wav）" else "重选样本",
-                kind = NeuButtonKind.Secondary,
-                enabled = !busy,
-                onClick = { picker.launch("audio/*") },
+        }
+    }
+
+    editor?.let { initial ->
+        var draft by remember { mutableStateOf(initial) }
+        var busy by remember { mutableStateOf(false) }
+        var error by remember { mutableStateOf<String?>(null) }
+        SettingsCardDialog(
+            title = "${draft.provider.label} · 语音合成",
+            onDismiss = { editor = null },
+        ) {
+            NeuTextField(
+                value = draft.apiKey,
+                onValueChange = { draft = draft.copy(apiKey = it) },
+                label = "API Key",
+                placeholder = "必填",
+                modifier = Modifier.fillMaxWidth(),
             )
-            sample?.let { file ->
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "样本：${file.name} · ${file.length() / 1024} KB",
-                    fontSize = 12.sp,
-                    color = TextSecondary,
-                )
-                Spacer(Modifier.height(10.dp))
-                NeuTextField(
-                    value = voiceName,
-                    onValueChange = { voiceName = it },
-                    label = "音色名",
-                    placeholder = "例：绘梨衣",
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(10.dp))
-                NeuTextField(
-                    value = transcript,
-                    onValueChange = { transcript = it },
-                    label = "样本逐字稿（服务端必填）",
-                    placeholder = "这段音频里说了什么",
-                    singleLine = false,
-                    minLines = 2,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
+            NeuTextField(
+                value = draft.baseUrl,
+                onValueChange = { draft = draft.copy(baseUrl = it) },
+                label = "接口地址",
+                placeholder = draft.provider.defaultBaseUrl.ifBlank { "https://api.xxx.com/v1" },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            NeuTextField(
+                value = draft.model,
+                onValueChange = { draft = draft.copy(model = it) },
+                label = "模型",
+                placeholder = draft.provider.defaultModel.ifBlank { "例：tts-1" },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth()) {
                 NeuButton(
-                    text = if (busy) "上传中…" else "上传克隆",
-                    kind = NeuButtonKind.Primary,
-                    enabled = !busy && current.isComplete && transcript.isNotBlank(),
+                    text = if (busy) "合成中…" else "试听",
+                    enabled = !busy && draft.isComplete,
+                    modifier = Modifier.weight(1f),
                     onClick = {
                         scope.launch {
                             busy = true
                             error = null
-                            message = null
-                            runCatching {
-                                VoiceCloner.upload(current, file, voiceName.trim().ifBlank { "我的音色" }, transcript.trim())
-                            }.onSuccess { uri ->
-                                message = "克隆成功：$uri（去人设编辑里选它）"
-                                loadClonedVoices(current) { cloned = it }
-                            }.onFailure {
-                                // 未实名认证的错误码官方没公开 → 原文透传 + 指一条路，不自己编判断
-                                error = "克隆失败：${it.message ?: it.javaClass.simpleName}" +
-                                    "（硅基流动的音色克隆需先在官网完成实名认证）"
+                            val client = TtsClients.from(draft)
+                            val voice = VoiceRef(
+                                draft.provider,
+                                app.settingsRepository.ttsDefaultVoice(draft.provider).first()?.voiceId
+                                    ?: TtsVoices.defaultVoiceId(draft.provider),
+                            )
+                            val audio = client.synthesize(VOICE_PREVIEW_TEXT, voice, TtsTarget.NOTE)
+                            if (audio == null) {
+                                error = "试听失败：${client.lastFailure ?: "未知原因"}"
+                            } else {
+                                runCatching {
+                                    playTtsPreview(context, audio.bytes, audio.format.extension)
+                                }.onFailure { error = "播放失败：${it.javaClass.simpleName}" }
                             }
                             busy = false
                         }
                     },
                 )
-            }
-
-            Spacer(Modifier.height(14.dp))
-            NeuButton(
-                text = "刷新我的克隆音色",
-                kind = NeuButtonKind.Secondary,
-                enabled = !busy && current.isComplete,
-                onClick = {
-                    scope.launch {
-                        busy = true
-                        error = null
-                        runCatching { VoiceCloner.listVoices(current) }
-                            .onSuccess {
-                                cloned = it
-                                message = if (it.isEmpty()) "账号下暂无克隆音色" else "已加载 ${it.size} 个克隆音色"
+                Spacer(Modifier.width(10.dp))
+                NeuButton(
+                    text = "保存",
+                    kind = NeuButtonKind.Primary,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        scope.launch {
+                            app.settingsRepository.saveTtsConfig(draft)
+                            editor = null
+                            message = if (draft.isComplete) {
+                                "已保存 · 当前生效：${draft.provider.label}"
+                            } else {
+                                "已保存（还没配齐，生效的仍是 ${saved.provider.label}）"
                             }
-                            .onFailure { error = "拉取音色列表失败：${it.message ?: it.javaClass.simpleName}" }
-                        busy = false
+                        }
+                    },
+                )
+            }
+            // 删除 = 把这家清空（配齐的卡片因此消失）
+            if (draft.isComplete) {
+                Spacer(Modifier.height(12.dp))
+                NeuTextButton("删除这家配置", color = NeuDanger, onClick = {
+                    scope.launch {
+                        app.settingsRepository.saveTtsConfig(
+                            TtsConfig(provider = draft.provider, baseUrl = "", apiKey = "", model = "")
+                        )
+                        editor = null
+                        message = "已删除「${draft.provider.label}」的配置"
                     }
-                },
-            )
-            cloned.forEach { voice ->
-                Spacer(Modifier.height(6.dp))
-                Text(voice.customName, fontSize = 13.sp, color = TextPrimary)
-                Text(voice.uri, fontSize = 10.sp, color = MutedText)
+                })
             }
         }
-        Spacer(Modifier.height(6.dp))
     }
 }
 
-private suspend fun loadClonedVoices(config: TtsConfig, onResult: (List<ClonedVoice>) -> Unit) {
-    runCatching { VoiceCloner.listVoices(config) }.onSuccess { onResult(it) }
-}
-
-/** 试听：TTS 产物落成临时文件交给 MediaPlayer（它认 mp3 / wav，不用我们自己解 PCM） */
-internal fun playTtsPreview(context: Context, bytes: ByteArray, ext: String) {
-    val file = File(context.cacheDir, "tts_preview.$ext")
+/**
+ * 试听：TTS 产物落成临时文件交给 MediaPlayer（它认 mp3 / wav，不用我们自己解 PCM）。
+ * 通话链路才需要 PCM，见 [com.menghuan.app.realtime.TtsAudioDecoder]。
+ */
+internal fun playTtsPreview(
+    context: android.content.Context,
+    bytes: ByteArray,
+    ext: String,
+) {
+    val file = java.io.File(context.cacheDir, "tts_preview.$ext")
     file.writeBytes(bytes)
     android.media.MediaPlayer().apply {
         setDataSource(file.absolutePath)

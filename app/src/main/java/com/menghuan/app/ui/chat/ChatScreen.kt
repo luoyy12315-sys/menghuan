@@ -14,6 +14,7 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
@@ -42,7 +44,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -63,9 +68,14 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import com.menghuan.app.ui.theme.AccentInk
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -83,7 +93,7 @@ import com.menghuan.app.agent.AgentRunner
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.MediaKind
 import com.menghuan.app.ui.common.LocalContentWidth
-import com.menghuan.app.ui.persona.PersonaEditorSheet
+import com.menghuan.app.ui.persona.PersonaVoiceSheet
 import com.menghuan.app.ui.realtime.CallLogSheet
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.common.EaseOutQuart
@@ -109,7 +119,9 @@ import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
 import com.menghuan.app.ui.theme.personaBrush
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -153,7 +165,7 @@ fun ChatScreen(
     val voiceTranscriptIds = remember { mutableStateListOf<Long>() }
     var reasoningView by remember { mutableStateOf<ChatMessage?>(null) } // 思考链查看（v0.41.4）
     var showApiSwitch by remember { mutableStateOf(false) }
-    var showPersonaEditor by remember { mutableStateOf(false) } // v0.47.1：三点 = 编辑人设
+    // v0.47.1：三点 = 编辑人设（v0.53.5 起走独立路由页，不再需要本地开关）
     var callLogSession by remember { mutableStateOf<Long?>(null) } // v0.49.0：点开的通话记录卡
     var callLogTitle by remember { mutableStateOf("") }
     // v0.43.0 输入区面板：0=收起 1=表情 2=加号（同一时刻只开一个，与键盘互斥）
@@ -166,14 +178,88 @@ fun ChatScreen(
     // 自定义表情（v0.43.0）：库表 → 面板真实数据源
     val stickers by appContainer.db.stickerDao().observeAll()
         .collectAsState(initial = emptyList())
-    // v0.50.0：「语音通话」总开关关掉时，加号面板第四格整格不出现
-    val voiceCallOn by appContainer.settingsRepository.voiceCallEnabled
-        .collectAsState(initial = true)
     val scope = rememberCoroutineScope()
+
+    // ===== v0.53.6：右上角三点的菜单 + 三个"选文件"入口 =====
+    // 立绘 / Live 2D / 聊天背景**只存不显**：用户明确说"以后打电话的时候展示"，展示方式还没定，
+    // 所以这里只负责"能选、能存、能清、能换"，不接渲染。
+    var chatMenuOpen by remember { mutableStateOf(false) }
+    var showVoiceSheet by remember { mutableStateOf(false) }
+    val settingsRepo = appContainer.settingsRepository
+    val callRules by settingsRepo.aiCallRules.collectAsState(initial = emptyList())
+    val chatWebSearch by settingsRepo.chatWebSearch.collectAsState(initial = emptyMap())
+    val callAllowed = callRules.firstOrNull { it.personaId == personaId }?.enabled == true
+    val webOn = chatWebSearch[personaId] == true
+
+    fun importAsset(uri: android.net.Uri, subDir: String, ext: String, hint: String, onDone: (String) -> Unit) {
+        scope.launch {
+            val path = runCatching {
+                val dir = java.io.File(context.filesDir, subDir).apply { mkdirs() }
+                val target = java.io.File(dir, "asset_${System.currentTimeMillis()}.$ext")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                }
+                target.takeIf { it.length() > 0 }?.absolutePath
+            }.getOrNull()
+            if (path == null) {
+                Toast.makeText(context, "这个文件读不出来", Toast.LENGTH_SHORT).show()
+            } else {
+                onDone(path)
+                Toast.makeText(context, hint, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    val artPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        uri?.let {
+            importAsset(it, "persona_art", "jpg", "立绘已保存（等想好怎么展示再接）") { p ->
+                scope.launch { settingsRepo.setPersonaArt(personaId, p) }
+            }
+        }
+    }
+    val live2dPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        uri?.let {
+            importAsset(it, "persona_live2d", "bin", "Live 2D 资源已保存（等想好怎么展示再接）") { p ->
+                scope.launch { settingsRepo.setPersonaLive2d(personaId, p) }
+            }
+        }
+    }
+    val backgroundPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
+    ) { uri ->
+        uri?.let {
+            importAsset(it, "chat_background", "jpg", "聊天背景已保存") { p ->
+                scope.launch { settingsRepo.setChatBackground(personaId, p) }
+            }
+        }
+    }
     // 正在播放的语音消息 id（同一时刻只播一条；null = 没在播）
     var playingVoiceId by remember { mutableStateOf<Long?>(null) }
     val voicePlayer = remember { VoicePlayer() }
     DisposableEffect(Unit) { onDispose { voicePlayer.release() } }
+    // 播放看门狗（v0.52.0）：语音条播完了还在动，是因为复位原本**只**依赖
+    // MediaPlayer.onCompletion——而 MP3 尾部 padding / 缺 Xing 头时这个回调可能整场不来。
+    // 这里按 position/duration 自己判结束，再加一个绝对超时兜底：UI 永远不可能卡在"播放中"。
+    LaunchedEffect(playingVoiceId) {
+        val id = playingVoiceId ?: return@LaunchedEffect
+        var waited = 0
+        while (isActive && playingVoiceId == id) {
+            delay(120)
+            waited += 120
+            val duration = voicePlayer.durationMs
+            if (!voicePlayer.alive) break
+            if (duration > 0 && voicePlayer.positionMs >= duration - 80) break
+            if (waited > duration + 3_000 || waited > 120_000) break
+        }
+        if (playingVoiceId == id) {
+            voicePlayer.stop()
+            playingVoiceId = null
+        }
+    }
     // 发图给 AI 看（v0.38.0）：选图 → 拷进应用私有目录 → 以当前输入为字幕发出
     val imagePicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent(),
@@ -235,6 +321,11 @@ fun ChatScreen(
     // 录音（v0.43.0）：按住说话。v0.43.1 起改成"点语音键切到语音态 → 按住说话区录音"。
     val recorder = remember { com.menghuan.app.data.VoiceRecorder(context) }
     var recording by remember { mutableStateOf(false) }
+    // 录音蒙层（v0.53.4）：形态照微信"按住说话"——中间气泡（波形 + 秒数）、
+    // 下面「松手发送」、再下面两颗圆按钮「取消」「转文字」，手指滑向哪颗哪颗点亮。
+    var recordArm by remember { mutableStateOf(RecordArm.NONE) }
+    var recordMs by remember { mutableStateOf(0L) }
+    var waveBars by remember { mutableStateOf<List<Float>>(emptyList()) }
     // 语音态：输入框位置显示"按住 说话"，再点语音键切回打字
     var voiceMode by remember { mutableStateOf(false) }
 
@@ -282,6 +373,22 @@ fun ChatScreen(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (!granted) Toast.makeText(context, "需要麦克风权限才能发语音", Toast.LENGTH_SHORT).show()
+    }
+
+    // 录音中：每 60ms 采一格波形 + 刷一次时长（蒙层里显示成 30" 那种）。
+    // 用 recorder.lastAmplitude（抽水线程写的 @Volatile 值），不额外开线程。
+    LaunchedEffect(recording) {
+        if (!recording) {
+            recordMs = 0L
+            waveBars = emptyList()
+            return@LaunchedEffect
+        }
+        val startedAt = System.currentTimeMillis()
+        while (isActive) {
+            delay(60)
+            recordMs = System.currentTimeMillis() - startedAt
+            waveBars = (waveBars + recorder.lastAmplitude).takeLast(WAVE_BAR_COUNT)
+        }
     }
 
     // 气泡最大宽度 = 版心的 76%（比例随版心自适应）
@@ -407,20 +514,78 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // v0.47.1：三个点 = 编辑人设（名字/头像/设定词/通话音色都在人设编辑里，
-                    // 通话音色按人设各自保存）。通话入口在加号面板第四格。
+                    // v0.53.6：三个点 = **弹出菜单**（「编辑人设」降级成其中一项）
                     // v0.50.0：喇叭（AI 回复朗读）已删——朗读功能整体取消，AI 想说话改用【语音条】标记。
-                    Icon(
-                        MIcons.MoreVert,
-                        contentDescription = "编辑人设",
-                        tint = TextPrimary,
-                        modifier = Modifier
-                            .size(21.dp)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { showPersonaEditor = true },
-                    )
+                    Box {
+                        Icon(
+                            MIcons.MoreVert,
+                            contentDescription = "更多",
+                            tint = TextPrimary,
+                            modifier = Modifier
+                                .size(21.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { chatMenuOpen = true },
+                        )
+                        DropdownMenu(
+                            expanded = chatMenuOpen,
+                            onDismissRequest = { chatMenuOpen = false },
+                            modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(14.dp)),
+                            containerColor = NeuSurface,
+                            shape = RoundedCornerShape(14.dp),
+                            shadowElevation = 0.dp,
+                        ) {
+                            ChatMenuItem("编辑人设") {
+                                chatMenuOpen = false
+                                persona?.let { onOpenSettings("persona_editor/${it.id}") }
+                            }
+                            ChatMenuItem("查看聊天记录") {
+                                chatMenuOpen = false
+                                onOpenSettings("chat_history/$personaId")
+                            }
+                            ChatMenuItem(if (callAllowed) "取消主动打电话" else "允许主动打电话") {
+                                chatMenuOpen = false
+                                val current = callRules.firstOrNull { it.personaId == personaId }
+                                    ?: com.menghuan.app.data.AiCallRule(personaId = personaId)
+                                scope.launch {
+                                    val next = current.copy(enabled = !callAllowed)
+                                    settingsRepo.upsertAiCallRule(next)
+                                    if (next.enabled) {
+                                        com.menghuan.app.notify.AlarmScheduler
+                                            .scheduleAiCallForPersona(context, personaId, next.time)
+                                    } else {
+                                        com.menghuan.app.notify.AlarmScheduler
+                                            .cancelAiCallForPersona(context, personaId)
+                                    }
+                                }
+                            }
+                            ChatMenuItem("角色立绘") {
+                                chatMenuOpen = false
+                                artPicker.launch("image/*")
+                            }
+                            ChatMenuItem("Live 2D") {
+                                chatMenuOpen = false
+                                live2dPicker.launch("*/*")
+                            }
+                            ChatMenuItem("聊天背景") {
+                                chatMenuOpen = false
+                                backgroundPicker.launch("image/*")
+                            }
+                            ChatMenuItem(if (webOn) "联网：已开" else "联网：已关") {
+                                chatMenuOpen = false
+                                scope.launch { settingsRepo.setChatWebSearchEnabled(personaId, !webOn) }
+                            }
+                            ChatMenuItem("音色") {
+                                chatMenuOpen = false
+                                showVoiceSheet = true
+                            }
+                            ChatMenuItem("模型") {
+                                chatMenuOpen = false
+                                showApiSwitch = true
+                            }
+                        }
+                    }
                 },
             )
 
@@ -516,7 +681,7 @@ fun ChatScreen(
                             is ChatListItem.DayHeader -> Box(
                                 // 只保留重排弹簧：进页时整屏条目作为"新条目"插入，
                                 // 默认的成排淡入弹簧会和页面滑入动画叠在一起，观感就是"进页卡一下"
-                                Modifier.fillMaxWidth().animateItem(fadeInSpec = null, fadeOutSpec = null),
+                                Modifier.fillMaxWidth().animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 // 纯文字日期（微信式）：原灰底胶囊在文字下方露出灰条，被当成"线"（用户反馈）
@@ -530,7 +695,7 @@ fun ChatScreen(
                             }
 
                             is ChatListItem.Msg -> Box(
-                                Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
+                                Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null),
                             ) {
                                 val msg = item.message
                                 // v0.43.0：媒体类型优先（存量消息 mediaKind 为空，按老规则推断）
@@ -689,7 +854,7 @@ fun ChatScreen(
                                 Modifier
                                     .fillMaxWidth()
                                     .padding(top = 8.dp)
-                                    .animateItem(fadeInSpec = null, fadeOutSpec = null),
+                                    .animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 taskSuggestions.forEach { suggestion ->
@@ -708,7 +873,7 @@ fun ChatScreen(
                             Box(
                                 Modifier
                                     .fillMaxWidth()
-                                    .animateItem(fadeInSpec = null, fadeOutSpec = null),
+                                    .animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null),
                             ) {
                                 ImageGeneratingCard(
                                     prompt = uiState.imagePrompt,
@@ -870,23 +1035,49 @@ fun ChatScreen(
                                     ).show()
                                 }
                             },
-                            onCancel = {
+                            onArmChange = { recordArm = it },
+                            onRelease = { arm ->
                                 recording = false
-                                recorder.cancel()
-                            },
-                            onFinish = {
-                                recording = false
-                                val result = recorder.stop()
-                                if (result != null) {
-                                    val (file, duration) = result
-                                    scope.launch {
-                                        // 录完再转写（录音期间绝不碰识别器：会抢麦克风）。
-                                        // 只有端侧离线一级，识别不出来就发空文字，语音条照发。
-                                        val text = com.menghuan.app.data.SpeechToText.transcribe(
-                                            context = context,
-                                            audioPath = file.absolutePath,
-                                        ) ?: ""
-                                        vm.sendVoice(file.absolutePath, duration, text)
+                                recordArm = RecordArm.NONE
+                                when (arm) {
+                                    // 滑到「取消」松手：丢掉这段录音
+                                    RecordArm.CANCEL -> recorder.cancel()
+                                    // 滑到「转文字」松手：录完先识别；识别到了只发文字（语音文件删掉）
+                                    RecordArm.TRANSCRIBE -> {
+                                        val result = recorder.stop()
+                                        if (result != null) {
+                                            val (file, duration) = result
+                                            scope.launch {
+                                                val text = com.menghuan.app.data.SpeechToText.transcribe(
+                                                    context = context,
+                                                    audioPath = file.absolutePath,
+                                                ).orEmpty()
+                                                if (text.isBlank()) {
+                                                    // 没听清时**不丢内容**：照发语音，并说清为什么不是文字
+                                                    Toast.makeText(context, "没听清，已发语音", Toast.LENGTH_SHORT).show()
+                                                    vm.sendVoice(file.absolutePath, duration, "")
+                                                } else {
+                                                    vm.sendVoiceAsText(text)
+                                                    runCatching { file.delete() }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // 正常松手：发语音条（原逻辑不动）
+                                    RecordArm.NONE -> {
+                                        val result = recorder.stop()
+                                        if (result != null) {
+                                            val (file, duration) = result
+                                            scope.launch {
+                                                // 录完再转写（录音期间绝不碰识别器：会抢麦克风）。
+                                                // 只有端侧离线一级，识别不出来就发空文字，语音条照发。
+                                                val text = com.menghuan.app.data.SpeechToText.transcribe(
+                                                    context = context,
+                                                    audioPath = file.absolutePath,
+                                                ) ?: ""
+                                                vm.sendVoice(file.absolutePath, duration, text)
+                                            }
+                                        }
                                     }
                                 }
                             },
@@ -996,12 +1187,20 @@ fun ChatScreen(
                             onFile = { panel = 0; filePicker.launch(arrayOf("*/*")) },
                             // v0.47.0：通话入口收进加号面板第四格（收面板 → 进通话页）
                             onCall = { panel = 0; onOpenCall() },
-                            callEnabled = voiceCallOn,
                         )
                     }
                 }
             }
         }
+    }
+
+    // 录音蒙层（v0.53.4）：按住说话期间盖一层，形态照微信「按住说话」
+    if (recording) {
+        VoiceRecordingOverlay(
+            durationMs = recordMs,
+            bars = waveBars,
+            armed = recordArm,
+        )
     }
 
     // App 内自绘拍摄界面（v0.43.0）：全屏覆盖，拍完把 JPEG 路径当普通图片发出。
@@ -1019,6 +1218,11 @@ fun ChatScreen(
             },
             onCancel = { showCamera = false },
         )
+    }
+
+    // v0.53.6：菜单 → 音色（这个 AI 用谁的声音；编辑人设里那一项已按用户要求移除）
+    if (showVoiceSheet) {
+        PersonaVoiceSheet(personaId = personaId, onDismiss = { showVoiceSheet = false })
     }
 
     // 长按头像 = 切换"本会话"的 AI 接口（v0.36.4 按会话独立；不影响其他会话和全局）
@@ -1041,17 +1245,7 @@ fun ChatScreen(
     }
 
 
-    // v0.47.1：人设编辑（三点进入；音色选择在人设里，按人设各自保存）
-    if (showPersonaEditor && persona != null) {
-        PersonaEditorSheet(
-            persona = persona,
-            onSave = {
-                vm.savePersona(it)
-                showPersonaEditor = false
-            },
-            onDismiss = { showPersonaEditor = false },
-        )
-    }
+    // v0.53.5：人设编辑走独立路由页，这里不再挂弹层
 
     // v0.49.0：通话记录卡点开 → 本次通话文字转写
     callLogSession?.let { sessionId ->
@@ -1338,25 +1532,37 @@ private fun NeuChatInput(value: String, onValueChange: (String) -> Unit, onFocus
 }
 
 /**
- * 语音态下的「按住 说话」条（v0.43.1）：占输入框那一格，按住才录音、上滑取消。
+ * 语音态下的「按住 说话」条（v0.43.1 起占输入框那一格；v0.53.4 改判定方式）。
+ *
+ * 按住开始录音；**左右滑**决定松手后干什么，和录音蒙层里那两颗圆按钮一一对应：
+ * 左滑 → 取消，右滑 → 转文字，没滑 → 发语音条。
+ * （旧版是"上滑取消"，与蒙层里的圆按钮对不上，所以改掉。）
  * 高度与 [NeuChatInput] 的 40dp 对齐，切来切去不会跳。
  */
+/** 对话页三点菜单里的一项（统一样式：15sp、点击即由调用方收起菜单） */
+@Composable
+private fun ChatMenuItem(text: String, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(text, fontSize = 15.sp, color = TextPrimary) },
+        onClick = onClick,
+    )
+}
+
 @Composable
 private fun VoiceHoldBar(
     recording: Boolean,
     enabled: Boolean,
     onStart: () -> Unit,
-    onFinish: () -> Unit,
-    onCancel: () -> Unit,
+    onArmChange: (RecordArm) -> Unit,
+    onRelease: (RecordArm) -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
     // ⚠️ 颜色令牌只能在 composable 作用域读（`@ReadOnlyComposable get()`），
     // 不能直接在 `background(...)` 的 lambda 里引用——先在这里取成局部值。
     val trackColor = NeuTrack
     val surfaceColor = NeuSurface
-    var cancelArmed by remember { mutableStateOf(false) }
-    var dragging by remember { mutableStateOf(false) }
-    val shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp)
+    var armed by remember { mutableStateOf(RecordArm.NONE) }
+    val shape = RoundedCornerShape(20.dp)
     Box(
         Modifier
             .fillMaxWidth()
@@ -1366,28 +1572,37 @@ private fun VoiceHoldBar(
             .border(1.dp, NeuHairline, shape)
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
+                val armThreshold = 60.dp.toPx()
                 awaitPointerEventScope {
                     while (true) {
                         val down = awaitFirstDown()
-                        cancelArmed = false
-                        dragging = true
+                        armed = RecordArm.NONE
+                        onArmChange(RecordArm.NONE)
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onStart()
                         var released = false
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            val dy: Float = change.position.y - down.position.y
-                            if (dy < -80f && !cancelArmed) cancelArmed = true
-                            else if (dy >= -80f) cancelArmed = false
+                            val dx: Float = change.position.x - down.position.x
+                            val next = when {
+                                dx <= -armThreshold -> RecordArm.CANCEL
+                                dx >= armThreshold -> RecordArm.TRANSCRIBE
+                                else -> RecordArm.NONE
+                            }
+                            // 换档时补一次轻震动，让"滑到位了"这件事有手感
+                            if (next != armed) {
+                                armed = next
+                                onArmChange(next)
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
                             if (!change.pressed) {
                                 released = true
                                 change.consume()
                                 break
                             }
                         }
-                        dragging = false
-                        if (released && !cancelArmed) onFinish() else onCancel()
+                        if (released) onRelease(armed) else onRelease(RecordArm.CANCEL)
                     }
                 }
             },
@@ -1395,14 +1610,175 @@ private fun VoiceHoldBar(
     ) {
         Text(
             when {
-                recording && cancelArmed -> "松开 取消"
+                recording && armed == RecordArm.CANCEL -> "松开 取消"
+                recording && armed == RecordArm.TRANSCRIBE -> "松开 转文字"
                 recording -> "松开 发送"
                 else -> "按住 说话"
             },
             fontSize = 14.sp,
             fontWeight = if (recording) FontWeight.Medium else FontWeight.Normal,
-            color = if (recording && cancelArmed) NeuDanger
+            color = if (recording && armed != RecordArm.NONE) NeuDanger
             else if (recording) TextPrimary else MutedText,
+        )
+    }
+}
+
+/** 录音蒙层里手指落在哪一档（v0.53.4） */
+private enum class RecordArm { NONE, CANCEL, TRANSCRIBE }
+
+/** 蒙层波形条数量：约 26 根 × 60ms ≈ 1.6 秒的可见窗口 */
+private const val WAVE_BAR_COUNT = 26
+
+/**
+ * 录音中的全屏蒙层（v0.53.4，形态照微信「按住说话」）：
+ * 中间一颗黑底气泡，里面是**实时波形** + 秒数（气泡下沿带个小尖角），
+ * 下面一行「松手发送」，再下面两颗圆按钮「取消」「转文字」——
+ * 手指滑向哪一颗，哪一颗就点亮（松手即执行，见 ChatScreen 里的 onRelease）。
+ *
+ * 配色走 App 自己的黑白灰（用户明确选过"不用微信蓝"），全部跟随主题。
+ */
+@Composable
+private fun VoiceRecordingOverlay(
+    durationMs: Long,
+    bars: List<Float>,
+    armed: RecordArm,
+) {
+    // 蒙层 = 跟着主题的"面色"（浅色=白、深色=暗），**从上到下渐浓**（v0.53.4 照截图）：
+    // 顶部还透出一点聊天内容，往下越来越白，到底部（原来输入栏那一带）完全盖住。
+    val scrim = Brush.verticalGradient(
+        0f to NeuSurface.copy(alpha = 0.70f),
+        0.55f to NeuSurface.copy(alpha = 0.92f),
+        1f to NeuSurface,
+    )
+    val bubble = NeuAccent
+    val onBubble = AccentInk
+    val idleBg = NeuTrack
+    val idleFg = TextPrimary
+
+    Box(Modifier.fillMaxSize().background(scrim)) {
+        Column(
+            // v0.53.5：整块**贴着屏幕下部**——以前垂直居中，按住说话的手指根本够不到
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 84.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // 气泡 + 底部小尖角
+            Box {
+                Column(
+                    Modifier
+                        .widthIn(min = 132.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(bubble)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.5.dp),
+                    ) {
+                        bars.forEach { amp ->
+                            Box(
+                                Modifier
+                                    .width(2.5.dp)
+                                    .height((6 + amp * 22).dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(onBubble),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        com.menghuan.app.data.VoiceRecorder.formatDuration(durationMs),
+                        fontSize = 12.sp,
+                        color = onBubble.copy(alpha = 0.85f),
+                    )
+                }
+                // 小尖角：旋转 45° 的小方块，一半露在气泡外
+                Box(
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .offset(y = 5.dp)
+                        .size(11.dp)
+                        .rotate(45f)
+                        .background(bubble),
+                )
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(
+                when (armed) {
+                    RecordArm.CANCEL -> "松开 取消"
+                    RecordArm.TRANSCRIBE -> "松开 转文字"
+                    RecordArm.NONE -> "松手发送"
+                },
+                fontSize = 13.sp,
+                color = MutedText,
+            )
+            Spacer(Modifier.height(20.dp))
+            // v0.53.5：改成两块**扇形（半圆）选择区**——手指拖进哪块，哪块变深并显出对应的字。
+            // （原来是固定小圆按钮，位置高、又小，手指根本够不到也难点。）
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                SectorAction("取消", armed == RecordArm.CANCEL, idleBg, idleFg, bubble, onBubble)
+                SectorAction("转文字", armed == RecordArm.TRANSCRIBE, idleBg, idleFg, bubble, onBubble)
+            }
+        }
+    }
+}
+
+/**
+ * 录音蒙层里的**扇形（半圆）选择区**（v0.53.5）。
+ *
+ * 用户点名："取消和转文字很难点，改成拖到一定扇形区域，区域颜色变深，然后再显示取消或者转文字。"
+ * 所以这里只负责**显示**（拖进去就变深 + 显出字），真正的判定在 [VoiceHoldBar] 的左右滑（±60dp）。
+ */
+@Composable
+private fun SectorAction(
+    label: String,
+    active: Boolean,
+    idleBg: Color,
+    idleFg: Color,
+    activeBg: Color,
+    activeFg: Color,
+) {
+    val hairline = NeuHairline
+    Box(
+        Modifier
+            .width(136.dp)
+            .height(68.dp),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val r = size.width / 2f
+            val arcTop = Offset(0f, size.height - r)
+            val arcSize = Size(size.width, size.width)
+            drawArc(
+                color = if (active) activeBg else idleBg,
+                startAngle = 180f,
+                sweepAngle = 180f,
+                useCenter = true,
+                topLeft = arcTop,
+                size = arcSize,
+            )
+            if (!active) {
+                // 未选中时描一圈发丝边（浅色主题下浅灰扇形才有边界）
+                drawArc(
+                    color = hairline,
+                    startAngle = 180f,
+                    sweepAngle = 180f,
+                    useCenter = false,
+                    topLeft = arcTop,
+                    size = arcSize,
+                    style = Stroke(width = 1.dp.toPx()),
+                )
+            }
+        }
+        Text(
+            label,
+            fontSize = 14.sp,
+            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
+            color = if (active) activeFg else idleFg,
+            modifier = Modifier.padding(bottom = 12.dp),
         )
     }
 }
@@ -1481,6 +1857,13 @@ private class VoicePlayer {
         onDone = null
         cb?.invoke()
     }
+
+    /** 播放器还活着（stop/release 之后为 false） */
+    val alive: Boolean get() = player != null
+
+    /** 毫秒；播放器不在或取不到都算 0 */
+    val durationMs: Int get() = runCatching { player?.duration ?: 0 }.getOrDefault(0)
+    val positionMs: Int get() = runCatching { player?.currentPosition ?: 0 }.getOrDefault(0)
 
     fun release() = stop()
 }

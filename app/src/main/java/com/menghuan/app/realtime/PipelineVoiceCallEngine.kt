@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.menghuan.app.data.SherpaAsr
 import com.menghuan.app.data.TtsClient
+import com.menghuan.app.data.TtsTarget
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.llm.OpenAiClient
 import com.menghuan.app.llm.StreamEvent
@@ -30,7 +31,8 @@ interface VoiceCallEngine {
     val state: StateFlow<RealtimeCallState>
     val events: SharedFlow<RealtimeCallEvent>
     fun start(config: RealtimeCallConfig)
-    fun hangUp()
+    /** v0.53.7：AI 主动打来的电话，接通后由 AI 先开口（引擎就绪后调用一次） */
+    fun speakFirst()    fun hangUp()
     fun setMuted(muted: Boolean)
 
     /** VM 销毁兜底：未挂断就离开页面时补一次完整清理，然后终止引擎协程域 */
@@ -59,7 +61,7 @@ class PipelineVoiceCallEngine(
     private val appScope: CoroutineScope,
     private val saveCall: suspend (
         personaId: Long, startedAt: Long, endedAt: Long,
-        turns: List<CallTurnData>, status: String,
+        turns: List<CallTurnData>, status: String, initiatedByAi: Boolean,
     ) -> Unit,
 ) : VoiceCallEngine {
 
@@ -117,19 +119,31 @@ class PipelineVoiceCallEngine(
         lastMuted = false
         bargeInSpeechMs = 0
         mainLoop = scope.launch {
-            // 识别模型不随包（228MB，装后下载），加载权重要几秒——必须在 IO 线程做，
-            // 否则 start() 所在的主线程直接 ANR。这段时间状态停在 CONNECTING。
-            if (!SherpaAsr.warmUp(appContext)) {
-                am.close(appContext)
-                v.release()
-                audio = null
-                vad = null
-                fail("语音识别模型未就绪，请先在设置里下载")
-                return@launch
+            // 同 ttsPlayer：这个协程也在 applicationScope 上，抛出来就是整个 App 没了。
+            // 采样/VAD/识别里任何意外都接住，报一条错误并收线，不让用户只看到闪退。
+            try {
+                // 识别模型不随包（228MB，装后下载），加载权重要几秒——必须在 IO 线程做，
+                // 否则 start() 所在的主线程直接 ANR。这段时间状态停在 CONNECTING。
+                if (!SherpaAsr.warmUp(appContext)) {
+                    am.close(appContext)
+                    v.release()
+                    audio = null
+                    vad = null
+                    fail("语音识别模型未就绪，请先在设置里下载")
+                    return@launch
+                }
+                _state.value = RealtimeCallState.LISTENING
+                emitState()
+                audioLoop(am, v)
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Throwable) {
+                Log.e(TAG, "call loop failed", e)
+                hadError = true
+                _events.tryEmit(
+                    RealtimeCallEvent.Error("通话出错：${e.javaClass.simpleName}：${e.message ?: "无详细信息"}"),
+                )
             }
-            _state.value = RealtimeCallState.LISTENING
-            emitState()
-            audioLoop(am, v)
         }
     }
 
@@ -163,7 +177,7 @@ class PipelineVoiceCallEngine(
         if (cfg != null) {
             // 存到应用级作用域：即使 VM 立刻销毁（引擎 scope.cancel）记录也不会丢
             appScope.launch {
-                runCatching { saveCall(cfg.personaId, startedAt, endedAt, snapshot, status) }
+                runCatching { saveCall(cfg.personaId, startedAt, endedAt, snapshot, status, cfg.initiatedByAi) }
                     .onFailure { Log.e(TAG, "save call failed: ${it.message}") }
             }
         }
@@ -237,6 +251,16 @@ class PipelineVoiceCallEngine(
 
     // ---- AI 回复：LLM 流式 → 切句 → TTS 队列 ----
 
+    /**
+     * v0.53.7：AI 主动打来的电话 —— 接通后**由 AI 先开口**，不等用户说话。
+     * 实现是塞一条"电话已接通"的内部提示当输入触发一次回复；它**不进 `turns`**，
+     * 所以不会被当成"用户说的话"落库、也不会出现在字幕里。
+     */
+    override fun speakFirst() {
+        if (config?.initiatedByAi != true) return
+        respond("（电话已经接通，用户接起来了。请你先开口打招呼。）")
+    }
+
     private fun respond(text: String) {
         llmJob?.cancel()
         ttsJob?.cancel()
@@ -257,21 +281,27 @@ class PipelineVoiceCallEngine(
             ttsJob = scope.launch { ttsPlayer(channel) }
 
             val buf = StringBuilder()
+            // v0.53.9：**字幕跟着"整段回复"走**。以前切句时把 buf 清成"还没念的那截"，
+            // 字幕也就跟着退成那一截 —— 等到念完才由 AiFinal 一次性补全，
+            // 真机反馈就是"他先说完话，文字才出来"。现在 shown 只增不减，
+            // 文字随流式生成出现（先出字、后出声），念的过程中一直挂着。
+            val shown = StringBuilder()
             var lastEmit = 0L
             try {
                 llm.streamEvents(cfg.systemPrompt, history).collect { ev ->
                     if (ev is StreamEvent.Delta) {
                         buf.append(ev.text)
+                        shown.append(ev.text)
                         val now = System.currentTimeMillis()
                         if (now - lastEmit > 200) {
                             lastEmit = now
-                            _events.tryEmit(RealtimeCallEvent.AiDelta(buf.toString()))
+                            _events.tryEmit(RealtimeCallEvent.AiDelta(shown.toString()))
                         }
                         val (sentences, rest) = SentenceSplitter.drain(buf.toString())
                         if (sentences.isNotEmpty()) {
                             sentences.forEach { channel.send(it) }
                             buf.clear().append(rest)
-                            _events.tryEmit(RealtimeCallEvent.AiDelta(buf.toString()))
+                            _events.tryEmit(RealtimeCallEvent.AiDelta(shown.toString()))
                         }
                     }
                 }
@@ -302,32 +332,51 @@ class PipelineVoiceCallEngine(
         }
     }
 
+    /**
+     * 逐句合成 + 播放。
+     *
+     * **整段包 try/catch**（v0.53.1）：这个协程跑在 `applicationScope` 上，里面任何没被接住的
+     * 异常都会直接冒到默认处理器 → 整个 App 闪退（真机反馈"AI 还没出声就闪退"就是这个形状）。
+     * 通话里最可能抛的是 AudioTrack 状态类异常（挂断/插话时另一条线程正在 release 轨道），
+     * 那不该让进程死——接住、报一条错误、继续走字幕兜底。
+     */
     private suspend fun ttsPlayer(channel: Channel<String>) = withContext(Dispatchers.IO) {
         val voice = config?.voice ?: return@withContext
         var spoke = false
-        for (sentence in channel) {
-            var result = tts.synthesize(sentence, voice)
-            if (result == null) result = tts.synthesize(sentence, voice) // 瞬时失败重试一次
-            // 云端 TTS 回什么容器不由我们定（硅基 MP3、MiMo 默认 WAV），
-            // 一律归一化成播放轨道那个采样率的单声道 PCM 再喂 AudioTrack
-            val pcm = result?.let { TtsAudioDecoder.decode(it, CallAudioManager.OUT_RATE) }
-            if (pcm != null) {
-                if (!spoke) {
-                    if (audio?.playStart() != true) {
-                        _events.tryEmit(RealtimeCallEvent.Error("声音播放初始化失败"))
-                        break
+        try {
+            for (sentence in channel) {
+                var result = tts.synthesize(sentence, voice, TtsTarget.CALL)
+                if (result == null) result = tts.synthesize(sentence, voice, TtsTarget.CALL) // 瞬时失败重试一次
+                // v0.52.0：通话改要 WAV@OUT_RATE，正常路径**不经过任何解码**；
+                // 万一网关仍回 MP3，交给 MediaExtractor 兜底（它读真实采样率/声道，要落临时文件）
+                val pcm = result?.let { TtsAudioDecoder.decode(it, CallAudioManager.OUT_RATE, appContext.cacheDir) }
+                if (pcm != null) {
+                    if (!spoke) {
+                        if (audio?.playStart() != true) {
+                            _events.tryEmit(RealtimeCallEvent.Error("声音播放初始化失败"))
+                            break
+                        }
+                        spoke = true
+                        _state.value = RealtimeCallState.AI_SPEAKING
+                        emitState()
                     }
-                    spoke = true
-                    _state.value = RealtimeCallState.AI_SPEAKING
-                    emitState()
+                    audio?.playPcm(pcm) { scope.isActive && ttsJob?.isActive != false }
+                } else if (!spoke) {
+                    // 整轮一句都出不来声：把原因亮给用户（远程诊断真机无声问题），之后走字幕兜底
+                    val why = if (result == null) tts.lastFailure ?: "未知原因"
+                        else "服务商回的 ${result.format} 解不开，请检查这家是否支持该格式"
+                    _events.tryEmit(RealtimeCallEvent.Error("声音合成失败：$why"))
                 }
-                audio?.playPcm(pcm) { scope.isActive && ttsJob?.isActive != false }
-            } else if (!spoke) {
-                // 整轮一句都出不来声：把原因亮给用户（远程诊断真机无声问题），之后走字幕兜底
-                val why = if (result == null) tts.lastFailure ?: "未知原因" else "音频解码失败"
-                _events.tryEmit(RealtimeCallEvent.Error("声音合成失败：$why"))
+                synchronized(spoken) { spoken.append(sentence) }
             }
-            synchronized(spoken) { spoken.append(sentence) }
+        } catch (ce: CancellationException) {
+            throw ce // 插话/挂断是正常的取消，不是故障
+        } catch (e: Throwable) {
+            Log.e(TAG, "tts player failed", e)
+            hadError = true
+            _events.tryEmit(
+                RealtimeCallEvent.Error("播放出错：${e.javaClass.simpleName}：${e.message ?: "无详细信息"}"),
+            )
         }
         if (spoke) audio?.stopPlayback()
     }

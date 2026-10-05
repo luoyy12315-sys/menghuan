@@ -1,7 +1,5 @@
 package com.menghuan.app.ui.settings
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,9 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -20,10 +16,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.MenghuanApp
@@ -47,7 +41,6 @@ import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.neuSurface
-import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
@@ -106,23 +99,21 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
     fun save() {
         scope.launch {
             runCatching {
-                // 应用助手：改内置人设的设定词；被删除后保存会以固定名字重建
-                val dao = app.db.personaDao()
-                val existing = dao.getByName(ASSISTANT_PERSONA_NAME)
+                // 应用助手：改内置人设的设定词；被删除后保存会以固定名字重建。
+                // 必须走 personaRepository.save——那里记下"用户亲手改过手册"，
+                // App 才不会在下个版本把用户写的东西冲掉（v0.51.1 升级机制）
+                val existing = app.db.personaDao().getByName(ASSISTANT_PERSONA_NAME)
                 val trimmed = assistantPrompt.trim()
-                if (existing != null) {
-                    dao.upsert(existing.copy(systemPrompt = trimmed))
-                } else {
-                    dao.upsert(
-                        Persona(
+                app.personaRepository.save(
+                    existing?.copy(systemPrompt = trimmed)
+                        ?: Persona(
                             name = ASSISTANT_PERSONA_NAME,
                             title = ASSISTANT_PERSONA_TITLE,
                             avatarEmoji = "🤖",
                             isBuiltIn = true,
                             systemPrompt = trimmed,
                         )
-                    )
-                }
+                )
                 app.settingsRepository.setBasePrompt(basePrompt)
                 app.settingsRepository.setProfilePreamble(profilePreamble)
                 app.settingsRepository.setExtractionStrategy(extractionStrategy)
@@ -167,7 +158,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
     SettingsPage(title = "AI 提示词", onBack = onBack) {
         Spacer(Modifier.height(8.dp))
 
-        SectionRow(
+        SettingsSectionRow(
             title = "① 应用助手提示词",
             customized = assistantCustomized,
             expanded = openSection == "assistant",
@@ -185,7 +176,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
         }
 
-        SectionRow(
+        SettingsSectionRow(
             title = "② 基础提示词",
             customized = baseCustomized,
             expanded = openSection == "base",
@@ -203,7 +194,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
         }
 
-        SectionRow(
+        SettingsSectionRow(
             title = "③ 档案注入说明",
             customized = preambleCustomized,
             expanded = openSection == "preamble",
@@ -221,7 +212,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
         }
 
-        SectionRow(
+        SettingsSectionRow(
             title = "④ AI 洞察提炼策略",
             customized = extractionCustomized,
             expanded = openSection == "extraction",
@@ -239,7 +230,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
         }
 
-        SectionRow(
+        SettingsSectionRow(
             title = "⑤ AI 周报撰写策略",
             customized = weeklyCustomized,
             expanded = openSection == "weekly",
@@ -257,8 +248,8 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
         }
 
-        SectionRow(
-            title = "⑥ 生图触发策略（仅生图接口配齐时注入）",
+        SettingsSectionRow(
+            title = "⑥ 生图触发策略（仅生图模型配齐时注入）",
             customized = imageCustomized,
             expanded = openSection == "image",
         ) { toggle("image") }
@@ -275,7 +266,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
         }
 
-        SectionRow(
+        SettingsSectionRow(
             title = "⑦ 手机操控（无障碍服务开启时生效）",
             customized = agentChatCustomized,
             expanded = openSection == "agent",
@@ -303,7 +294,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
         }
 
-        SectionRow(
+        SettingsSectionRow(
             title = "⑧ AI 语音条（仅语音合成配齐时注入）",
             customized = voiceNoteCustomized,
             expanded = openSection == "voiceNote",
@@ -334,7 +325,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
         }
 
         // ===== 生成逻辑说明：收进折叠行，需要时再展开 =====
-        SectionRow(
+        SettingsSectionRow(
             title = "生成逻辑说明（洞察 / 周报何时触发）",
             expanded = openSection == "logic",
         ) { toggle("logic") }
@@ -345,54 +336,6 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(10.dp))
         }
         Spacer(Modifier.height(6.dp))
-    }
-}
-
-/**
- * 手风琴段行：标题 + 「已自定义」徽标 + 可选尾部控件（⑦ 的总开关）+ 展开箭头。
- * 点击整行切换展开态；箭头只是状态指示，不是独立按钮。
- */
-@Composable
-private fun SectionRow(
-    title: String,
-    expanded: Boolean,
-    customized: Boolean = false,
-    trailing: (@Composable androidx.compose.foundation.layout.RowScope.() -> Unit)? = null,
-    onToggle: () -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onToggle,
-            )
-            .padding(vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            title,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = TextPrimary,
-            modifier = Modifier.weight(1f),
-        )
-        if (customized) {
-            Spacer(Modifier.width(8.dp))
-            Text("已自定义", fontSize = 10.sp, color = TextSecondary, letterSpacing = 0.4.sp)
-        }
-        if (trailing != null) {
-            Spacer(Modifier.width(10.dp))
-            trailing()
-        }
-        Spacer(Modifier.width(10.dp))
-        Icon(
-            imageVector = if (expanded) MIcons.ChevronUp else MIcons.ChevronDown,
-            contentDescription = if (expanded) "收起" else "展开",
-            tint = MutedText,
-            modifier = Modifier.size(20.dp),
-        )
     }
 }
 

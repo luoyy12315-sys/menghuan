@@ -1,8 +1,10 @@
 package com.menghuan.app
 
+import com.menghuan.app.data.ClonedVoice
 import com.menghuan.app.data.TtsAudioFormat
 import com.menghuan.app.data.TtsConfig
 import com.menghuan.app.data.TtsProvider
+import com.menghuan.app.data.TtsTarget
 import com.menghuan.app.data.TtsVoices
 import com.menghuan.app.data.VoiceRef
 import org.junit.Assert.assertEquals
@@ -104,21 +106,61 @@ class TtsConfigTest {
 
     // ===== 预置音色表 =====
 
+    /** v0.52.0：每家只留两个预置（一男一女），多的那些是噪音 */
     @Test
-    fun `硅基八个预置音色`() {
-        assertEquals(8, TtsVoices.SILICONFLOW_PRESETS.size)
-        assertEquals("anna", TtsVoices.defaultVoiceId(TtsProvider.SILICONFLOW))
+    fun `硅基只留一男一女两个预置`() {
         assertEquals(
-            listOf("anna", "bella", "claire", "diana", "alex", "benjamin", "charles", "david"),
+            listOf("alex", "anna"),
             TtsVoices.SILICONFLOW_PRESETS.map { it.id },
         )
+        assertEquals("alex", TtsVoices.defaultVoiceId(TtsProvider.SILICONFLOW))
     }
 
     @Test
-    fun `MiMo 九个预置音色，中文 ID 就是中文本身`() {
-        assertEquals(9, TtsVoices.MIMO_PRESETS.size)
-        assertEquals("mimo_default", TtsVoices.defaultVoiceId(TtsProvider.XIAOMI_MIMO))
-        assertTrue(TtsVoices.MIMO_PRESETS.any { it.id == "冰糖" })
+    fun `MiMo 只留一男一女，中文 ID 就是中文本身`() {
+        assertEquals(listOf("白桦", "冰糖"), TtsVoices.MIMO_PRESETS.map { it.id })
+        assertEquals("白桦", TtsVoices.defaultVoiceId(TtsProvider.XIAOMI_MIMO))
+    }
+
+    /** 音色板块 = 预置 + 克隆 + 手填 ID；人设编辑页的候选就是这一份 */
+    @Test
+    fun `音色板块按服务商组名单`() {
+        val cloned = listOf(ClonedVoice("绘梨衣", "speech:a:b:c", "FunAudioLLM/CosyVoice2-0.5B"))
+        val sf = TtsVoices.library(TtsProvider.SILICONFLOW, cloned, emptyList(), "speech:x")
+        assertEquals(listOf("Alex · 男声", "Anna · 女声", "克隆 · 绘梨衣", "手动 · speech:x"), sf.map { it.label })
+        // 本地样本只进 MiMo 的名单，硅基的克隆只进硅基的名单
+        val mimo = TtsVoices.library(TtsProvider.XIAOMI_MIMO, cloned, listOf("我的.wav"), "")
+        assertEquals(listOf("白桦 · 男声", "冰糖 · 女声", "克隆 · 我的"), mimo.map { it.label })
+        assertTrue(mimo.last().ref.voiceId.startsWith("local:"))
+        // 自定义端点没有预置、也拿不到别家的克隆/本地样本，名单就是那条手填 ID
+        assertTrue(TtsVoices.library(TtsProvider.CUSTOM, cloned, listOf("a.wav"), "").isEmpty())
+        assertEquals(
+            listOf("手动 · alloy"),
+            TtsVoices.library(TtsProvider.CUSTOM, cloned, listOf("a.wav"), "alloy").map { it.label },
+        )
+    }
+
+    /** 人设存过旧音色、或换了服务商时，标签不能崩，也不能把别家的 ID 当成本家的 */
+    @Test
+    fun `音色标签回落`() {
+        val cloned = listOf(ClonedVoice("绘梨衣", "speech:a:b:c", "m"))
+        assertEquals(
+            "默认 · alex",
+            TtsVoices.labelOf(TtsProvider.SILICONFLOW, null, cloned, ""),
+        )
+        assertEquals(
+            "克隆 · 绘梨衣",
+            TtsVoices.labelOf(TtsProvider.SILICONFLOW, VoiceRef(TtsProvider.SILICONFLOW, "speech:a:b:c"), cloned, ""),
+        )
+        assertEquals(
+            "手动 · my-voice",
+            TtsVoices.labelOf(TtsProvider.CUSTOM, VoiceRef(TtsProvider.CUSTOM, "my-voice"), emptyList(), "my-voice"),
+        )
+        // 存的是硅基的音色，现在生效的是小米 → 按"默认"显示（那个 ID 在小米不认）
+        assertEquals(
+            "默认 · 白桦",
+            TtsVoices.labelOf(TtsProvider.XIAOMI_MIMO, VoiceRef(TtsProvider.SILICONFLOW, "anna"), emptyList(), ""),
+        )
     }
 
     @Test
@@ -188,5 +230,27 @@ class TtsConfigTest {
         assertEquals("XIAOMI_MIMO|local:/data/voices/a.wav", ref.encode())
         assertEquals("/data/voices/a.wav", TtsVoices.localSamplePath(ref.voiceId))
         assertNull(TtsVoices.localSamplePath("冰糖"))
+    }
+
+    /**
+     * v0.52.0：通话要 **WAV@24k**（回来正好喂 AudioTrack，链路里根本不解 MP3），
+     * 语音条/试听要 MP3（小、MediaPlayer 直接播）。MiMo 永远 wav——
+     * 它那个 mp3 枚举没有任何成熟实现用过，不赌。
+     */
+    @Test
+    fun `合成目标决定要什么格式`() {
+        assertEquals(TtsAudioFormat.MP3, TtsTarget.NOTE.format)
+        assertNull(TtsTarget.NOTE.sampleRate)
+        assertEquals(TtsAudioFormat.WAV, TtsTarget.CALL.format)
+        assertEquals(24_000, TtsTarget.CALL.sampleRate)
+        assertEquals(TtsAudioFormat.MP3, TtsTarget.NOTE.formatFor(TtsProvider.SILICONFLOW))
+        assertEquals(TtsAudioFormat.MP3, TtsTarget.NOTE.formatFor(TtsProvider.CUSTOM))
+        assertEquals(TtsAudioFormat.WAV, TtsTarget.NOTE.formatFor(TtsProvider.XIAOMI_MIMO))
+        assertEquals(TtsAudioFormat.WAV, TtsTarget.CALL.formatFor(TtsProvider.SILICONFLOW))
+        // 通话采样率必须等于播放轨道的采样率，否则每句话都白做一次重采样
+        assertEquals(
+            com.menghuan.app.realtime.CallAudioManager.OUT_RATE,
+            TtsTarget.CALL.sampleRate,
+        )
     }
 }

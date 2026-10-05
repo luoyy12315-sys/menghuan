@@ -1,194 +1,207 @@
 # 梦欢 · 项目长期记忆
 
-> 2026-10-03 整理：v0.21–v0.38 的细节已并入「历史沉淀」区，只保留**仍有约束力的结论**。
-> 逐版本原始记录见 `.workbuddy/memory/2026-*.md` 与 `CHANGELOG.md`。
+> 只保留**仍有约束力的结论**。逐版本细节见 `.workbuddy/memory/2026-*.md` 与 `docs/CHANGELOG.md`。
+> 方案类文档在 `docs/PLAN-*.md` / `docs/RESEARCH-*.md`。
 
-## 构建环境（验证可用）
-- JDK17 `C:/Users/16621/.workbuddy/toolchains/jdk17`；Android SDK `.../toolchains/android-sdk`；
+## 构建环境
+- JDK17 `C:/Users/16621/.workbuddy/toolchains/jdk17`；SDK `.../toolchains/android-sdk`；
   Gradle 8.14.3 `C:/Users/16621/.gradle/wrapper/dists/gradle-8.14.3-all/<hash>/gradle-8.14.3/bin/gradle.bat`
-- 构建：`assembleDebug|testDebugUnitTest|recordRoborazziDebug --no-daemon --console=plain`；
-  **不要用 gradlew**（无 wrapper）。日志重定向到 `logs/`（覆盖同名，禁止写项目根）。
-- 勿删配置：`local.properties`、`gradle.properties` 的 `android.overridePathCheck=true`、`settings.gradle.kts` 阿里云镜像。
-- **中文路径坑（单测）**：JDK17 经 @argfile 按 GBK 解码 UTF-8 classpath → 中文路径下 JVM 单测必 CNFE。
-  先 `subst X: "C:\Users\16621\Desktop\梦欢"` 再在 `X:\` 下构建（重启失效需重跑）。
-- **UI 回归门禁**：改 UI 必跑 `recordRoborazziDebug`（Robolectric+Roborazzi 启 MainActivity 出 PNG
-  到 `app/build/screenshots/`），目视比对；用法见 AGENTS §八。
+- **不要用 gradlew**（无 wrapper）。日志重定向到 `logs/`。
+- ⚠️ **`JAVA_HOME` 必须 `export`**（只赋值不export → gradle 报 "JAVA_HOME is not set"），
+  且 `PATH` 里要有 `$JAVA_HOME/bin`。
+- ⭐ **改完 Compose 别信静态自查**：括号平衡、导入"看起来齐"都查不出未解析引用 / 缺初值 /
+  漏常量。**唯一可靠的是真跑 `:app:compileDebugKotlin`**（比 assemble 快得多），过了再谈出包。
+  （v0.54.0 出包时静态自查全过，真编译一次报出 6 个错：`scrollBy` 缺 import、漏 import `Box`、
+  `collectAsState()` 缺 initial、删路由时误删还在用的 `SettingsRoutes.PERMISSIONS`。）
+- ⚠️ **删路由/常量前先确认它是不是真的没了**：v0.54.0 把「权限」入口挪组时，
+  误以为权限页也被删了 → 把 `PERMISSIONS` 常量删掉 → 编译报未解析引用。
+  **挪位置 ≠ 删页面。**
+- ⚠️ `scrollBy` 是 `ScrollableState` 的扩展函数，用它必须
+  `import androidx.compose.foundation.gestures.scrollBy`（别处能用是因为那边 import 过）。
+- **中文路径坑**：JDK17 经 @argfile 按 GBK 解码 UTF-8 classpath → 中文路径下 JVM 单测必 CNFE。
+  先 `subst X: "C:\Users\16621\Desktop\梦欢"` 再在 `X:\` 构建（重启失效需重跑）。
+- **出包五步**：bump version → `subst` 后跑 `:app:assembleRelease`（release 用 debug 签名，
+  可覆盖安装）→ 产物拷到项目根命名 `梦欢-v<版本>-release.apk` → 上一版移进 `archive/`
+  → 补 CHANGELOG + 助手手册 + 测试断言。
+- 勿删：`local.properties`、`gradle.properties` 的 `android.overridePathCheck=true`、
+  `settings.gradle.kts` 阿里云镜像。
 
 ## 最高优先级约定
-- **⭐ 新功能先去 GitHub 找优秀案例再动手（2026-10-04 拍板）**：GitHub 上同类实现大多免费公开，
-  **可直接读、借鉴、复制适配，不用管许可证**。顺序 = 搜 star 高/活跃的实现（中英文关键词都搜，
-  也搜 `android ... sample` / `awesome-android ...`）→ 读它的做法 → 照着落到本项目。
-  **闭门造车是本项目返工的主要来源。**
-- **⭐ 不会就直说，不许"随便搞"、不许试错式连着改（2026-10-04 拍板）**：没把握就先说明不确定性，
-  或先去 GitHub 找现成做法。v0.43.1 连着三轮返工仍未解决，用户明确反感"先改一版试试"。
-- **⭐ 键盘 / 语音冻结已于 v0.44.0 解除（2026-10-04 用户点名"换成熟方案"）**：
-  该次已按 GitHub 成熟案例整体替换（键盘 = 官方 WindowInsetsAnimationCompat + navBar 基线，
-  新文件 `ui/chat/KeyboardInsets.kt`；语音采集 = AudioRecord 直采 PCM+WAV 头）。
-  **此后未经点名仍不得再动**；`SpeechToText` / `cloudTranscribe` / `OpenAiClient.transcribe`
-  未动过。本地离线 ASR（vosk/sherpa-onnx，需下载 40-80MB 模型）用户未拍板，**不要擅自上**。
-- **版本节奏（2026-10-01 拍板）**：用户说一次需求 = 一次版本更新。一批需求（哪怕十几条子项、
-  横跨 UI/数据/AI）必须在**同一个 versionName** 内全部做完，**严禁按子功能拆成一串小版本**。
-  中间不 bump version、不出包；全做完 + 测试截图过了才出一个包。
-- **数据只存本机**，不上云。
-- 人设（Persona）用户可增删改；长按头像 = 切换**本会话** AI 接口（v0.35.0）。
-- 主题切换只在「设置 → 外观」；深色主题是 App 自带（跟随系统/浅色/深色），**Force Dark 必须关**。
-- 业务逻辑层（各 ViewModel / Repository / Room / OpenAiClient / notify）历轮 UI 重建均保留。
+- ⭐ **新功能先去 GitHub 找成熟案例**再动手（可直接读/借鉴/复制，不用管许可证）。
+  中英文关键词都搜，也搜 `awesome-android ...`。**闭门造车是本项目返工的主要来源。**
+- ⭐ **不会就说不会，不许"随便搞"、不许试错式连着改**（v0.43.1 连着三轮返工，用户明确反感）。
+  没把握先说明不确定性，或按上一条先找现成做法。
+- ⭐ **动手前先问清方向**：需求有歧义或有多条实现路线时，列清"怎么做/什么代价/适合什么情况"
+  让用户选，不许自作主张。**讲方案先画图，别先抛控件类型名** —— 用户脑子里的画面是**结果**，
+  我脑子里的关键词是**实现**（"手风琴""折叠"这类词用户会直接否掉）。
+- ⭐ **测试 / 编译 / 打包由用户决定**：改完代码就停手，只交付源码。
+- ⭐ **一批需求 = 一个版本**，严禁按子功能拆版本。中间不 bump、不出包。
+- ⭐ **应用助手手册（`AiPrompts.DEFAULT_ASSISTANT_PROMPT`）必须与每版同步**。
+  它是这App 的使用手册，滞后 = 用户拿到错答案。改法见下节。
+- 键盘 / 语音栈未经点名不得再动（见对应节）。
+- 数据只存本机。人设可增删改；长按头像 = 切换**本会话**接口。
+- 主题切换只在外观组；深色是 App 自带（跟随/浅色/深色），**Force Dark 必须关**。
 
-## UI 设计系统（Figma 风，2026-09-28 拍板）
-- 黑白骨架 + 鲜亮品牌色**只作内容点缀**。参考 `DESIGN.md`。**预览工作流已废弃：直接改 Compose。**
-- 令牌：`NeuBackground`/`NeuSurface`=#FFF，`NeuTrack`=#F2F3F5 凹陷灰，`NeuHairline`=黑8%，
-  `NeuAccent`=纯黑，`NeuDanger`=#F24E1E；`AccentInk` = 强调色一反相
-  （**强调色上的文字/图标必须跟着翻**，否则深色下白底白字）。
-  品牌色 Brand Green/Yellow/Purple/Blue/Salmon 只用于 Hero 卡/热力/persona 环/Spark，**绝不用于骨架**。
-- 核心组件 `ui/common/Neu.kt`：`neuSurface`、`figmaSelection`、NeuButton（999dp 药丸）、
-  NeuChip、NeuSwitch、NeuCircleButton。图标走 `ui/theme/Icons.kt` 的 **MIcons**（纯线条 21–23dp，禁用 Material 图标）。
-- 动效：弹簧优先；底栏指示器弹簧滑移；EaseOutExpo 管进出场；进出场**不用 fadeOut**
-  （边缩边淡会让底部输入栏最后几帧透明化 = 用户看到的"闪一下"）。
-- 比例类尺寸一律基于 `LocalContentWidth`，不用 `LocalConfiguration.screenWidthDp`。
+## ⚠️ 助手手册 replace 链（最容易"看起来改了其实没改"）
+- 机制 v0.51.1：**不用登记任何"历史版本全文"**。只要用户没亲手改过设定词，
+  启动即刷最新（`refreshAssistantPromptIfNeeded` + `assistant_prompt_customized` 三态标记）。
+- 新 replace **一律追加在链尾**；放在前面会因"目标文本还没生成"而**静默落空**。
+- **目标串不带版本号**（被批量 sed 后立即失配）。
+- 四个高频坑：① 目标串必须是**最终形态**（前序 replace 已改过就不对了）；
+  ② **短目标串只命中多处中的一处**；③ **被包含的同款 replace 是死代码**（永远落空且看不出来）；
+  ④ **每加一条必须在 `AiPromptsTest` 补双向断言**：新措辞 `contains` + 旧措辞 `assertFalse`。
+- ⭐ **没跑构建时验证 replace 链 = 离线模拟器**：从 `AiPrompts.kt` 解析底稿 + 全部 replace，
+  按 Kotlin 语义在 Python 重放。必须复刻：`trimIndent()` 去**首尾空白行**再按最小缩进左移
+  （`len('.trimIndent()') == 13` 不是 14）、**只作用于紧邻字面量**、还原 `\` 转义、
+  **去注释必须字符串感知**（否则 `https://…` 里的 `//` 被当注释，后半条链全歪）。
+- ⚠️ Kotlin 中文文案**不要用半角引号包中文词**（提前结束字符串 → 编译报 `Expecting an element`），用「」。
 
-## 踩实的 Compose / Android 硬规则
-- ⚠️ **颜色令牌只能在 composable 里读**（`@ReadOnlyComposable get()` 读 `LocalNeuPalette`）。
-  `drawBehind`/`Canvas`/`Modifier.background(...)` 的 lambda 里**必须先取局部变量** —— 这是历次改造编译错的唯一来源。
-- ⚠️ **自绘描边必须内缩 strokeWidth/2**：`drawRoundRect + Stroke(1dp)` 默认居中，外半圈伸出布局边界，
-  分数像素上呈"黑边"。任何自绘描边都要内缩。
-- ⚠️ **独立 Composable 内部不能直接用 `Modifier.weight`**（ColumnScope/RowScope 成员扩展）
-  → 子组件收 `Modifier` 参数、父级在作用域里传 `weight(1f)`。
-- ⚠️ **`@file:OptIn` 必须在文件最前**（注释之前），否则被忽略。
-- ⚠️ **要做进出场动画的容器不要直接挂 `imePadding`**：键盘收缩时 padding 瞬间归零会把元素顶一下。
-- ⚠️ **NavHost deep link 参数是粘的**：`entry.arguments` 每次重组都能读到，
-  任何"按参数滚 tab"的 LaunchedEffect 从 push 层返回时会**再执行一次**。
-  必须按 `entry.id` 记消费标记（rememberSaveable），只生效一次。
-- ⚠️ **UI 状态别用局部 remember 驱动跨层流程**：局部状态没人置位 = 死分支（v0.35.0 生图占位踩过）。
-  流程状态一律放 UiState。
-- ⚠️ **小尺寸自绘图标的圆点会粘连**：定好尺寸后**必须截图放大看一眼**（键盘图标 4 列键帽糊成黑疙瘩）。
+## UI 设计系统（Figma 风）
+- 黑白骨架 + 鲜亮品牌色**只作内容点缀**。令牌：`NeuBackground`/`NeuSurface`=#FFF、
+  `NeuTrack`=#F2F3F5、`NeuHairline`=黑8%、`NeuAccent`=黑、`NeuDanger`=#F24E1E；
+  `AccentInk` = 强调色一反相（强调色上的文字/图标必须跟着翻）。
+  品牌色只用于 Hero 卡/热力/persona 环/Spark，**绝不用于骨架**。
+- 核心组件 `ui/common/Neu.kt`：`neuSurface`、`figmaSelection`、`NeuButton`（999dp 药丸）、
+  `NeuChip`、`NeuSwitch`、`NeuCircleButton`、`NeuSheetRow`、`NeuTextField`。图标走 `MIcons`（禁 Material）。
+- 动效：弹簧优先；进出场**不用 fadeOut**（边缩边淡会让底部输入栏最后几帧透明 = "闪一下"）。
+- 比例类尺寸基于 `LocalContentWidth`，不用 `LocalConfiguration.screenWidthDp`。
+- ⚠️ **`neuSurface(intensity = 0f)` 是"整条全透明"**（color 按 intensity 乘 alpha），
+  不是"透明底"。要凹陷灰槽用 `inset = true`。
 
-## 键盘 / 面板 inset（v0.44.0 已换官方方案，实现在 `ui/chat/KeyboardInsets.kt`）
-- **现行实现 = `rememberBottomBarInset(followKeyboard)`**：navBar 走**基线**（只在 ime==0 时刷新）、
-  面板/语音态不读 ime、ime 优先取 `WindowInsetsAnimationCompat` 逐帧插值（`ime==0` 强制归零自愈）。
-  改键盘行为先读那个文件的类注释，别再把旧三补丁（单调收敛/静默期/方向性动画）加回来。
-- **"取 max 修不了中间帧"**：两个系统量时序错位（ime 与 navBar 先后变）时，
-  把其中一个改成"稳定基线"才是正解；时间窗/单调收敛类补丁只会互相咬合。
-- **不要对系统动画做二次插值**：输入栏自己走缓动、键盘是**系统**在动，两条曲线不同必然"慢半拍"。
-- **键盘避让不能由两层各管一半**；**面板高度不能算进输入栏 bottomInset**（面板是兄弟节点，自己占高）。
-- **所有"形态切换"入口必须收敛到一个函数**，各写一份 hide/show 必漏窗口期。
-- ⚠️⚠️ **"入口收敛到一个函数"还不够 —— 互斥必须再由键盘状态兜一层**（v0.44.1 真机 bug）：
-  点表情收键盘**不清焦点** → 再点输入框 `onFocus` 不触发（焦点没变），但系统会对
-  **已聚焦**的输入框自动弹键盘 → 面板态还挂着 → 输入栏被盖。
-  正解 = `ImeDismissesPanels`：**ime==0 布防，布防后 ime>0 且有面板/语音态就收掉**
-  （PanelSwitchHelper 思想），点击入口只当正常路径。无时间窗：收起动画降到 0 才布防，不会误收。
-- ⚠️ **别拿"焦点变化"当键盘显隐的信号**：不清焦点 / 重复点击已聚焦控件都是常态。
-- ⚠️ **给某个过渡打补丁时，必须反问"反方向会不会被误伤"**
-  （本项目的静默期补丁误伤了"弹键盘"，正是栽在这里）。
-- **没有 `BackHandler` 时返回键会被系统拿去收键盘并消费掉**，第二次才到 NavHost 直接退页。
-  凡页面有"弹出层"，必须自己接 `BackHandler` 分层收起。
-- ⚠️ 逐帧 inset 的读取必须封在独立小 composable 里，不能提到页面顶层
-  （否则键盘动画期间整页每帧重组）。
+## Compose / Android 硬规则（历次编译错都出在这几条）
+- ⚠️ **颜色令牌只能在 composable 里读**；`drawBehind`/`Canvas`/`background(...)` 的 lambda 里
+  **必须先取局部变量**。
+- ⚠️ **自绘描边必须内缩 strokeWidth/2**（默认居中，外半圈伸出布局 = 分数像素上的"黑边"）。
+- ⚠️ **独立 Composable 内不能用 `Modifier.weight`** → 子组件收 `Modifier` 参数、父级传 `weight(1f)`。
+- ⚠️ `@file:OptIn` 必须在文件最前（注释之前）。
+- ⚠️ 要做进出场动画的容器**不要直接挂 `imePadding`**（键盘收缩时 padding 瞬间归零会顶一下）。
+- ⚠️ **UI 状态别用局部 remember 驱动跨层流程**（没人置位 = 死分支）；流程状态一律放 UiState。
+- ⚠️ **NavHost deep link 参数是粘的**：按参数滚 tab 的 `LaunchedEffect` 从 push 层返回会**再跑一次**
+  → 必须按 `entry.id` 记 `rememberSaveable` 消费标记。
+- ⚠️ **小尺寸自绘图标的圆点会粘连** → 定好尺寸后**必须截图放大看一眼**。
+- ⚠️ 过滤行用 `if (!show) return`，不要 alpha=0（透明节点会被无障碍与 UI 测试当成真实存在的行）。
+- 列表滚动：首次 `scrollToItem` 无动画直跳；后续新消息**只在 nearBottom 时**跟随。
+  LazyColumn 按"首项 + 偏移"锚定，**流式增量（末项变长）不会自动跟到底**，要按末项高度差 `scrollBy` 补滚。
 
-## 语音采集（v0.44.0 已换 AudioRecord 直采，实现在 `data/VoiceRecorder.kt`）
-- **现行实现 = `AudioRecord` 16kHz/MONO/PCM_16BIT 直采 + 手拼 44 字节 WAV 头**
-  （vosk/sherpa-onnx/whisper.cpp 三家 Android 采集层的统一做法）。
-  **不要再回去用 MediaRecorder**：format/encoder 组合表是 ROM 兼容性重灾区。
-- 坑：`AudioRecord` 构造不抛异常 ≠ 拿到麦克风，必须查 `state==STATE_INITIALIZED`；
-  采集必须独立线程（read 是阻塞的）；stop 后要 `join` 抽水线程再回填 WAV 头。
+## 键盘 / 面板 inset（`ui/chat/KeyboardInsets.kt`）
+- 现行实现 = `rememberBottomBarInset(followKeyboard)`：navBar 走**基线**、面板/语音态不读 ime、
+  ime 优先取 `WindowInsetsAnimationCompat` 逐帧插值。**改键盘行为先读那个文件的类注释**，
+  别把旧三补丁加回来。
+- 四条规律：① "取 max"修不了中间帧（时序错位时要把其中一个改成稳定基线）；
+  ② 不要对系统动画做二次插值；③ 键盘避让不能两层各管一半、面板高度不能算进输入栏bottomInset；
+  ④ 打补丁前先问"反方向会不会被误伤"。
+- 形态切换入口收敛到一个函数，**互斥还要由键盘状态兜一层**（`ImeDismissesPanels`）。
+  ⚠️ **别拿"焦点变化"当键盘显隐信号**。
+- 没有 `BackHandler` 时返回键会被系统拿去收键盘 → 有弹出层的页面必须自己分层收起。
+- 逐帧 inset 的读取必须封在独立小 composable 里。
 
-## 导航 / 数据就绪时序（v0.43.1）
-- ⚠️⚠️ **"数据流初值是空列表"会闪出错误内容**：会话列表原来只有「空 / 非空」两态，
-  冷启动时先渲染居中的「新建人设」，数据到了才换（用户实测"先显示新建人设，然后列表才出现"）。
-  **凡"异步数据 + 空状态带引导内容"的页面，必须显式分「未加载 / 确实为空 / 有数据」三态**。
-- ⚠️⚠️ **"是否已加载"必须从主数据流 `map` 派生，不能另发查询**：另发一条 Room 全表查询会与
-  主 `combine` 争抢共享 query executor 堵死首值（Robolectric 100% 复现，单测 60s 超时），
-  且 `runTest` 会把未完成子协程判为 `UncompletedCoroutinesError`。与
-  "Application.onCreate 禁止并发扫全表"是同一条规律。
-- ⚠️⚠️ **`currentBackStackEntryAsState()` 在 `popBackStack()` 那一刻就切回上一层**，
-  而退场动画还要跑几百毫秒。底栏显隐若直接绑路由，这段里底栏已渲染、Scaffold `innerPadding`
-  加大，正在滑出的页面被往上挤（用户反馈"底栏先冒出来、输入框往上跳"）。
-  正解 = **底栏显隐也走 `AnimatedVisibility`**（进场延迟、退场立即），
-  并与 push 路由共用同一时长常量 `PUSH_TRANSITION_MS`。
+## 语音栈（v0.50.0 整体重做，改前先读 `docs/PLAN-v0.50.0-*` + `docs/RESEARCH-v0.50.0-*`）
+- **识别 = 一条链**：`data/SherpaAsr.kt` 是唯一一级（sherpa-onnx SenseVoice 离线非流式）。
+  云端 Whisper 与系统识别器**实测永远走不通、已删**（含 `OpenAiClient.transcribe`），不要复活。
+- **语音消息与通话共用同一个识别器实例**（228MB 权重建两个 session ≈ 500MB，中低端机 OOM）。
+- **识别模型不随包**：`data/AsrModelManager.kt`（Range 断点 + 逐文件 sha256）+ `ui/settings/AsrModelScreen.kt`；
+  落 `filesDir/asr_sensevoice/`，源顺序 ModelScope → hf-mirror。就绪 = `.verified` 标记 + 两文件字节数全等
+  （**不是每次重算 228MB 哈希**）。`assets/asr/` 只剩 `silero_vad.onnx`。
+- ⚠️ **`EXTRA_AUDIO_SOURCE`（API 31+ 文件输入）在国产ROM 上普遍不生效** —— 识别服务只监听实时麦克风。
+  **换录音格式救不了。**
+- **合成**：`data/TtsClient.kt` 三家可切（硅基 CosyVoice2 / 小米 MiMo / 自定义 OpenAI 兼容），
+  **逐家一个实现**（MiMo 走 `/chat/completions` 且目标文本放 `assistant`；硅基预置音色拼
+  `<model>:<alias>`；自定义端点只发四个最小字段）。`TtsTarget.CALL` = WAV + `sample_rate=24000`，
+  `TtsTarget.NOTE` = MP3；24000 的唯一来源是 `TtsConfig.TTS_CALL_SAMPLE_RATE`
+  （两边各写一个数就会变速变调）。
+- **每家一套独立配置**：DataStore 键按 provider 分桶，`tts_provider` 只记当前生效家。
+  写桶时**保存别家要先把老键实体化**（直接清会抹掉硅基填好的 Key）。
+- **音色**：预置每家一男一女（名单与标签都在 `TtsConfig.TtsVoices.library()`，
+  设置页与人设页**共用同一函数**）；三级回落集中在 `SettingsRepository.voiceForConversation()`。
+  `data/VoiceCloner.kt` 克隆样本走 `realtime/MediaAudioDecoder.kt`（mp3/wav/m4a/**mp4** 都收）。
+  ⚠️ 两条不许回退：重采样必须走 `WavPcm.resample`（降采样前低通，裸隔点取样会混叠）；
+  样本必须 `trimToSpeech`（上限 10 秒，CosyVoice2 是零样本克隆）。
+  ⚠️ 服务端 `customName` 只收字母/数字/`_`/`-`，中文名发出去 100% 400 → 用 `asciiVoiceName`。
+- `data/WavPcm.kt` **位深不挑**（8/16/24/32 + float，EXTENSIBLE 从 GUID 取编码）——**别再收窄**。
+- 采集 = `data/VoiceRecorder.kt`（AudioRecord 16kHz/MONO/PCM_16BIT + 手拼 WAV 头）。
+  **不要用 MediaRecorder**。坑：构造不抛异常 ≠ 拿到麦克风（查 `state==STATE_INITIALIZED`）。
+- 构建三处硬约束：`noCompress` **只剩 `onnx`**、`ndk.abiFilters` **只剩 `arm64-v8a`**、
+  `proguard-rules.pro` 的 `-keep class com.k2fsa.sherpa.onnx.**` **不动**。任一被"顺手改回"语音就崩。
+- ⚠️ 端侧识别准确率与首次加载耗时**只能真机验**（JVM 单测没 native 库）。
+
+## 导航 / 数据就绪时序
+- ⚠️ **"初值是空列表"会闪出错误内容** → 凡"异步数据 + 空状态带引导内容"的页面，
+  必须显式分「未加载 / 确实为空 / 有数据」**三态**。
+- ⚠️ **"是否已加载"必须从主数据流 `map` 派生，不能另发查询**（另发 Room 全表查询会与主 `combine`
+  争抢共享 executor 堵死首值；`runTest` 还会判 `UncompletedCoroutinesError`）。
+  与"Application.onCreate 禁止并发扫全表"是同一条规律。
+- ⚠️ **`currentBackStackEntryAsState()` 在 `popBackStack()` 那一刻就切回上一层**，而退场动画还要跑几百毫秒。
+  → 底栏显隐也走 `AnimatedVisibility`（进场延迟、退场立即），与 push 共用 `PUSH_TRANSITION_MS`。
+- **周报补生成禁止放 `Application.onCreate`**（会抢走测试 MockWebServer 响应）。
 
 ## 数据层约定
 - **Room 迁移三处同步**：实体/表变更 → `version+1` + `MIGRATION_N_N` + `MenghuanApp.addMigrations`；
-  schema JSON 导出到 `app/schemas`（迁移出错 diff 它）。
-- **存量字段为空一律靠 from* 推断，不做批量回填**（`MediaKind.fromLegacy` 同思路）。
-- **记账本三铁律**：① 无分组无分类；② **现金余额不入库**，余额 = 全部流水有符号累加
-  （流水是唯一事实来源）；③ 金额存「分」Long。
-- **AI 动作类标记的自我强化循环**：生成过的结果留在历史里会被模型模仿继续输出标记。
-  动作结果回历史时**一律改写成过去完成时事实**（如「（此前已生成过一张图片：…）」）。
-- **送聊天记录给 LLM 的功能必须带角色标注 + 背景声明**（AI 一方是虚拟角色扮演），
-  否则角色人设会被当成用户画像收（v0.38.2 实测踩坑）。
-- **上下文预算按字数**：`selectHistoryByCharBudget`，1 字 ≈ 1 token 保守折算，封顶 20 万
-  （扣 system prompt + 回复余量）。**用户明确说按字数，不要用 token 估算器**。
-- **定时生成类功能模板**（每日建议/周报同构）：独立表 + 独立 prompt（硬编码 schema + 可自定义策略）
-  + 独立闹钟 + 独立 Receiver；同 day 覆盖、进程启动**只排闹钟不发 LLM 请求**、Receiver 到点自排明天。
-- ⚠️ **Application.onCreate 禁止并发多个"扫全表"协程**：Room query executor 共享，
-  启动期争抢线程池会堵死别的数据流（Robolectric 100% 复现）。一次性维护挪到"用到时懒执行"。
-- ⚠️ **周报补生成禁止放 Application.onCreate**（会抢走测试 MockWebServer 响应）。
-  入口 = MainActivity.onCreate / BootReceiver / WeeklyReportReceiver。
+  schema JSON 导出到 `app/schemas`。
+- **存量字段为空靠 from* 推断，不做批量回填**。虚拟迁移的坑：老配置**必须先实体化**再动新集合，
+  否则新键一变非空、虚拟读出就失效、老配置凭空消失。
+- **记账本三铁律**：① 无分组无分类；② **现金余额不入库**，余额 = 全部流水有符号累加；
+  ③ 金额存「分」Long。
+- **AI 动作类标记的自我强化循环**：动作结果回历史时**一律改写成过去完成时事实**
+  （如"（此前已生成过一张图片：…）"），否则模型会模仿继续输出标记。
+- 送聊天记录给 LLM 的功能**必须带角色标注 + 背景声明**（AI 一方是虚拟角色扮演），
+  否则人设会被当成用户画像收。
+- 上下文预算**按字数**（`selectHistoryByCharBudget`，1 字 ≈ 1 token，封顶 20 万）。
+  用户明确说按字数，**不要用 token 估算器**。
+- 定时生成类功能模板：独立表 + 独立 prompt（硬编码 schema + 可自定义策略）+ 独立闹钟 + 独立 Receiver；
+  同 day 覆盖、进程启动**只排闹钟不发请求**、Receiver 到点自排明天。
+- ⚠️ **AI 动作标记、联网搜索**是全项目最容易造假信息的地方 → 搜不到必须在 prompt 里
+  要求模型"如实说查不到、不许编"。
 
-## 语音链路（v0.44.1：**端侧离线成主力**）
-- 采集：`VoiceRecorder` = AudioRecord 直采 16kHz/单声道/16bit PCM + 手写 44 字节 WAV 头
-  （vosk/sherpa/whisper.cpp 三家 Android 采集层的一致做法；不碰 MediaRecorder 的参数组合表）。
-- 转写三级级联（用户拍板"端侧离线 + 模型打进 APK"）：
-  ① **端侧 `SherpaAsr`（sherpa-onnx 1.13.8 AAR，主力，全离线）** → ② 云端 Whisper →
-  ③ 系统识别器 → 都失败返回 null（语音照发、不阻断）。
-- ⚠️⚠️⚠️ **关键事实：`EXTRA_AUDIO_SOURCE`（API 31+ 文件输入）在国产 ROM 上普遍不生效** ——
-  识别服务只监听实时麦克风，喂文件路径等于没喂。**换录音格式救不了，因为对方不读文件。**
-  云端 Whisper 同理依赖用户那个接口额外支持 `/audio/transcriptions`（实测不支持）→
-  这两条都不能当主力，才上的端侧。
-- **端侧三件套配置缺一即崩**：`androidResources.noCompress += onnx/txt`（NDK AAssetManager
-  读不了压缩 asset）、`ndk.abiFilters = armeabi-v7a + arm64-v8a`（AAR 4 套 ABI 共 127MB so）、
-  `-keep class com.k2fsa.sherpa.onnx.** { *; }`（JNI 按名字访问数据类字段）。
-  模型 = `assets/asr/` zh-14M 全套 int8 四件套 25MB。APK 因此 3.4MB → 83MB。
-- 喂数据按 0.1s 分片**边喂边解码** + 末尾补 0.3s 静音再 `inputFinished()`（流式 zipformer
-  不补会丢最后几个字）。全程 `runCatching` —— 识别失败绝不炸发送链。
-- 其他踩实点：麦克风独占，识别与录音必须串行（先录完再识别）；
-  `start()` 失败必须 `Log.e` + 原因回传 UI，不能静默吞。
-- ⚠️ 端侧识别**准确率与首次加载耗时只能真机验**（JVM 单测没 native 库，跑不到真实识别）。
-
-## 相机 / 拍摄（v0.43.1）
-- 深色取景框里**白图标叠半透明白底 = 隐形**（浅色取景内容下）。改**白实心圆底 + 黑图标**。
-- 底栏：左「相册」（系统 `PickVisualMedia`）/ 中「快门」/ 右「翻转」。
-- **拍完必须进确认态（重拍/发送）再发**，避免误拍一张废图就发给 AI。
-- **修竖拍变横要双重**：① `ImageCapture.targetRotation` 跟随预览方向；
-  ② 按 EXIF **物理旋转像素后回写原文件** —— 回写才能让下游（vision 编码/气泡显示/不读 EXIF 的路径）
-  全部拿到正向图。
+## 结构速查（v0.54.0）
+- **四 tab**：home = HorizontalPager（消息/数据/任务/我的），beyondViewportPageCount=3；底栏在 MainActivity。
+- 平板判源唯一：`calculateWindowSizeClass` → `LocalWindowWidthClass`（!= Compact 即 ≥600dp）。
+- **设置链（v0.54.0 重构为「搜索框 + 4 个分组标签」，标签不可点不折叠，卡片点进去仍是全屏页）**：
+  「我的」页 = 人设管理 / 基础档案 / AI 图库 / 设置四张卡（**本页 = 我是谁**）；
+  设置页 = ① AI 与模型（对话模型 / AI 提示词）② 语音与通话（语音合成 / 音色 / 识别模型 ‖
+  AI 主动打电话 / 语音通话铃声 / 定时主动消息）③ 提醒与通知（三开关**就地显示**）
+  ④ 数据与系统（外观三胶囊**就地** / 权限 / 数据与隐私 / 关于）。
+  **v0.54.0 删掉三个页面**（语音 / 外观 / 通知与提醒），最深 4 层 → 2 层；
+  「接听延迟」并进 `CallRingtoneScreen`。共用组件在 `ui/settings/SettingsPage.kt`
+  （`SettingsGroupLabel` / `SettingsRow` / `SettingsSwitchRow` / `SettingsSearchField` 等）。
+- deep link：`menghuan://open/{page}`（chatList/tasks/data/me）、`menghuan://chat/{id}`、`menghuan://personas`。
+  ⚠️ 域名是 **menghuan**（v0.36.0 起从 daoshi 改名），别写回。
+- 数据页顺序（用户指定，勿动）：本周回顾条 → 今日建议 → 记账本 → AI 洞察/周报合并入口。
+- **对话页三点菜单（九项）**：编辑人设 / 聊天记录 / 主动打电话 / 角色立绘 / Live 2D / 聊天背景 /
+  联网 / 音色 / 模型。立绘·Live2D·背景**只存不显**。会话联网按会话存 `chat_web_search`。
+- **AI 主动打电话**：总开关 `ai_call_enabled`（默认关）+ 每人设一条 `AiCallRule`。
+  "独立"三个落点：规则按 `personaId` 存、闹钟 `requestCode = 2_000_100 + personaId % 10000`、
+  判定取**该人设**会话最后一条消息时间。22:30–08:00 静默、每天最多一通。
+  ⚠️ **用户点名要的那一通（`REQUESTED`）不受任何预设限制**（总开关/规则/静默/次数全不管）。
+  ⚠️ 靠通知弹出 → 没 `POST_NOTIFICATIONS` 就一声不响，设置页有直达申请。
+- **对话内手机操控**：`[操作手机:目标]`，用户在对话里发起时**不要确认卡**；
+  围栏 = 白名单 + 悬浮停止 + 15 步上限。别再往回加确认环节。
+- **AI 语音条**：`data/VoiceNoteMarker.kt` 解析 `【语音条】`，合成成功后**原地升级**刚落库那条
+  （不另插一条）。播完一定复位、不能只靠 `onCompletion`（MP3 padding 时可能不来）。
+- 相机：深色取景框里**白图标叠半透明白底 = 隐形** → 改白实心圆底 + 黑图标。
+  修竖拍变横要**双重**：`targetRotation` + 按 EXIF 物理旋转像素**回写原文件**。
+  拍完必须进确认态（重拍/发送）再发。
 
 ## 测试约定
-- ⚠️ **要碰 Android 框架的测试必须 `@RunWith(RobolectricTestRunner::class)` +
-  `@Config(sdk = [34])` + `ApplicationProvider.getApplicationContext()`**；
-  `RuntimeEnvironment.getApplication()` 在**没有 runner 的"纯 JVM"类**里返回 null → NPE
-  （`SpeechToTextTest` 首版 7 条全 NPE 就是踩这个）。
-- ⚠️ **`android.util.Log` 在纯 JVM 单测里未 mock**，调用抛
-  `Method w in android.util.Log not mocked` → 生产代码里的日志用 `runCatching { Log.x(...) }` 包住。
-- ⚠️ **scrollable 容器里首屏之外的节点直接 `performClick()` 静默无效**，且来源页同名文案会
-  "骗过"断言。必须 `performScrollTo().performClick()`，并补一条**只存在于目标页**的文本断言。
+- 下列**仅在用户要求跑测试时**适用，平时改完代码就停手。
+- 要碰 Android 框架的测试必须 `@RunWith(RobolectricTestRunner::class)` + `@Config(sdk = [34])`
+  + `ApplicationProvider.getApplicationContext()`（`RuntimeEnvironment.getApplication()`
+  在无 runner 的类里返回 null → NPE）。
+- ⚠️ **`android.util.Log` 在纯 JVM 单测里未 mock** → 生产代码日志用 `runCatching { Log.x(...) }` 包住。
+- ⚠️ scrollable 容器里首屏之外的节点 `performClick()` **静默无效**，且来源页同名文案会骗过断言 →
+  必须 `performScrollTo().performClick()` + 补一条**只存在于目标页**的文本断言。
 - ⚠️ **Robolectric 绝对行数断言是雷**（Room 库文件型且跨测试类共享）→ 改「基线快照 + 增量」。
-- ⚠️ **同容器多组 Lazy 数据的 key 必须加前缀**（`"insight-$id"` / `"report-$id"`）。
-- ⚠️ **同名文案的入口行要 testTag**（否则 `onNodeWithText` found 2 nodes）。
-- 底栏点击一律用 testTag `bottom_tab_N`（4 页常驻，屏外页语义树可见）。
-- ⚠️ **拍摄页无法用 JVM 截图测试守**：Robolectric 下 CameraX 初始化会挂（实测超时）。
-  拍摄相关改动**必须真机验收**。
-
-## 结构速查
-- **四 tab**：home = HorizontalPager（消息/数据/任务/我的），beyondViewportPageCount=3；
-  底栏 = MainActivity 的 HomeBottomBar。
-- **平板判源唯一**：`calculateWindowSizeClass` → `LocalWindowWidthClass`（!= Compact 即 ≥600dp）；
-  消息页双栏 `AdaptiveSplitScreen`（左 360dp 列表 + 右内嵌 ChatScreen showBack=false），
-  数据/任务/我的版心 840dp 两列网格。
-- **deep link**：通知/小组件 `daoshi://open/{page}`（tasks/data/me）；`daoshi://personas` 单页 push。
-- **数据页顺序（用户指定，勿动）**：本周回顾条 → 今日建议 → 记账本 → AI 洞察/周报合并入口。
-- **本周回顾口径**：今天该做的事 = 每日任务 + 当天到期的基础任务；
-  每日任务判断带 `createdAt < dayEnd`。
-- **AI 周报不折叠**（用户明确删过「展开全文」）；**长设置面板 = 手风琴**（默认全收起、单开、
-  恢复默认只在 customized 时出现）。
-- **错误条必须分级**（`ErrorBar.KIND_*`）：配置/权限类**绝不给"重试"**
-  （重试会让模型重复发 `[操作手机:…]`）。
-- **对话内手机操控**：`[操作手机:目标]`，用户在对话里发起时**不要确认卡**（autoConfirm=true）；
-  围栏 = 白名单（默认不限制）+ 悬浮停止 + 15 步上限。别再往回加确认环节。
-- **列表滚动策略**：首次加载 → `scrollToItem` 无动画直跳（只做一次）；
-  后续新消息只在 nearBottom 时 `animateScrollToItem` 跟随。
+- ⚠️ 同容器多组 Lazy 数据 key 必须加前缀；同名文案的入口行要 `testTag`；
+  底栏点击用 `bottom_tab_N`。
+- ⚠️ **拍摄页无法用 JVM 截图测试守**（Robolectric 下 CameraX 初始化会挂）→ **必须真机验收**。
 
 ## 已废弃 / 别再往回加
-- 打字机 `streamingText`（v0.41.4 推倒，改"后台生成、一次性发送"）。
-- 表情包功能（v0.35.1 用户取消）；情绪/手势 emoji 分区标题与面板中间灰线（v0.43.1 删）。
-- 语音键 / 表情键的**外圈**（v0.43.1 删，只要符号本身、颜色淡）。
-- 语音识别文字在列表直接展示（v0.43.0 用户要求不展示；v0.43.1 改为长按手动展开）。
+- 打字机 `streamingText`（v0.41.4 推倒）；表情包功能（v0.35.1 用户取消）；
+  语音识别文字在列表直接展示（v0.43.0 起改长按手动展开）。
+- **API 配置列表的 ✓ 勾**（v0.53.4 去掉：选中态已有虚线框 + 副标题「默认 · 」）。
+  ⚠️ 但**"点行 = 切换生效"必须保留**、点右箭头 = 进详情 —— 去的是**视觉元素**不是**行为**。
+- 把音色列表改成 `NeuSheetRow` 卡片（v0.53.4 用户否掉）。
+  「AI 语音条 / 语音通话」两个总开关**不要加回来**（默认开、用户不会去关）。
+- **编辑人设是独立路由页**（`persona_editor/{personaId}`，0 = 新建），不是弹层/Dialog。
+  设定词**不要「插入模板」**、label 不带英文；**音色已从这里移走**（改到对话页三点菜单）。
+- 已删除文件别复活：`EdgeTtsClient.kt` / `ReadAloudPlayer.kt` / `realtime/Mp3Decoder.kt`
+  —— 后者把**输入** MediaFormat 硬写成 24000Hz 单声道，真实流不符就吐 0 帧。

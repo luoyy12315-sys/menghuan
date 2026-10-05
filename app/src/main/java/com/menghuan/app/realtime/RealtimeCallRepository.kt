@@ -19,6 +19,8 @@ class RealtimeCallRepository(private val db: AppDatabase) {
         endedAt: Long,
         turns: List<CallTurnData>,
         status: String,
+        /** v0.53.7：true = 这通电话是 AI 打来的 → 记录卡落在 AI 那一侧（否则落在用户侧） */
+        initiatedByAi: Boolean = false,
     ) {
         val sessionId = db.callDao().insertSession(
             CallSession(
@@ -41,7 +43,9 @@ class RealtimeCallRepository(private val db: AppDatabase) {
                 },
             )
         }
-        // 聊天流里的通话记录卡：头像方向朝用户侧，点开弹文字转写（CallLogSheet）
+        // 聊天流里的通话记录卡（v0.53.7）：**朝哪一侧看"谁打的"** ——
+        // AI 主动打来的落 AI 侧（左侧），我打给它的落我侧（右侧）。
+        // 以前恒定 isFromUser = true，所以 AI 打来的电话也显示在右边（用户反馈的问题）。
         val minutes = (endedAt - startedAt).coerceAtLeast(0) / 60000
         val seconds = ((endedAt - startedAt).coerceAtLeast(0) % 60000) / 1000
         runCatching {
@@ -49,7 +53,7 @@ class RealtimeCallRepository(private val db: AppDatabase) {
                 com.menghuan.app.data.model.ChatMessage(
                     conversationId = personaId,
                     content = "语音通话 · ${minutes}分${seconds.toString().padStart(2, '0')}秒",
-                    isFromUser = true,
+                    isFromUser = !initiatedByAi,
                     timestamp = endedAt,
                     mediaKind = com.menghuan.app.data.model.MediaKind.CALL.name,
                     attachmentPath = sessionId.toString(),

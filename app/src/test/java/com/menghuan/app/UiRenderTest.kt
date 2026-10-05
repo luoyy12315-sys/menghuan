@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performTouchInput
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.menghuan.app.data.settingsStore
 import kotlinx.coroutines.flow.first
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -337,25 +338,68 @@ class UiRenderTest {
         snap("50-voice-bubbles")
     }
 
-    /** v0.50.0 语音面板：两个总开关 + 语音合成 / 识别模型两个二级入口 */
+    /**
+     * v0.54.0 设置页收纳重构：主页按四组排开，语音六项直接上提（不再有「语音」中转页），
+     * 通知三开关就地显示，外观三胶囊就地平铺，「AI 提示词」从「我的」搬进第 ① 组。
+     */
     @Test
-    fun render27VoiceScreen() {
+    fun render27SettingsGroups() {
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
         clickText("设置")
-        awaitText("语音")
-        clickText("语音")
-        awaitText("AI 语音条")
-        awaitText("语音通话")
+        // 四个分组标签（v0.54.0 新增）
+        awaitText("① AI 与模型")
+        awaitText("② 语音与通话")
+        awaitText("③ 提醒与通知")
+        awaitText("④ 数据与系统")
+        // ①组
+        awaitText("对话模型")
+        awaitText("AI 提示词")
+        // ②组：语音六项全部在这一页，不再点「语音」中转
         awaitText("语音合成")
+        awaitText("音色")
         awaitText("识别模型")
-        snap("51-voice-settings")
+        awaitText("AI 主动打电话")
+        awaitText("语音通话铃声")
+        awaitText("定时主动消息")
+        assertFalse(compose.onAllNodesWithText("语音").fetchSemanticsNodes().isNotEmpty())
+        // ③组：三个开关就地
+        awaitText("任务到点提醒")
+        awaitText("手机操作进行中通知")
+        awaitText("人设主动关心")
+        // ④组：外观三胶囊就地
+        awaitText("跟随系统")
+        awaitText("浅色")
+        awaitText("深色")
+        awaitText("权限")
+        awaitText("数据与隐私")
+        awaitText("关于")
+        snap("51-settings-groups")
+        // 点「音色」卡片 → 独立全屏音色页：名单 + 顶栏两个按钮
+        clickText("音色")
+        awaitText("Alex · 男声")
+        awaitText("Anna · 女声")
+        awaitText("克隆音色")
+        awaitText("ID")
+        assertFalse(compose.onAllNodesWithText("Bella · 激情女声").fetchSemanticsNodes().isNotEmpty())
+        snap("55-voice-library")
     }
 
-    /** v0.50.0 语音合成面板：三家 provider 可切 + Key/地址/模型 + 试听 + 克隆 */
+    /** v0.52.0 语音合成页：一家一段手风琴，点开谁填谁，切家不再串味 */
     @Test
     fun render28TtsConfigScreen() {
+        val app = compose.activity.application as MenghuanApp
+        kotlinx.coroutines.runBlocking {
+            app.settingsRepository.saveTtsConfig(
+                com.menghuan.app.data.TtsConfig(
+                    provider = com.menghuan.app.data.TtsProvider.SILICONFLOW,
+                    baseUrl = "http://127.0.0.1:9/v1", // 不可达：「语音」页的音色板块会试着拉克隆列表，别让它打真服务
+                    apiKey = "sk-sf",
+                    model = "FunAudioLLM/CosyVoice2-0.5B",
+                )
+            )
+        }
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
@@ -364,13 +408,49 @@ class UiRenderTest {
         clickText("语音")
         awaitText("语音合成")
         clickText("语音合成")
-        awaitText("服务商")
         awaitText("硅基流动")
         awaitText("小米 MiMo")
         awaitText("自定义端点")
-        awaitText("API Key")
-        awaitText("音色克隆")
+        awaitText("当前生效")
+        awaitText("API Key") // 当前生效那家默认展开，字段就在
+        // 克隆与音色管理已经搬去「语音」页的板块，这一页只管配置
+        assertFalse(compose.onAllNodesWithText("音色克隆").fetchSemanticsNodes().isNotEmpty())
         snap("52-tts-config")
+
+        // 切到小米：看到的是小米自己那份（空），不是硅基的 sk-sf
+        clickText("小米 MiMo")
+        awaitText("接口地址")
+        snap("53-tts-config-mimo")
+    }
+
+    /** v0.53.4 API 配置：按模型列表展示，点一行直接进详情（列表里没有勾选、没有输入框） */
+    @Test
+    fun render29ApiConfigModels() {
+        val app = compose.activity.application as MenghuanApp
+        kotlinx.coroutines.runBlocking {
+            app.settingsRepository.saveApiConfig(
+                com.menghuan.app.data.ApiConfig("https://api.deepseek.com/v1", "sk-ds", "deepseek-chat")
+            )
+        }
+        awaitText("阿布")
+        compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
+        awaitText("设置")
+        clickText("设置")
+        awaitText("API 配置")
+        clickText("API 配置")
+        awaitText("对话模型")
+        awaitText("生图模型")
+        awaitText("＋ 添加模型")
+        // 列表页只有卡片，没有输入框
+        assertFalse(compose.onAllNodesWithText("接口地址").fetchSemanticsNodes().isNotEmpty())
+        // 点模型卡片 = 切换生效（保留），不是进详情
+        clickText("默认接口")
+        awaitText("已切换到")
+        // 点右侧箭头才进详情
+        compose.onNodeWithContentDescription("详情").performClick()
+        awaitText("编辑模型")
+        awaitText("接口地址")
+        snap("54-api-config-model-detail")
     }
 
 
@@ -640,8 +720,8 @@ class UiRenderTest {
     }
 
     /**
-     * 外观弹层（v0.35.1）：主题三选一只在「设置 → 外观」里出现，
-     * 设置面板底部不再有快捷 chips。断言弹层打开且能选到「深色」。
+     * 外观（v0.35.1 起在设置里；**v0.54.0 起不再单独占一页**）：
+     * 主题三选一的胶囊直接摆在设置主页第 ④ 组里。
      */
     @Test
     fun render15AppearanceScreen() {
@@ -650,14 +730,13 @@ class UiRenderTest {
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
         clickText("设置")
-        awaitText("外观") // 设置列表里的入口
-        snap("27-settings-list")
-        clickText("外观")
-        awaitText("外观") // 外观弹层上屏
+        awaitText("④ 数据与系统")
         awaitText("跟随系统")
         awaitText("浅色")
         awaitText("深色")
-        snap("28-appearance")
+        snap("27-settings-list")
+        // 「外观」三个胶囊已并入主页，**不该再有**一个独立的「外观」入口行
+        assertFalse(compose.onAllNodesWithText("外观").fetchSemanticsNodes().isNotEmpty())
         // 切到深色确认生效，然后还原（settingsStore 是进程级单例）
         clickText("浅色")
         awaitState("点了「浅色」后 themeMode 应为 LIGHT") {
@@ -831,8 +910,8 @@ class UiRenderTest {
     }
 
     /**
-     * 人设编辑器：点头像换图（无「自定义」按钮）+ emoji 快选（28 预设）+ 写作规范弹层。
-     * v0.35.1 起编辑器不再有「头像 emoji」输入框，弹层上屏的锚点改为「点头像换图」。
+     * 人设编辑器（v0.53.4 起为**全屏页**）：点头像框可换图但不写提示文字、人物 emoji 与头像同一排、
+     * 音色只留男/女/克隆、设定词无「插入模板」；写作规范仍是弹层。
      */
     @Test
     fun render13PersonaEditorGuide() {
@@ -842,8 +921,13 @@ class UiRenderTest {
         clickText("人设管理") // 进入人设管理页
         awaitDesc("新增人设") // 顶栏 ＋（新建入口）待上屏
         clickDesc("新增人设")
-        awaitText("点头像换图") // 编辑弹层上屏
-        awaitText("查看写作规范")
+        awaitText("查看写作规范") // 编辑页上屏
+        awaitText("设定词")
+        awaitText("身份")
+        // v0.53.4：不再有「点头像换图」提示，也没有「插入模板」按钮
+        assertFalse(compose.onAllNodesWithText("点头像换图").fetchSemanticsNodes().isNotEmpty())
+        assertFalse(compose.onAllNodesWithText("插入模板").fetchSemanticsNodes().isNotEmpty())
+        assertFalse(compose.onAllNodesWithText("system prompt").fetchSemanticsNodes().isNotEmpty())
         snap("14-persona-editor")
         clickText("查看写作规范")
         awaitText("设定词写作规范")

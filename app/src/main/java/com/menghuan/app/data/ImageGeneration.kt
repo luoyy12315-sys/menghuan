@@ -17,7 +17,7 @@ import kotlin.math.abs
  * AI 生图（v0.35.0）。
  *
  * 走 OpenAI 兼容的 `POST {baseUrl}/images/generations`，各家路径不同，
- * 用户在「设置 · API 配置 · 生图接口」里把 baseUrl 填到版本段为止即可。
+ * 用户在「设置 · API 配置 · 生图模型」里把 baseUrl 填到版本段为止即可。
  *
  * 约定：模型在回复里输出 `[生图:提示词]` 单行标记，ChatViewModel 解析后调这里，
  * 拿到 PNG/JPEG 落盘到本机 filesDir/images/，再把路径写回消息（imagePath 列）。
@@ -27,7 +27,8 @@ import kotlin.math.abs
 class ImageGenerationClient(
     private val baseUrl: String,
     private val apiKey: String,
-    private val model: String,
+    /** 生成记录里要写"实际用的哪个模型"（v0.53.4 多模型自动切换），所以是公开的 */
+    val model: String,
 ) {
     fun isConfigured(): Boolean =
         baseUrl.isNotBlank() && apiKey.isNotBlank() && model.isNotBlank()

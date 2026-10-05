@@ -649,3 +649,51 @@
   `AiPromptsTest` 补一对"新的在 + 旧的不在"断言**；手册里的服务商网址只准用查证过的官方地址。
   识别模型**去掉手动导入**（普通人不知道该下哪个文件），只留 ModelScope / hf-mirror 两个自动源，
   失败时把官方仓库主页以可选中形式给出。
+
+- [x] **修「应用助手手册永远升不上去」的机制缺陷（v0.51.1，versionCode 100）**：真机反馈助手仍答不上
+  "语音怎么配"，根因不是文案而是启动闸门——旧实现要"库里这段**正好等于**某个历史默认文案"才刷新，
+  而历史表只登到 v0.38，每版都在 `DEFAULT_ASSISTANT_PROMPT` 上原地追加 `replace`、中间态从未登记，
+  于是 v0.41~v0.50 升过级的用户手册永久卡死。改为只看"用户有没有亲手改过设定词"
+  （DataStore 三态标记 + `isBuiltinAssistantManual` 形状识别兜底老装机），
+  **以后改手册不必再登记任何历史全文**；删掉六份已成死码的历史手册全文（约 340 行）。
+  顺带按真机实况重写手册里的单聊输入栏一段（发图/拍摄/文件在「＋」面板、表情面板、左侧语音键、
+  有字时右侧是发送键）。回归 `AssistantManualUpgradeTest` 6 条 + `AiPromptsTest` 两组。
+
+- [x] **语音配置整改（v0.52.0，versionCode 101）**：用户一次报六条，逐条对应记在 `docs/PLAN-v0.52.0-语音配置整改.md`。
+  ① 语音合成**每家一套独立配置**（DataStore 按 provider 分桶，老键虚拟归属当时生效那家；
+  只有配齐的家才成为"当前生效"）；② #2「MP3 克隆说格式不对」与 #4「通话音频解码失败」是**同一个根因**——
+  旧 `Mp3Decoder` 把输入 `MediaFormat` 硬写 24kHz/单声道，真实流不符就吐 0 帧。新增
+  `MediaAudioDecoder`（`MediaExtractor` 自读真实采样率/声道，mp3/wav/m4a/**mp4** 通吃）并删掉旧解码器；
+  通话改为直接向服务商要 **WAV@24000**（`TtsTarget.CALL`），链路里根本不解 MP3；
+  ③ 新增**「音色」板块**（设置 → 语音）：预置每家只留一男一女、右上角就是「克隆音色」、
+  克隆列表进页面自动拉取（删掉看不懂的"刷新我的克隆音色"）、手填 ID 收进板块；
+  人设编辑只从板块名单里挑，试听与添加撤到板块里；音色三级回落（人设 → 板块默认 → 该家第一个预置）
+  由 `voiceForConversation()` 统一，聊天与通话共用；④ 语音条播完一定复位
+  （不再只依赖 `onCompletion`，加 position/duration 看门狗 + 绝对超时）；
+  ⑤ **所有 API 配置一律手风琴**（对话/生图/语音合成默认收起，收起态只给摘要，防误触）。
+  协议按 `api-docs.siliconflow.cn` 逐字复核：克隆音色确实走 `voice` 字段
+  （`references` 是"不预上传、请求内联"的另一条路，没动）。
+  测试：`TtsProviderConfigTest` 6 条（写测试时抓到"保存别家会抹掉硅基 Key"的实现 bug）、
+  `TtsConfigTest` 重写预置/名单/目标格式用例、`UiRenderTest` 更新语音两页并新增 API 手风琴用例。
+
+- [x] **接口配置改「卡片 + 点箭头看详情」+ 通话 WAV 解析 + 克隆中文名（v0.53.0，versionCode 102）**：
+  用户纠正 v0.52.0 的手风琴理解——要的是**每条接口**收在卡片里：点卡片本体=切换当前生效，
+  点卡片右侧箭头=`SettingsCardDialog` 中间弹窗看/改/删（卡片外那排「编辑」「删除」按钮删掉），
+  箭头加大加深（`NeuSheetRow(onChevronClick=…)`）；语音合成页同一套原理，
+  只列**已配齐的模型卡片** + 底部「＋ 添加接入」选服务商，不再常驻三家分段表单；
+  分桶"写过没写过"改判 `contains`，否则清空字段会被老键复活。
+  两个真机 bug 定位到具体字节层：① 克隆 HTTP 400 是 `customName` 只收 ASCII，
+  中文名改为只本机显示（`cloneVoiceNames` 表）；② 通话"WAV 解不开"是 `WavPcm` 只认 PCM16
+  而硅基回 float32，解析器改成按表头解释（PCM 8/16/24/32 + float 32/64 + extensible + 流式长度）。
+  手册同步 + `AiPromptsTest` 双向断言；AGENTS.md §四 与 零.4 各立一条"别再改回去"。
+
+- [x] **通话闪退定位与克隆音质修复（v0.53.1 → v0.53.3，versionCode 103~105）**：
+  ① v0.53.1 给通话两条协程加异常兜底 + 新增 `data/CrashLog.kt`（崩溃前把堆栈写进
+  `filesDir/crash.log`，「设置 → 关于」出现「上次崩溃记录」可看可复制）——真机没有 logcat，
+  这是唯一能拿到栈的办法；② 用户截图里那行 `StringIndexOutOfBoundsException regionStart=-82`
+  直接把根因钉死：是我 v0.53.0 修 WAV 时把 chunk 游标推进写漏了（流式 WAV 的 data 长度为 -1 时
+  游标倒退变负）→ `WavPcm` 改为 data 读完即停 + 游标必须严格前进，补 3 条回归；
+  ③ "克隆音色发抖变调"（预置正常、语音条也怪 → 范围锁死在参考音频）：
+  降采样改走带低通的 `WavPcm.resample`（48k→24k 裸线性插值的混叠会烘进参考），
+  样本裁剪改成 `VoiceCloner.trimToSpeech`（跳前导静音、在能量谷下刀、上限 15→10 秒），
+  弹层写明样本要 8~10 秒干净单人声。`VoiceClonerSampleTest` 5 条钉住。

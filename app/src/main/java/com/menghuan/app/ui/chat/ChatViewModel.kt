@@ -137,7 +137,7 @@ const val reportLogicText =
         "· 口径：完成度只算基础任务，打卡只算每日任务，两者分开统计。"
 
 /**
- * 生图能力提示（只在生图接口已配置时注入 system prompt）。
+ * 生图能力提示（只在生图模型配齐时注入 system prompt）。
  * 用方括号单行标记而不是 function calling：各家 OpenAI 兼容端点对 tools 支持不一致，
  * 标记协议最稳（解析见 ImageGenerationClient.findPromptIn）。
  *
@@ -253,6 +253,8 @@ class ChatViewModel(
     private val filesDir: java.io.File,
     /** 应用级作用域：对话内触发的 Agent 挂这里，聊天页退出不掐断执行（v0.37.0） */
     private val appScope: CoroutineScope? = null,
+    /** v0.53.5：口头约定「待会打给我」要排闹钟，排钟要 Context（JVM 单测传 null = 跳过排钟） */
+    private val appContext: android.content.Context? = null,
 ) : ViewModel() {
 
     private val _activePersona = MutableStateFlow<Persona?>(null)
@@ -310,9 +312,9 @@ class ChatViewModel(
         runCatching { settingsRepository.setPersonaApiProfile(personaId, null) }
     }
 
-    /** 生图接口是否可用（决定要不要给模型发生图指令） */
-    val imageApiReady: StateFlow<Boolean> = settingsRepository.imageApiConfig
-        .map { it.isComplete }
+    /** 是否至少有一个可用生图模型（决定要不要给模型发生图指令） */
+    val imageApiReady: StateFlow<Boolean> = settingsRepository.imageProfiles
+        .map { list -> list.any { it.isComplete } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /** AI 建议 → 写入任务（repeatDaily 取 daily，来源标记 ai），卡片随之消失 */
@@ -516,6 +518,22 @@ class ChatViewModel(
     }
 
     /**
+     * 录音蒙层里选「转文字」松手（v0.53.4）：**只发文字**，不挂语音文件。
+     * 转写为空的情况由调用方兜底成发语音（不丢内容），这里只管有字时的发送。
+     */
+    fun sendVoiceAsText(text: String) {
+        if (text.isBlank() || _uiState.value.isStreaming) return
+        send(
+            ChatMessage(
+                conversationId = personaId,
+                isFromUser = true,
+                content = text.trim(),
+            ),
+            clearInput = false,
+        )
+    }
+
+    /**
      * 发自定义表情（v0.43.0）：点一下立刻发出，不插输入框。
      * 复用 imagePath 通道（vision 也能看到这张图），mediaKind 标记成 STICKER（v0.45.0）——
      * 历史里按"小气泡、不可点开"渲染，与普通图片区分；模型看到的是图，语义不变。
@@ -643,9 +661,9 @@ class ChatViewModel(
                 append(preamble)
                 facts.forEach { append("\n- ").append(it.key).append("：").append(it.value) }
             }
-            // 生图能力说明：只有生图接口配齐才告诉模型它能生图，否则别诱导用户白等一张图
+            // 生图能力说明：只有生图模型配齐才告诉模型它能生图，否则别诱导用户白等一张图
             val imageReady = try {
-                settingsRepository.imageApiConfig.first().isComplete
+                settingsRepository.imageProfiles.first().any { it.isComplete }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -683,10 +701,59 @@ class ChatViewModel(
                 }
                 append(agentChatHint(strategy))
             }
-            // AI 语音条能力说明（v0.50.0）：总开关打开且 TTS 配齐才注入——
+            // 会话联网（v0.53.6）：这个对话开着联网时，拿用户这一句当查询先搜一遍，再把结果给它。
+            // 复用「定时主动消息」里配好的搜索服务（博查 / Tavily），不另配一套。
+            val webSearchOn = try {
+                settingsRepository.chatWebSearch.first()[personaId] == true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
+            if (webSearchOn) {
+                val query = _uiState.value.input.trim()
+                if (query.isNotEmpty()) {
+                    val provider = try {
+                        settingsRepository.searchProvider.first()
+                    } catch (e: Exception) {
+                        com.menghuan.app.data.SEARCH_BOCHA
+                    }
+                    val searchKey = try {
+                        settingsRepository.searchApiKey.first()
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    if (isNotEmpty()) append("\n\n")
+                    append("## 联网\n")
+                    if (searchKey.isBlank()) {
+                        append("用户打开了本会话的联网开关，但还没配搜索服务的 Key")
+                        append("（设置 → 通知与提醒 → 定时主动消息 → 联网搜索）。")
+                        append("被问到最新信息时请**如实说明暂时查不了**，不要凭记忆编。")
+                    } else {
+                        val hits = runCatching {
+                            com.menghuan.app.data.WebSearchClient.search(provider, searchKey, query)
+                        }.getOrDefault(emptyList())
+                        val block = com.menghuan.app.data.WebSearchClient
+                            .toPromptBlock(hits, com.menghuan.app.data.WebSearchClient.labelOf(provider))
+                        if (block.isBlank()) {
+                            append("这次没取到搜索结果（网络或额度问题）。")
+                            append("如果问题涉及最新消息，请**如实说查不到**，不要编造。")
+                        } else {
+                            append("下面是刚搜到的结果，优先依据它回答，拿不准的地方就说没查到：\n")
+                            append(block)
+                        }
+                    }
+                }
+            }
+            // 打电话能力说明（v0.53.8）：**总是注入**，不再看「AI 主动打电话」总开关。
+            // 理由：用户明确点名要的一通（"立刻打给我"）不该被总开关拦住 ——
+            // 以前关着就不注入，用户叫它打、它连标记都不输出，用户以为坏了（踩过）。
+            if (isNotEmpty()) append("\n\n")
+            append(AI_CALL_HINT)
+            // AI 语音条能力说明（v0.50.0；v0.53.4 起总开关已删，只看 TTS 是否配齐）——
             // 没配语音合成时告诉模型它能发语音，用户只会收到一条合成失败的提示。
             val voiceNoteReady = try {
-                settingsRepository.voiceNoteEnabled.first() && ttsConfig().isComplete
+                ttsConfig().isComplete
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -915,13 +982,12 @@ class ChatViewModel(
         runCatching { settingsRepository.ttsConfig.first() }.getOrDefault(TtsConfig())
 
     /**
-     * 本会话该用哪个音色：人设专属音色优先，但它必须是**当前 provider** 的——
-     * 用户换了服务商之后，旧音色 ID 在新家根本不认，这时回落该 provider 的默认预置音色。
+     * 本会话该用哪个音色：人设专属 → 音色板块默认 → 该家第一个预置
+     * （三级回落集中在 [SettingsRepository.voiceForConversation]，通话走同一个）。
      */
     private suspend fun voiceRefFor(config: TtsConfig): VoiceRef =
-        runCatching { settingsRepository.voiceRefFor(personaId).first() }.getOrNull()
-            ?.takeIf { it.provider == config.provider && !it.isBlank }
-            ?: VoiceRef(config.provider, TtsVoices.defaultVoiceId(config.provider))
+        runCatching { settingsRepository.voiceForConversation(personaId, config) }
+            .getOrElse { VoiceRef(config.provider, TtsVoices.defaultVoiceId(config.provider)) }
 
     /**
      * 回复里带 `【语音条】` → 合成语音，把**刚落库的那条文字消息原地升级**成语音条（v0.50.0）。
@@ -996,19 +1062,31 @@ class ChatViewModel(
     }.getOrDefault(0L)
 
     private suspend fun maybeGenerateImage(rawReply: String) {
-        val client = imageClient()
-        val prompt = client.findPromptIn(rawReply) ?: return
-        if (!client.isConfigured()) {
-            _uiState.update { it.copy(error = "回复里带了生图请求，但生图接口未配置（设置 · API 配置）", errorKind = ErrorBar.KIND_API) }
+        val prompt = ImageGenerationClient("", "", "").findPromptIn(rawReply) ?: return
+        // 默认生图模型排最前；它调不通就按列表顺序自动换下一个，全部试完才算失败（v0.53.4 用户要求）
+        val clients = imageClients()
+        if (clients.isEmpty()) {
+            _uiState.update { it.copy(error = "回复里带了生图请求，但生图模型未配置（设置 · API 配置）", errorKind = ErrorBar.KIND_API) }
             return
         }
         _uiState.update { it.copy(isGeneratingImage = true, imagePrompt = prompt) }
-        val path = client.generate(prompt, ImageGenerationClient.imagesDir(imagesDir))
+        var path: String? = null
+        var usedClient: ImageGenerationClient? = null
+        for (c in clients) {
+            val p = c.generate(prompt, ImageGenerationClient.imagesDir(imagesDir))
+            if (p != null) {
+                path = p
+                usedClient = c
+                break
+            }
+        }
         _uiState.update { it.copy(isGeneratingImage = false, imagePrompt = "") }
         // 生图记录（v0.40.0）：成功失败都留痕——何时、哪个会话发起、用的哪个模型、什么提示词。
         // 失败不留图片文件，但记录必须有，图库里可追溯。
+        // 模型名（v0.53.4）：成功记**实际成功那个**；全失败时记尝试过的清单（默认在前），
+        // 别让失败记录的模型列空着（用户点名"要记录是哪个模型发起的"）。
         runCatching {
-            val modelName = runCatching { settingsRepository.imageApiConfig.first().model }.getOrDefault("")
+            val modelName = usedClient?.model ?: clients.joinToString(" / ") { it.model }
             val personaName = runCatching { db.personaDao().getById(personaId)?.name }.getOrNull() ?: "未知会话"
             db.imageGenerationDao().insert(
                 com.menghuan.app.data.model.ImageGenerationRecord(
@@ -1022,7 +1100,7 @@ class ChatViewModel(
             )
         }
         if (path == null) {
-            _uiState.update { it.copy(error = "生图失败：接口未配置或调用失败", errorKind = ErrorBar.KIND_RETRY) }
+            _uiState.update { it.copy(error = "生图失败：模型未配置或调用失败", errorKind = ErrorBar.KIND_RETRY) }
             // 刚才那句「（正在为你生成图片）」占位别永远停在"正在生成"：改写成失败事实
             runCatching {
                 db.messageDao().observeConversation(personaId).first().lastOrNull { m ->
@@ -1061,9 +1139,17 @@ class ChatViewModel(
         val imgClient = imageClient()
         val hasImageMarker = imgClient.findPromptIn(raw) != null
         val voiceNote = VoiceNoteMarker.parse(raw)
+        // 口头约定（v0.53.5）：用户说"待会打给我"，模型回一个 [打电话:N] / [打电话:HH:mm]
+        val nowMs = System.currentTimeMillis()
+        val wantedCallAt = com.menghuan.app.data.AiCallLogic.normalizeWantedAt(
+            com.menghuan.app.data.AiCallLogic.parseWantedCallAt(raw, nowMs),
+            nowMs,
+        )
         // 【语音条】也要在这一层剥掉：合成成功与否都不该让用户看见标记本身
         val withoutVoiceNote = if (voiceNote.wantsVoice) voiceNote.cleanText else raw
-        val text = AgentPrompts.stripMarker(imgClient.stripMarker(withoutVoiceNote)).ifBlank {
+        val text = AgentPrompts.stripMarker(
+            imgClient.stripMarker(com.menghuan.app.data.AiCallLogic.stripMarker(withoutVoiceNote)),
+        ).ifBlank {
             // 整条回复只有标记、没有正文：给一句占位（图/执行卡/语音条随后接管观感）
             when {
                 hasImageMarker -> IMAGE_ONLY_PLACEHOLDER
@@ -1084,10 +1170,18 @@ class ChatViewModel(
                 )
             }.getOrDefault(0L)
         }
+        // 排那通约定的电话（v0.53.6：按人设排；拿不到 Context 的单测环境就跳过，不影响落库）
+        if (wantedCallAt != null) {
+            runCatching {
+                appContext?.let {
+                    com.menghuan.app.notify.AlarmScheduler.scheduleAiCallOnce(it, personaId, wantedCallAt)
+                }
+            }
+        }
         return raw to messageId
     }
 
-    /** 生图客户端（每次现取配置：用户可能在设置里改过） */
+    /** 生图客户端（只用于解析/剥除 `[生图:…]` 标记，不参与实际生成；配置为空也能正确剥标记） */
     private suspend fun imageClient(): ImageGenerationClient {
         val cfg = runCatching { settingsRepository.imageApiConfig.first() }.getOrNull()
         return ImageGenerationClient(
@@ -1095,6 +1189,21 @@ class ChatViewModel(
             cfg?.apiKey.orEmpty(),
             cfg?.model.orEmpty(),
         )
+    }
+
+    /**
+     * 全部可用的生图客户端，**默认模型排最前**（v0.53.4）。
+     * [maybeGenerateImage] 按这个顺序依次尝试：默认那条调不通就换下一个，
+     * 这就是"默认生图模型不可用时自动切换到其他模型继续生图"的实现。
+     */
+    private suspend fun imageClients(): List<ImageGenerationClient> {
+        val profiles = runCatching { settingsRepository.imageProfiles.first() }.getOrDefault(emptyList())
+        val activeId = runCatching { settingsRepository.imageActiveProfileId.first() }.getOrDefault("")
+        val ready = profiles.filter { it.isComplete }
+        if (ready.isEmpty()) return emptyList()
+        val default = ready.firstOrNull { it.id == activeId }
+        val ordered = listOfNotNull(default) + ready.filterNot { it.id == default?.id }
+        return ordered.map { ImageGenerationClient(it.baseUrl, it.apiKey, it.model) }
     }
 
     /** API 错误 → 用户能看懂、知道下一步做什么的文案；带图时 400 顺带提示 vision 可能不支持 */
@@ -1149,6 +1258,17 @@ class ChatViewModel(
     }
 
     companion object {
+        /** v0.53.5：口头约定打电话的能力说明（v0.53.7 起**总是注入**，不再依赖总开关） */
+        const val AI_CALL_HINT =
+            "## 打电话\n" +
+                "用户让你「立刻打给他 / 待会打给他 / 半小时后叫醒他 / 今晚九点打给他」时，你**做得到**：" +
+                "在回复末尾另起一行输出 `[打电话:N]`，N 是从此刻起**多少分钟**（0 = 立刻，最大 1440）；" +
+                "如果用户给的是具体钟点，改成输出 `[打电话:HH:mm]`（24 小时制）。\n" +
+                "同时**一定要在正文里明确答应他**（例如「好，我这就打给你」「行，半小时后见」），" +
+                "这样他才确定你收到了 —— 只输出标记、正文不吭声，用户会以为你没反应。\n" +
+                "**只有用户明确要求你打电话时才输出这个标记**，其他任何场合都不要输出；" +
+                "也别在正文里解释这个标记本身。"
+
         fun factory(personaId: Long) = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MenghuanApp
@@ -1161,6 +1281,7 @@ class ChatViewModel(
                     personaId,
                     app.filesDir,
                     app.applicationScope,
+                    app.applicationContext,
                 )
             }
         }

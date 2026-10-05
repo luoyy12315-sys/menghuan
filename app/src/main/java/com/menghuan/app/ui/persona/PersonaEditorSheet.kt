@@ -5,40 +5,50 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.ClonedVoice
-import com.menghuan.app.data.TtsClients
+import com.menghuan.app.data.PersonaRepository
 import com.menghuan.app.data.TtsConfig
 import com.menghuan.app.data.TtsProvider
 import com.menghuan.app.data.TtsVoices
@@ -49,145 +59,170 @@ import com.menghuan.app.data.model.ToneStyle
 import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
-import com.menghuan.app.ui.common.NeuChip
+import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
-import com.menghuan.app.ui.settings.VOICE_PREVIEW_TEXT
-import com.menghuan.app.ui.settings.playTtsPreview
+import com.menghuan.app.ui.settings.SettingsPage
 import com.menghuan.app.ui.theme.MutedText
-import com.menghuan.app.ui.theme.NeuSurface
-import com.menghuan.app.ui.theme.TextPrimary
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import com.menghuan.app.ui.theme.NeuDanger
 import com.menghuan.app.ui.theme.NeuSurface
+import com.menghuan.app.ui.theme.TextPrimary
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import java.io.File
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.draw.clip
+import kotlin.math.abs
 
-/** 头像 emoji 快选预设（28 个，覆盖常见人设类型；自定义输入不受限） */
+/**
+ * 头像 emoji 快选：**只用人的形象**（v0.53.4 用户点名"全部换成人的形象"）。
+ * v0.53.5：**点它不再选头像**（点出来的黑色选中底用户不要），只保留"左右滑动即选"。
+ */
 private val avatarPresets = listOf(
-    "🙂", "🖋️", "🎯", "💭", "📚", "💪", "🧘", "🌱", "🎨", "💡", "🏃", "🌙",
-    "🧑‍🏫", "📖", "✍️", "🏋️", "🧠", "☀️", "🌊", "🎵", "💼", "🦉", "🌲", "🍎",
-    "⚖️", "🎭", "🚀", "🐱",
+    "🙂", "😊", "😄", "😎", "🤗", "😌",
+    "👦", "👧", "🧑", "👨", "👩", "🧓", "👴", "👵",
+    "🧑‍🎓", "👨‍🏫", "👩‍🏫", "👨‍⚕️", "👩‍⚕️", "👨‍🍳", "👩‍🍳",
+    "🧑‍💻", "👮", "👷", "🧘", "🏃",
 )
 
-/** 人设设定词模板骨架（「插入模板」填入，用户在其上修改） */
-private const val PERSONA_PROMPT_TEMPLATE =
-    "你是用户的【角色名称】，专注【领域】。\n" +
-        "\n" +
-        "【语气与风格】\n" +
-        "- 用【温和 / 直接 / 幽默】的方式交流\n" +
-        "- 回复简洁具体，少讲大道理\n" +
-        "\n" +
-        "【职责】\n" +
-        "- 帮助用户【目标】\n" +
-        "- 定期跟进【事项】，发现拖延就直接点破\n" +
-        "\n" +
-        "【约束】\n" +
-        "- 不编造用户没有提供的信息\n" +
-        "- 建议要可执行，一次不超过 3 条"
+/** 表单态的纯数据（保存时转成 [Persona]） */
+private data class PersonaDraft(
+    val name: String = "",
+    val title: String = "",
+    val emoji: String = "🙂",
+    val prompt: String = "",
+    val avatarImagePath: String = "",
+)
+
+/** 编辑人设页的数据源：读全部人设 → 按 id 找那条 */
+class PersonaEditorViewModel(
+    private val repository: PersonaRepository,
+    private val settingsRepository: com.menghuan.app.data.SettingsRepository,
+) : ViewModel() {
+    /** null = 还没读到（三态：未加载 / 找不到（走新建）/ 找到了） */
+    val personas = repository.observePersonas()
+
+    fun save(persona: Persona) = viewModelScope.launch { repository.save(persona) }
+
+    /** 删人设时**顺手清掉它的主动打电话规则**，别在设置里留一条对着空气的规则 */
+    fun delete(id: Long) = viewModelScope.launch {
+        repository.delete(id)
+        runCatching { settingsRepository.removeAiCallRule(id) }
+    }
+
+    companion object {
+        val Factory = viewModelFactory {
+            initializer {
+                val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MenghuanApp
+                PersonaEditorViewModel(app.personaRepository, app.settingsRepository)
+            }
+        }
+    }
+}
 
 /**
- * 人设编辑弹层：新增（persona = null）与编辑共用，名字必填。
- * 附「设定词写作规范」与「插入模板」（v0.33.0，应用内规范）。
+ * 编辑人设（**v0.53.5 起是真正的整页**：独立路由 `persona_editor/{personaId}`，不再是弹窗、不是 Dialog）。
+ *
+ * [personaId] 传 0 = 新建。
+ *
+ * 几处用户点名的形状：
+ * - 头像与人物 emoji **同一排**：那排**只认滚动**（点它不选头像，也不会出现黑色选中底），
+ *   滑到哪、头像框里就变成谁；点头像框本身仍可换自定义图；
+ * - 音色候选只有 **男声 / 女声 / 我克隆的声音**，点开是**从下方升起的弹层**（不是贴着选项的菜单）；
+ * - 设定词只有「查看写作规范」与「AI 优化设定词」，没有模板按钮。
  */
-/**
- * 音色行的展示标签：预置音色显示中文描述，克隆音色显示名字，自定义显示 ID 本身。
- * 人设存的音色若不属于当前 provider（用户换了服务商），按"默认"显示——那个 ID 在新家不认。
- */
-private fun voiceLabel(config: TtsConfig, ref: VoiceRef?, cloned: List<ClonedVoice>): String {
-    val id = ref?.takeIf { it.provider == config.provider }?.voiceId
-        ?: return "默认 · ${TtsVoices.defaultVoiceId(config.provider)}"
-    TtsVoices.presets(config.provider).firstOrNull { it.id == id }?.let { return it.label }
-    cloned.firstOrNull { it.uri == id }?.let { return "克隆 · ${it.customName}" }
-    TtsVoices.localSamplePath(id)?.let { return "克隆 · ${File(it).nameWithoutExtension}" }
-    return id
+@Composable
+fun PersonaEditorScreen(
+    personaId: Long,
+    onBack: () -> Unit,
+    vm: PersonaEditorViewModel = viewModel(factory = PersonaEditorViewModel.Factory),
+) {
+    val all by vm.personas.collectAsState(initial = null)
+    val loaded = all
+    if (loaded == null) {
+        SettingsPage(title = if (personaId == 0L) "新增人设" else "编辑人设", onBack = onBack) {
+            Spacer(Modifier.height(20.dp))
+            Text("读取中…", fontSize = 13.sp, color = MutedText)
+        }
+        return
+    }
+    val persona = loaded.firstOrNull { it.id == personaId }
+    PersonaEditorContent(
+        persona = persona,
+        onSave = { vm.save(it); onBack() },
+        onDelete = persona?.let { p -> { vm.delete(p.id); onBack() } },
+        onBack = onBack,
+    )
 }
 
 @Composable
-fun PersonaEditorSheet(
+private fun PersonaEditorContent(
     persona: Persona?,
     onSave: (Persona) -> Unit,
-    onDismiss: () -> Unit,
-    onDelete: (() -> Unit)? = null,
+    onDelete: (() -> Unit)?,
+    onBack: () -> Unit,
 ) {
-    var name by remember { mutableStateOf(persona?.name ?: "") }
-    var title by remember { mutableStateOf(persona?.title ?: "") }
-    var emoji by remember { mutableStateOf(persona?.avatarEmoji ?: "🙂") }
-    var prompt by remember { mutableStateOf(persona?.systemPrompt ?: "") }
+    var draft by remember(persona?.id) {
+        mutableStateOf(
+            PersonaDraft(
+                name = persona?.name ?: "",
+                title = persona?.title ?: "",
+                emoji = persona?.avatarEmoji ?: "🙂",
+                prompt = persona?.systemPrompt ?: "",
+                avatarImagePath = persona?.avatarImagePath.orEmpty(),
+            )
+        )
+    }
     var showGuide by remember { mutableStateOf(false) }
-    var confirmOverwrite by remember { mutableStateOf(false) }
-    // v0.36.0：AI 优化设定词子面板（用户丢一段自由描述 → LLM 输出结构化三件套 → 一键填入）
     var showAiOptimize by remember { mutableStateOf(false) }
-    // 自定义头像图片路径（v0.35.0：非空时头像渲染图片，emoji 只作兜底）
-    var avatarImagePath by remember { mutableStateOf(persona?.avatarImagePath.orEmpty()) }
-
+    var confirmDelete by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    // 音色属于人设（在编辑人设里选，存 tts_voice_<personaId>）；v0.50.0 起**通话与 AI 语音条共用**这一个音色。
-    // 容器在 sheet 内自取，调用点零改动；非 App 环境（单测宿主）拿不到时整行隐藏。
-    val voiceSettings = remember(context) {
-        runCatching {
-            (context.applicationContext as? com.menghuan.app.MenghuanApp)?.settingsRepository
-        }.getOrNull()
-    }
-    val editorScope = rememberCoroutineScope()
-    var ttsConfig by remember { mutableStateOf(TtsConfig()) }
-    var voiceRef by remember { mutableStateOf<VoiceRef?>(null) } // null = 用当前 provider 的默认预置音色
-    var clonedVoices by remember { mutableStateOf<List<ClonedVoice>>(emptyList()) }
-    var voiceMenuOpen by remember { mutableStateOf(false) }
-    var customizingVoice by remember { mutableStateOf(false) }
-    var customVoice by remember { mutableStateOf("") }
-    var previewingVoice by remember { mutableStateOf(false) }
-    LaunchedEffect(persona?.id, voiceSettings) {
-        if (voiceSettings != null && persona != null) {
-            ttsConfig = voiceSettings.ttsConfig.first()
-            voiceRef = voiceSettings.voiceRefFor(persona.id).first()
-        }
-    }
+    val scope = rememberCoroutineScope()
+
+    // 点头像框换图（v0.53.4：只删了那句提示文字，功能保留）
     val avatarPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
-        // 复制进应用私有目录：content:// 授权是一次性的，跨进程再用会 404
         runCatching {
             val dir = File(context.filesDir, "avatars").apply { mkdirs() }
             val target = File(dir, "avatar_${System.currentTimeMillis()}.jpg")
             context.contentResolver.openInputStream(uri)?.use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
             }
-            if (target.length() > 0) avatarImagePath = target.absolutePath
+            if (target.length() > 0) draft = draft.copy(avatarImagePath = target.absolutePath)
         }
     }
 
-    fun buildPersona(): Persona = Persona(
-        id = persona?.id ?: 0,
-        name = name.trim(),
-        title = title.trim().ifBlank { name.trim() },
-        avatarEmoji = emoji.trim().ifBlank { "🙂" },
-        avatarImagePath = avatarImagePath,
-        systemPrompt = prompt.trim(),
-        isBuiltIn = persona?.isBuiltIn ?: false,
-        tone = persona?.tone ?: ToneStyle.GENTLE.name, // 对话风格已取消（v0.32.0），沿用原值
-        pinned = persona?.pinned ?: false, // 编辑不改置顶状态
-        createdAt = persona?.createdAt ?: System.currentTimeMillis(),
-    )
+    // emoji 那排：**只认滚动**——滑到哪、头像框里就是谁；点它不改头像（也不再画黑色选中底）
+    val avatarListState = rememberLazyListState()
+    LaunchedEffect(avatarListState) {
+        snapshotFlow {
+            if (!avatarListState.isScrollInProgress) return@snapshotFlow null
+            val info = avatarListState.layoutInfo
+            if (info.visibleItemsInfo.isEmpty()) return@snapshotFlow null
+            val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+            info.visibleItemsInfo.minByOrNull { abs(it.offset + it.size / 2f - center) }?.index
+        }.filterNotNull().collect { index ->
+            avatarPresets.getOrNull(index)?.let { draft = draft.copy(emoji = it) }
+        }
+    }
 
-    NeuSheetScaffold(
+    // v0.53.6：音色的候选/弹层整块搬去「对话页右上角菜单 → 音色」（PersonaVoiceSheet）
+
+    SettingsPage(
         title = if (persona == null) "新增人设" else "编辑人设",
-        onDismiss = onDismiss,
+        onBack = onBack,
     ) {
         Spacer(Modifier.height(16.dp))
 
-        // 头像：直接点图上传/更换（不再有「自定义」按钮）。
-        // 渐变环由 personaBrush(id) 恒定绘制，图片只是替换环内的内容 —— 换图不会掉环。
+        // 头像与 emoji 同一排（框里比这一排大）
         Row(verticalAlignment = Alignment.CenterVertically) {
             NeuAvatar(
-                emoji = emoji.trim().ifBlank { "🙂" },
+                emoji = draft.emoji.trim().ifBlank { "🙂" },
                 size = 56.dp,
                 ringBrush = com.menghuan.app.ui.theme.personaBrush(persona?.id ?: 0L),
-                imagePath = avatarImagePath,
+                imagePath = draft.avatarImagePath,
                 modifier = Modifier
                     .clip(CircleShape)
                     .clickable(
@@ -196,183 +231,47 @@ fun PersonaEditorSheet(
                     ) { avatarPicker.launch("image/*") },
             )
             Spacer(Modifier.width(12.dp))
-            // 已选图片时给一个明确的撤销口；未选时留一句状态说明（事实短语，不教用户怎么用）
-            if (avatarImagePath.isNotBlank()) {
-                NeuTextButton("恢复默认头像", onClick = { avatarImagePath = "" }, color = NeuDanger)
-            } else {
-                Text("点头像换图", fontSize = 12.sp, color = MutedText)
+            LazyRow(
+                state = avatarListState,
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                itemsIndexed(avatarPresets) { _, e ->
+                    // 纯文字、无底色：滚动到它就选中它（点它不做事，所以不会出现黑色选中底）
+                    Box(Modifier.size(38.dp), contentAlignment = Alignment.Center) {
+                        Text(e, fontSize = 22.sp)
+                    }
+                }
             }
         }
-        Spacer(Modifier.height(12.dp))
-        // emoji 快选：横向滑动一排预设，点了即换（头像用图时这排只决定回退显示什么）
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            avatarPresets.forEach { e ->
-                NeuChip(text = e, selected = emoji == e) { emoji = e }
-            }
+        if (draft.avatarImagePath.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            NeuTextButton("恢复默认头像", onClick = { draft = draft.copy(avatarImagePath = "") }, color = NeuDanger)
         }
         Spacer(Modifier.height(14.dp))
         NeuTextField(
-            value = name,
-            onValueChange = { name = it },
+            value = draft.name,
+            onValueChange = { draft = draft.copy(name = it) },
             label = "名字",
             placeholder = "例：阿布",
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(14.dp))
         NeuTextField(
-            value = title,
-            onValueChange = { title = it },
+            value = draft.title,
+            onValueChange = { draft = draft.copy(title = it) },
             label = "身份",
             placeholder = "例：朋友 / 陪伴者 / 教练 / 心理咨询师",
             modifier = Modifier.fillMaxWidth(),
         )
-        // 音色（v0.50.0）：当前 provider 的预置 + 我的克隆音色 + 试听。
-        // **克隆动作不在这里做**——上传是账号级操作（要实名认证、产出的 uri 谁都能用），
-        // 收在「设置 · 语音」里；人设这边只负责挑一个。
-        if (voiceSettings != null && persona != null) {
-            val currentVoiceId = voiceRef?.takeIf { it.provider == ttsConfig.provider }?.voiceId.orEmpty()
-            Spacer(Modifier.height(14.dp))
-            Box {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) {
-                            voiceMenuOpen = true
-                            // 打开菜单才拉克隆列表：这是网络请求，别在弹层一出现就打
-                            if (ttsConfig.provider == TtsProvider.SILICONFLOW && ttsConfig.isComplete) {
-                                editorScope.launch {
-                                    runCatching { VoiceCloner.listVoices(ttsConfig) }
-                                        .onSuccess { clonedVoices = it }
-                                }
-                            }
-                        }
-                        .padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("音色", fontSize = 13.sp, color = TextPrimary)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            voiceLabel(ttsConfig, voiceRef, clonedVoices),
-                            fontSize = 12.sp,
-                            color = MutedText,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        NeuChip(
-                            text = if (previewingVoice) "播放中" else "试听",
-                            selected = false,
-                            onClick = {
-                                if (previewingVoice || !ttsConfig.isComplete) return@NeuChip
-                                previewingVoice = true
-                                val target = voiceRef?.takeIf { it.provider == ttsConfig.provider && !it.isBlank }
-                                    ?: VoiceRef(ttsConfig.provider, TtsVoices.defaultVoiceId(ttsConfig.provider))
-                                editorScope.launch {
-                                    val audio = TtsClients.from(ttsConfig).synthesize(VOICE_PREVIEW_TEXT, target)
-                                    if (audio != null) {
-                                        runCatching {
-                                            playTtsPreview(context, audio.bytes, audio.format.extension)
-                                        }
-                                    }
-                                    previewingVoice = false
-                                }
-                            },
-                        )
-                    }
-                }
-                DropdownMenu(
-                    expanded = voiceMenuOpen,
-                    onDismissRequest = { voiceMenuOpen = false },
-                    containerColor = NeuSurface,
-                    shadowElevation = 0.dp,
-                    tonalElevation = 0.dp,
-                ) {
-                    TtsVoices.presets(ttsConfig.provider).forEach { preset ->
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text(preset.label, fontSize = 14.sp, color = TextPrimary)
-                                    Text(preset.id, fontSize = 10.sp, color = MutedText)
-                                }
-                            },
-                            trailingIcon = if (currentVoiceId == preset.id) {
-                                { Text("✓", color = TextPrimary, fontSize = 13.sp) }
-                            } else null,
-                            onClick = {
-                                val ref = VoiceRef(ttsConfig.provider, preset.id)
-                                voiceRef = ref
-                                voiceMenuOpen = false
-                                editorScope.launch { voiceSettings.setVoiceRefFor(persona.id, ref) }
-                            },
-                        )
-                    }
-                    clonedVoices.forEach { cloned ->
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text("克隆 · ${cloned.customName}", fontSize = 14.sp, color = TextPrimary)
-                                    Text(cloned.uri, fontSize = 10.sp, color = MutedText, maxLines = 1)
-                                }
-                            },
-                            trailingIcon = if (currentVoiceId == cloned.uri) {
-                                { Text("✓", color = TextPrimary, fontSize = 13.sp) }
-                            } else null,
-                            onClick = {
-                                val ref = VoiceRef(ttsConfig.provider, cloned.uri)
-                                voiceRef = ref
-                                voiceMenuOpen = false
-                                editorScope.launch { voiceSettings.setVoiceRefFor(persona.id, ref) }
-                            },
-                        )
-                    }
-                    DropdownMenuItem(
-                        text = { Text("填音色 ID…", fontSize = 14.sp, color = TextPrimary) },
-                        onClick = {
-                            customizingVoice = true
-                            voiceMenuOpen = false
-                        },
-                    )
-                }
-            }
-            if (customizingVoice) {
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    NeuTextField(
-                        value = customVoice,
-                        onValueChange = { customVoice = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = "粘贴该服务商认的音色 ID",
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    NeuChip(
-                        text = "确定",
-                        selected = false,
-                        onClick = {
-                            val v = customVoice.trim()
-                            if (v.isNotEmpty()) {
-                                val ref = VoiceRef(ttsConfig.provider, v)
-                                voiceRef = ref
-                                customizingVoice = false
-                                customVoice = ""
-                                editorScope.launch { voiceSettings.setVoiceRefFor(persona.id, ref) }
-                            }
-                        },
-                    )
-                }
-            }
-        }
         Spacer(Modifier.height(14.dp))
+        // v0.53.6：音色那一项已按用户要求**从编辑人设里移除** ——
+        // 改为从「对话页右上角菜单 → 音色」选（见 ui/persona/PersonaVoiceSheet.kt）。
         NeuTextField(
-            value = prompt,
-            onValueChange = { prompt = it },
-            label = "设定词（system prompt）",
+            value = draft.prompt,
+            onValueChange = { draft = draft.copy(prompt = it) },
+            label = "设定词",
             placeholder = "描述 TA 的性格、职责和说话方式",
             singleLine = false,
             minLines = 3,
@@ -383,15 +282,6 @@ fun PersonaEditorSheet(
         Row {
             NeuTextButton("查看写作规范", onClick = { showGuide = true })
             Spacer(Modifier.width(16.dp))
-            NeuTextButton("插入模板", onClick = {
-                if (prompt.isBlank()) {
-                    prompt = PERSONA_PROMPT_TEMPLATE
-                } else {
-                    confirmOverwrite = true // 已有内容：确认后覆盖
-                }
-            })
-            Spacer(Modifier.width(16.dp))
-            // v0.36.0：AI 优化设定词——把当前设定词或一段自由描述丢给 LLM，返回结构化三件套一键填入
             NeuTextButton("AI 优化设定词", onClick = { showAiOptimize = true })
         }
 
@@ -400,7 +290,7 @@ fun PersonaEditorSheet(
             onDelete?.let { onDeleteAction ->
                 NeuButton(
                     text = "删除",
-                    onClick = onDeleteAction,
+                    onClick = { confirmDelete = true },
                     kind = NeuButtonKind.Danger,
                     modifier = Modifier.weight(1f),
                 )
@@ -408,67 +298,77 @@ fun PersonaEditorSheet(
             }
             NeuButton(
                 text = "取消",
-                onClick = onDismiss,
+                onClick = onBack,
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(10.dp))
             NeuButton(
                 text = "保存",
-                onClick = { onSave(buildPersona()) },
+                onClick = {
+                    onSave(
+                        Persona(
+                            id = persona?.id ?: 0,
+                            name = draft.name.trim(),
+                            title = draft.title.trim().ifBlank { draft.name.trim() },
+                            avatarEmoji = draft.emoji.trim().ifBlank { "🙂" },
+                            avatarImagePath = draft.avatarImagePath,
+                            systemPrompt = draft.prompt.trim(),
+                            isBuiltIn = persona?.isBuiltIn ?: false,
+                            tone = persona?.tone ?: ToneStyle.GENTLE.name, // 对话风格已取消（v0.32.0）
+                            pinned = persona?.pinned ?: false,
+                            createdAt = persona?.createdAt ?: System.currentTimeMillis(),
+                        )
+                    )
+                },
                 kind = NeuButtonKind.Primary,
-                enabled = name.isNotBlank(),
+                enabled = draft.name.isNotBlank(),
                 modifier = Modifier.weight(1f),
             )
         }
         Spacer(Modifier.height(6.dp))
     }
 
+    // v0.53.6：音色选择已从这里搬走（对话页右上角菜单 → 音色），本页不再有音色弹层
+
     if (showGuide) {
         PersonaPromptGuideSheet(onDismiss = { showGuide = false })
     }
     if (showAiOptimize) {
-        // 初始输入：把当前设定词带过去（若为空则用户从头描述）；
-        // onApply 一键回填三件套，emoji 有建议就一并覆盖
         AiPersonaOptimizeSheet(
-            initialInput = prompt,
+            initialInput = draft.prompt,
             onApply = { r ->
-                name = r.name
-                title = r.title
-                prompt = r.systemPrompt
-                r.avatarEmoji?.takeIf { it.isNotBlank() }?.let { emoji = it }
+                draft = draft.copy(
+                    name = r.name,
+                    title = r.title,
+                    prompt = r.systemPrompt,
+                )
+                r.avatarEmoji?.takeIf { it.isNotBlank() }?.let { draft = draft.copy(emoji = it) }
                 showAiOptimize = false
             },
             onDismiss = { showAiOptimize = false },
         )
     }
-    if (confirmOverwrite) {
+    if (confirmDelete) {
         AlertDialog(
-            tonalElevation = 0.dp, // v0.42.1 全应用去阴影（该重载阴影来自 tonalElevation）
-            onDismissRequest = { confirmOverwrite = false },
+            tonalElevation = 0.dp,
+            onDismissRequest = { confirmDelete = false },
             containerColor = NeuSurface,
             shape = RoundedCornerShape(20.dp),
-            title = { Text("覆盖设定词", fontWeight = FontWeight.SemiBold, color = TextPrimary) },
-            text = {
-                Text(
-                    "当前设定词不为空，插入模板将替换全部内容。确定继续吗？",
-                    color = MutedText,
-                    lineHeight = 20.sp,
-                )
-            },
+            title = { Text("删除人设", fontWeight = FontWeight.SemiBold, color = TextPrimary) },
+            text = { Text("「${persona?.name.orEmpty()}」及其聊天记录都会被删除，确定吗？", color = MutedText, lineHeight = 20.sp) },
             confirmButton = {
-                TextButton(onClick = {
-                    prompt = PERSONA_PROMPT_TEMPLATE
-                    confirmOverwrite = false
-                }) { Text("覆盖", color = com.menghuan.app.ui.theme.NeuAccent) }
+                TextButton(onClick = { confirmDelete = false; onDelete?.invoke() }) {
+                    Text("删除", color = NeuDanger)
+                }
             },
             dismissButton = {
-                TextButton(onClick = { confirmOverwrite = false }) { Text("取消", color = MutedText) }
+                TextButton(onClick = { confirmDelete = false }) { Text("取消", color = MutedText) }
             },
         )
     }
 }
 
-/** 设定词写作规范（应用内）：要素 + 模板 + 示例 + 要点，可在编辑器直接套用模板 */
+/** 设定词写作规范（应用内）：要素 + 示例 + 要点，可在编辑器里对照着写 */
 @Composable
 private fun PersonaPromptGuideSheet(onDismiss: () -> Unit) {
     NeuSheetScaffold(title = "设定词写作规范", onDismiss = onDismiss) {
@@ -489,7 +389,7 @@ private fun PersonaPromptGuideSheet(onDismiss: () -> Unit) {
                 GuideText("· 一定要写约束：告诉 TA 不要做什么")
                 GuideText("· 长度 100–300 字为宜，太长会稀释重点")
                 GuideText("· 避免互相矛盾的要求")
-                GuideText("· 用「插入模板」拿到底稿再改，比从零写快")
+                GuideText("· 照着下面两个示例的结构写，比从零想快")
             }
             GuideSection("示例：健身教练") {
                 GuideText(

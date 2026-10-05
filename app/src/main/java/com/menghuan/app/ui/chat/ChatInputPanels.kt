@@ -33,6 +33,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
@@ -220,6 +221,15 @@ private fun StickerGrid(
                     androidx.compose.material3.DropdownMenu(
                         expanded = menuOpen,
                         onDismissRequest = { menuOpen = false },
+                        // v0.53.5：全应用去阴影后，白底菜单在白底页面上糊成一片 —— 统一加一圈发丝灰线框
+                        modifier = Modifier.border(
+                            1.dp,
+                            com.menghuan.app.ui.theme.NeuHairline,
+                            RoundedCornerShape(14.dp),
+                        ),
+                        containerColor = NeuSurface,
+                        shape = RoundedCornerShape(14.dp),
+                        shadowElevation = 0.dp,
                     ) {
                         androidx.compose.material3.DropdownMenuItem(
                             text = { Text("删除", fontSize = 14.sp, color = TextPrimary) },
@@ -272,7 +282,7 @@ private fun Modifier.combinedClickableSticker(
  * v0.45.0：高度再压到 104dp、四周留白收紧，并把按钮按压从 Material ripple
  * 换成与输入栏一致的缩放反馈（用户要求"跟输入框周围按钮一样改小改快"）。
  * v0.47.0：第四格（原留空）放入「语音通话」——顶栏只剩三点设置，通话入口收进这里。
- * v0.50.0：「语音通话」总开关关掉时第四格整格不出现（其余三格自动铺满）。
+ * v0.53.4：原「语音通话」总开关已删，第四格**恒显示**。
  */
 @Composable
 fun PlusPanel(
@@ -280,7 +290,6 @@ fun PlusPanel(
     onCamera: () -> Unit,
     onFile: () -> Unit,
     onCall: () -> Unit,
-    callEnabled: Boolean = true,
 ) {
     Column(
         Modifier
@@ -293,7 +302,7 @@ fun PlusPanel(
             PlusAction("相册", MIcons.ImageIcon, onAlbum, Modifier.weight(1f))
             PlusAction("拍摄", MIcons.Camera, onCamera, Modifier.weight(1f))
             PlusAction("文件", MIcons.FileDoc, onFile, Modifier.weight(1f))
-            if (callEnabled) PlusAction("通话", MIcons.Phone, onCall, Modifier.weight(1f))
+            PlusAction("通话", MIcons.Phone, onCall, Modifier.weight(1f))
         }
     }
 }

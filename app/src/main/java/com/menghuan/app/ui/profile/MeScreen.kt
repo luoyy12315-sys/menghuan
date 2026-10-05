@@ -335,8 +335,12 @@ class MeViewModel(
 }
 
 /**
- * 「我的」页（第 4 个 tab，类微信「我」）：人设管理 / 基础档案 / 设置 三组行卡。
- * 设置链（API 配置 / 通知与提醒 / 数据与隐私 / 关于）的唯一入口在本页。
+ * 「我的」页（第 4 个 tab，类微信「我」）：人设管理 / 基础档案 / AI 图库 三张内容卡
+ * + 一张「设置」入口卡。
+ *
+ * v0.54.0：「AI 提示词」从这里搬进**设置页第 ① 组**（它本质是配置，不是"我的"资料）。
+ * 自此本页与设置页的分工清楚：**本页 = 我是谁**（人设/画像/产物），**设置页 = 怎么配**。
+ * 设置链（对话模型 / 语音通话 / 提醒通知 / 数据与系统）的唯一入口在本页。
  */
 @Composable
 fun MeScreen(
@@ -394,19 +398,12 @@ fun MeScreen(
                     )
                 },
                 {
-                    // v0.45.0：AI 提示词从设置面板提出来，单独成一级行卡
-                    NeuSheetRow(
-                        icon = MIcons.ChatBubble,
-                        title = "AI 提示词",
-                        subtitle = "人设设定词 · 基础提示词 · 档案注入说明",
-                        onClick = { onOpen(SettingsRoutes.PROMPTS) },
-                    )
-                },
-                {
+                    // v0.54.0：「AI 提示词」从这里搬进设置页第① 组（它本质是配置，
+                    // 不是"我的"资料）。本页自此只留人设 / 档案 / 图库三张内容卡 + 设置入口。
                     NeuSheetRow(
                         icon = MIcons.Sliders,
                         title = "设置",
-                        subtitle = "API · 语音 · 外观 · 通知 · 数据与隐私 · 关于",
+                        subtitle = "AI 模型 · 语音通话 · 提醒通知 · 数据与系统",
                         onClick = { onOpen(SettingsRoutes.SETTINGS) },
                     )
                 },

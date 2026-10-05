@@ -10,7 +10,7 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * 生图接口连通性探测（设置 · API 配置 · 生图接口 · 「测试连接」）。
+ * 生图模型连通性探测（设置 · API 配置 · 生图模型 · 「测试连接」）。
  *
  * 生图端点只有 POST `/images/generations`，没有 OpenAI 那种 `/models` 可查，
  * 所以这里发一个**故意极简但结构合法**的请求：prompt 短到几乎不耗算力，

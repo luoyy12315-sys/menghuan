@@ -27,6 +27,20 @@ object AlarmScheduler {
     /** 每日建议闹钟专用 requestCode（每天早上 07:30，v0.42.0） */
     private const val DAILY_SUGGESTION_REQUEST_CODE = 2_000_000_006
 
+    /**
+     * AI 主动打电话（v0.53.6 起**按人设独立**）：
+     * requestCode = base + personaId % 10000，所以每个人设一个闹钟、互不干扰。
+     */
+    private const val AI_CALL_PERSONA_BASE = 2_000_100
+    private const val AI_CALL_ONCE_BASE = 2_000_200
+
+    /** AiCallReceiver 的 extra：这一枪打给谁（人设 id），以及是不是"口头约定"那一路 */
+    const val EXTRA_AI_CALL_PERSONA = "aiCallPersonaId"
+    const val EXTRA_AI_CALL_ONCE = "aiCallOnce"
+
+    /** ScheduledMessageReceiver 的 extra：哪一条定时消息到点了（requestCode 用它的 hashCode） */
+    const val EXTRA_SCHEDULED_ID = "scheduledMessageId"
+
     fun schedule(context: Context, taskId: Long, title: String, remindAt: Long) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val pi = pendingIntent(context, taskId, title)
@@ -143,6 +157,99 @@ object AlarmScheduler {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         am.cancel(proactivePendingIntent(context))
     }
+
+    /**
+     * AI 主动打电话（v0.53.6，**按人设独立**）：**每个人设一个闹钟**，在它自己设定的时刻触发；
+     * 到点由 [AiCallReceiver] 按"那个人的规则"判定打不打，并自己排明天。
+     */
+    fun scheduleAiCallForPersona(context: Context, personaId: Long, hhmm: String) {
+        val minuteOfDay = com.menghuan.app.data.AiCallLogic.minuteOfDayOf(hhmm) ?: return
+        val zone = java.time.ZoneId.systemDefault()
+        var next = java.time.LocalDate.now(zone).atTime(minuteOfDay / 60, minuteOfDay % 60)
+        if (next.atZone(zone).toInstant().toEpochMilli() <= System.currentTimeMillis()) {
+            next = next.plusDays(1)
+        }
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = aiCallPendingIntent(context, personaId, once = false)
+        val at = next.atZone(zone).toInstant().toEpochMilli()
+        val canExact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
+        if (canExact) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        } else {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        }
+    }
+
+    fun cancelAiCallForPersona(context: Context, personaId: Long) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.cancel(aiCallPendingIntent(context, personaId, once = false))
+    }
+
+    /** 口头约定那一路（同样**按人设**排）：用户在聊天里让 TA"待会打给我"，到点一次性触发 */
+    fun scheduleAiCallOnce(context: Context, personaId: Long, at: Long) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = aiCallPendingIntent(context, personaId, once = true)
+        val canExact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
+        if (canExact) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        } else {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        }
+    }
+
+    fun cancelAiCallOnce(context: Context, personaId: Long) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.cancel(aiCallPendingIntent(context, personaId, once = true))
+    }
+
+    private fun aiCallPendingIntent(context: Context, personaId: Long, once: Boolean): PendingIntent {
+        val base = if (once) AI_CALL_ONCE_BASE else AI_CALL_PERSONA_BASE
+        val requestCode = base + (personaId % 10_000L).toInt()
+        return PendingIntent.getBroadcast(
+            context,
+            requestCode,
+            Intent(context, AiCallReceiver::class.java)
+                .putExtra(EXTRA_AI_CALL_PERSONA, personaId)
+                .putExtra(EXTRA_AI_CALL_ONCE, once),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /**
+     * 定时主动消息（v0.53.5）：**每条一个闹钟**（requestCode 用 id 的 hashCode），
+     * 到点由 [ScheduledMessageReceiver] 自己排明天。多条并存时互不干扰。
+     */
+    fun scheduleScheduledMessage(context: Context, id: String, hhmm: String) {
+        val minuteOfDay = com.menghuan.app.data.AiCallLogic.minuteOfDayOf(hhmm) ?: return
+        val zone = java.time.ZoneId.systemDefault()
+        var next = java.time.LocalDate.now(zone).atTime(minuteOfDay / 60, minuteOfDay % 60)
+        if (next.atZone(zone).toInstant().toEpochMilli() <= System.currentTimeMillis()) {
+            next = next.plusDays(1)
+        }
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = scheduledMessagePendingIntent(context, id)
+        val at = next.atZone(zone).toInstant().toEpochMilli()
+        val canExact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
+        if (canExact) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        } else {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        }
+    }
+
+    fun cancelScheduledMessage(context: Context, id: String) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.cancel(scheduledMessagePendingIntent(context, id))
+    }
+
+    private fun scheduledMessagePendingIntent(context: Context, id: String): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            id.hashCode(),
+            Intent(context, ScheduledMessageReceiver::class.java)
+                .putExtra(EXTRA_SCHEDULED_ID, id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
     /**
      * 每日建议（每天早上 07:30，v0.42.0）：到点由 DailySuggestionReceiver 自排明天。
