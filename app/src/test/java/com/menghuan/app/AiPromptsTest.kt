@@ -419,7 +419,7 @@ class AiPromptsTest {
     @Test
     fun `v0545 主动打电话改按角色与接听延迟卡片进手册`() {
         // ① 入口与开关性质：总开关没了，配置在**每个角色**的整页设置里
-        // （v0.54.6：卡片改叫「电话」、开关挪进底部弹层 —— 具体措辞见 v0546）
+        // （v0.54.6：卡片改叫「电话」、开关挪进底部弹层；v0.54.7：弹层内容与定时消息对齐 —— 见 v0547）
         assertTrue(manual.contains("（入口 **每个角色**会话右上角 ⋮ → 整页设置里的「**电话**」行，点开是**底部弹层**"))
         assertFalse(manual.contains("（入口 设置 → 通话行为 → 「AI 主动打电话」，**总开关默认关**）"))
         assertFalse(manual.contains("打开总开关后，**每个 AI 人设单独配**三样"))
@@ -457,13 +457,11 @@ class AiPromptsTest {
     fun `v0546 会话设置灰线行与长按菜单瘦身进手册`() {
         // ① 会话设置整页改灰线行；三个入口（电话 / 铃声 / 定时消息）
         assertTrue(manual.contains("整页是**一条条用灰线分隔的行**（不再用卡片）"))
-        assertTrue(manual.contains("**电话**（点开是底部弹层：允许主动打电话 / 什么时候打过来 / 多久没聊才打）"))
+        assertTrue(manual.contains("**电话**（点开是底部弹层：允许主动打电话 / 几点打过来 / 说什么 / 多久没聊才打）"))
         assertTrue(manual.contains("**铃声**（点开是底部弹层的铃声列表）"))
         assertTrue(manual.contains("**定时消息**（点开就是添加弹层，"))
         assertFalse(manual.contains("联网（开/关）、音色、模型，另外还有**专属铃声**、**定时主动消息**、"))
-        // 「允许主动打电话」卡片 → 「电话」行 + 弹层三样
-        assertTrue(manual.contains("弹层里三样 —— ① 开关「允许主动打电话」；"))
-        assertTrue(manual.contains("**什么时候打过来**（时间表盘直接拨，默认 21:00，不用自己输）"))
+        // 「允许主动打电话」卡片 → 「电话」行 + 弹层
         assertTrue(manual.contains("每个角色会话右上角 ⋮ 的整页设置里有一行**「电话」**（点开是底部弹层）"))
         assertFalse(manual.contains("卡片右边就是开关；点卡片右侧的箭头弹出详情"))
         assertFalse(manual.contains("① 每天几点检查（默认 21:00）、② 距上次跟 TA 聊天多久没交流才打"))
@@ -476,6 +474,31 @@ class AiPromptsTest {
         assertTrue(manual.contains("（字号小、颜色淡；点「思考过程 · 点此收起」那行即可收起）"))
         // ④ 语音通话记录卡长按也能弹菜单
         assertTrue(manual.contains("**语音通话记录卡长按也能弹出这个菜单**（点它仍是打开通话转写）。"))
+    }
+
+    /**
+     * v0.54.7：电话弹层与「定时消息」对齐（几点打过来 + 说什么 + 天数自填）+
+     * 聊天背景二选一且真正生效 + 长按补震动。
+     * 每条 replace 都配一对断言（新措辞 contains + 旧措辞 assertFalse）——
+     * `String.replace` 落空是**静默不生效**的，只写一边守不住。
+     */
+    @Test
+    fun `v0547 电话弹层对齐定时消息与聊天背景进手册`() {
+        // ① 电话：几点打过来（手填 HH:mm，不再是时间表盘）+ 说什么 + 天数自己填
+        assertTrue(manual.contains("弹层里四样 —— ① 开关「允许主动打电话」；"))
+        assertTrue(manual.contains("② **几点打过来**（手填 HH:mm，跟「定时消息」一个填法，默认 21:00）；"))
+        assertTrue(manual.contains("③ **说什么**（这次打电话要 TA 说的内容"))
+        assertTrue(manual.contains("④ **多久没聊才打**（**天数自己填 1–30**，默认 3 天；填 1 就是到点必打）。"))
+        assertFalse(manual.contains("弹层里三样 —— ① 开关「允许主动打电话」；"))
+        assertFalse(manual.contains("② **什么时候打过来**（时间表盘直接拨，默认 21:00，不用自己输）"))
+        assertFalse(manual.contains("（时间表盘直接拨"))
+        // ② 聊天背景：二选一 + 真正生效（角色立绘 / Live 2D 仍只存不显）
+        assertTrue(manual.contains("其中**角色立绘 / Live 2D 仍是只存不显**"))
+        assertTrue(manual.contains("**聊天背景已经能用**：点它会从底部弹出两个选项 ——「原生背景」与「自定义」"))
+        assertTrue(manual.contains("选完**这个角色的聊天页就会铺上这张图**"))
+        assertFalse(manual.contains("**角色立绘 / Live 2D / 聊天背景现在只存不显**"))
+        // ③ 长按补震动
+        assertTrue(manual.contains("**长按还会有一记震动反馈**"))
     }
 
     /** v0.53.4：编辑人设改成全屏页，输入项精简（人物头像 emoji、只留男/女/克隆音色、无模板按钮）。 */

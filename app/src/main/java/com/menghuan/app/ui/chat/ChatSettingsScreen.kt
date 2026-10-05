@@ -4,18 +4,12 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Text
-import androidx.compose.material3.TimePicker
-import androidx.compose.material3.TimePickerDefaults
-import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -35,7 +29,6 @@ import com.menghuan.app.data.ScheduledMessage
 import com.menghuan.app.notify.AlarmScheduler
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
-import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuSwitch
@@ -47,14 +40,11 @@ import com.menghuan.app.ui.settings.SettingsPage
 import com.menghuan.app.ui.settings.settingsContainer
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
-import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuDanger
-import com.menghuan.app.ui.theme.NeuHairline
-import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.TextPrimary
 import kotlinx.coroutines.launch
 
-/** 「电话」规则里的默认来电时刻（固定 21:00，用户不必自己输） */
+/** 「电话」里的默认来电时刻（用户不填就用它） */
 private const val DEFAULT_CALL_TIME = "21:00"
 
 /**
@@ -66,17 +56,22 @@ private const val DEFAULT_CALL_TIME = "21:00"
  *
  * **v0.54.5**：页内条目一律卡片形式，开关放卡片右侧。
  *
- * **v0.54.6（用户点名，本次）**：
+ * **v0.54.6**：
  * - **整页取消卡片，改用灰线分隔的行**（`SettingsLineRow`：一条 1dp 发丝线隔开两行）；
  * - 「铃声」行 → 点开**底部弹层**选铃声（不再把列表摊在页面上）；
  * - 「定时消息」行 → 点开就是**添加定时消息**的弹层（已有的一条条列在下面，点一条改它）；
- * - 「允许主动打电话」卡片名改**「电话」**，开关**挪进弹层**；弹层里还有
- *   **什么时候打过来**（时间表盘，默认 21:00）与**多久没聊才打**（天数）；
+ * - 「允许主动打电话」卡片名改**「电话」**，开关**挪进弹层**；
  * - 所有弹层**从屏幕底部弹出**（`NeuSheetScaffold`）。
  *
- * 立绘 / Live 2D / 聊天背景仍是"只存不显"（待打电话时展示，展示方式未定）。
+ * **v0.54.7（用户澄清）**：
+ * - 「电话」弹层跟**「定时消息」**一个路子：**几点打过来**（手填 HH:mm，默认 21:00）+
+ *   **说什么**（开场内容要求）+ **多久没聊才打（天数自己填 1–30）**——
+ *   上一版把"多久没聊"做成了固定几选一、把时间做成了表盘，正好弄反了；
+ * - 「聊天背景」点开是弹层**二选一**：原生背景 / 自定义图片（选自定义才去相册挑图）；
+ * - 聊天背景**开始真的生效**（在这个角色的聊天页铺一张背景图），不再是"只存不显"。
+ *
+ * 角色立绘 / Live 2D 仍是"只存不显"（待接打电话时展示，展示方式未定）。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatSettingsScreen(
     personaId: Long,
@@ -123,6 +118,7 @@ fun ChatSettingsScreen(
     var showApiSwitch by remember { mutableStateOf(false) }
     var showRingtoneSheet by remember { mutableStateOf(false) }
     var showCallSheet by remember { mutableStateOf(false) }
+    var showBackgroundSheet by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ScheduledMessage?>(null) }
 
     /** 落盘这个角色的打电话规则，并按开关状态重排/撤销它的闹钟（只动这一个人设） */
@@ -242,13 +238,8 @@ fun ChatSettingsScreen(
         )
         SettingsLineRow(
             "聊天背景",
-            subtitle = if (backgrounds[personaId].isNullOrBlank()) "未设置" else "已设置",
-            onClick = {
-                val current = backgrounds[personaId]
-                if (current.isNullOrBlank()) backgroundPicker.launch("image/*") else scope.launch {
-                    repo.setChatBackground(personaId, "")
-                }
-            },
+            subtitle = if (backgrounds[personaId].isNullOrBlank()) "原生背景" else "自定义图片",
+            onClick = { showBackgroundSheet = true },
         )
         SettingsLineRow("音色", subtitle = "这个角色说话的声音") { showVoiceSheet = true }
         SettingsLineRow("模型", subtitle = "本会话用哪个 AI 接口") { showApiSwitch = true }
@@ -337,10 +328,12 @@ fun ChatSettingsScreen(
         }
     }
 
-    // ===== 电话（底部弹层，v0.54.6）：开关 + 什么时候打过来 + 多久没聊才打 =====
+    // ===== 电话（底部弹层，v0.54.7）：跟「定时消息」一样 —— 几点打、说什么，天数可自定义 =====
     if (showCallSheet) {
         val rule = callRule ?: AiCallRule(personaId = personaId)
-        var pickTime by remember { mutableStateOf(false) }
+        var timeDraft by remember(rule.time) { mutableStateOf(rule.time) }
+        var sayDraft by remember(rule.instruction) { mutableStateOf(rule.instruction) }
+        var idleDraft by remember(rule.idleDays) { mutableStateOf(rule.idleDays.toString()) }
         NeuSheetScaffold(title = "电话", onDismiss = { showCallSheet = false }) {
             Spacer(Modifier.height(6.dp))
             Row(
@@ -353,65 +346,82 @@ fun ChatSettingsScreen(
                     onToggle = { on -> applyCallRule(rule.copy(enabled = on)) },
                 )
             }
-            Spacer(Modifier.height(1.dp))
+            Spacer(Modifier.height(14.dp))
 
-            // 什么时候打过来：默认 21:00（固定，不必手输），点一下开时间表盘
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("什么时候打过来", fontSize = 15.sp, color = TextPrimary)
-                Spacer(Modifier.weight(1f))
-                NeuTextButton(
-                    text = rule.time,
-                    onClick = { pickTime = !pickTime },
-                )
-            }
-            if (pickTime) {
-                val parts = rule.time.split(":")
-                val hour = parts.getOrNull(0)?.toIntOrNull() ?: 21
-                val minute = parts.getOrNull(1)?.toIntOrNull() ?: 0
-                val timeState = rememberTimePickerState(
-                    initialHour = hour,
-                    initialMinute = minute,
-                    is24Hour = true,
-                )
-                TimePicker(
-                    state = timeState,
-                    colors = TimePickerDefaults.colors(
-                        clockDialColor = NeuSurface,
-                        selectorColor = NeuAccent,
-                        periodSelectorBorderColor = NeuHairline,
-                        timeSelectorSelectedContainerColor = NeuAccent,
-                    ),
-                )
-                Spacer(Modifier.height(4.dp))
-                NeuButton(
-                    text = "确定这个时间",
-                    kind = NeuButtonKind.Primary,
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        val t = "%02d:%02d".format(timeState.hour, timeState.minute)
-                        applyCallRule(rule.copy(time = t))
-                        pickTime = false
-                    },
-                )
-            }
-            Spacer(Modifier.fillMaxWidth().height(1.dp).background(NeuHairline))
+            // 几点打过来：与「定时消息」同款手填 HH:mm（默认 21:00）
+            NeuTextField(
+                value = timeDraft,
+                onValueChange = { v ->
+                    timeDraft = v
+                    if (AiCallLogic.minuteOfDayOf(v) != null) applyCallRule(rule.copy(time = v))
+                },
+                label = "几点打过来（HH:mm）",
+                placeholder = DEFAULT_CALL_TIME,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(14.dp))
 
-            Spacer(Modifier.height(16.dp))
-            Text("多久没聊才打", fontSize = 15.sp, color = TextPrimary)
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(1, 3, 7, 30).forEach { d ->
-                    NeuChip(text = "$d 天", selected = rule.idleDays == d) {
+            // 说什么：这次打电话的开场内容要求（留空 = 让 TA 自己按情境组织）
+            NeuTextField(
+                value = sayDraft,
+                onValueChange = { v ->
+                    sayDraft = v
+                    applyCallRule(rule.copy(instruction = v))
+                },
+                label = "说什么",
+                placeholder = "例：问我今天任务完成没，语气轻松点",
+                singleLine = false,
+                minLines = 2,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(14.dp))
+
+            // 多久没聊才打：**天数自己填**（1–30），不是固定几选一
+            NeuTextField(
+                value = idleDraft,
+                onValueChange = { raw ->
+                    val digits = raw.filter { it.isDigit() }.take(2)
+                    idleDraft = digits
+                    digits.toIntOrNull()?.coerceIn(1, 30)?.let { d ->
                         applyCallRule(rule.copy(idleDays = d))
                     }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
+                },
+                label = "多久没聊才打（天，1–30）",
+                placeholder = "3",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+    }
+
+    // ===== 聊天背景（底部弹层，v0.54.7）：原生背景 / 自定义图片 二选一 =====
+    if (showBackgroundSheet) {
+        val custom = backgrounds[personaId]
+        NeuSheetScaffold(title = "聊天背景", onDismiss = { showBackgroundSheet = false }) {
+            Spacer(Modifier.height(6.dp))
+            NeuSheetRow(
+                icon = MIcons.ImageIcon,
+                title = "原生背景",
+                subtitle = "App 自己的底色",
+                onClick = {
+                    scope.launch { repo.setChatBackground(personaId, "") }
+                    showBackgroundSheet = false
+                },
+                selected = custom.isNullOrBlank(),
+            )
+            Spacer(Modifier.height(8.dp))
+            NeuSheetRow(
+                icon = MIcons.Palette,
+                title = "自定义",
+                subtitle = if (custom.isNullOrBlank()) "从相册选一张图" else "已设置 · 点此换一张",
+                onClick = {
+                    showBackgroundSheet = false
+                    backgroundPicker.launch("image/*")
+                },
+                selected = !custom.isNullOrBlank(),
+            )
+            Spacer(Modifier.height(10.dp))
         }
     }
 

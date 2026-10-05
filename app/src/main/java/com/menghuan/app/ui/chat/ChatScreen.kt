@@ -16,6 +16,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
@@ -71,6 +72,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -193,6 +195,17 @@ fun ChatScreen(
     val context = LocalContext.current
 
     val appContainer = context.applicationContext as com.menghuan.app.MenghuanApp
+    // v0.54.7：这个角色的聊天背景（会话设置 → 聊天背景 → 自定义），有就铺在消息列表底下
+    val chatBackgrounds by appContainer.settingsRepository.chatBackground
+        .collectAsState(initial = emptyMap())
+    val myBackground = chatBackgrounds[personaId] ?: ""
+
+    /** v0.54.7：长按弹消息菜单统一补一次震动（与全局"长按补一次震动反馈"的约定一致） */
+    val openMessageMenu: (ChatMessage, Rect?) -> Unit = { msg, bounds ->
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        messageMenuAnchor = bounds
+        messageMenu = msg
+    }
     // 自定义表情（v0.43.0）：库表 → 面板真实数据源
     val stickers by appContainer.db.stickerDao().observeAll()
         .collectAsState(initial = emptyList())
@@ -571,6 +584,18 @@ fun ChatScreen(
             }
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
+                // v0.54.7：自定义聊天背景（选「原生背景」时 myBackground 为空、不画）。
+                // 铺在 LazyColumn 底下、跟随版心，气泡浮在它上面。
+                if (myBackground.isNotBlank()) {
+                    rememberLocalBitmap(myBackground)?.let { bmp ->
+                        Image(
+                            bitmap = bmp,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.matchParentSize(),
+                        )
+                    }
+                }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -618,7 +643,10 @@ fun ChatScreen(
                                         .onGloballyPositioned { rowBounds = it.boundsInRoot() },
                                 ) {
                                 // 多选态：左侧留出勾选圈的空档（v0.54.3）
-                                Box(Modifier.fillMaxWidth().padding(start = if (multiSelect) 34.dp else 0.dp)) {
+                                // ⚠️ v0.54.7：这里**必须是 Column**（原来是 Box）——里面现在有两个兄弟节点
+                                // （消息本体 + 就地展开的思考过程），Box 会把它们叠在一起、思考过程直接盖住气泡
+                                // （用户反馈"把消息条都覆盖了"）；Column 才会一个排在另一个下方。
+                                Column(Modifier.fillMaxWidth().padding(start = if (multiSelect) 34.dp else 0.dp)) {
                                 // v0.43.0：媒体类型优先（存量消息 mediaKind 为空，按老规则推断）
                                 val kind = MediaKind.fromLegacy(msg.mediaKind, msg.imagePath)
                                 when (kind) {
@@ -680,7 +708,7 @@ fun ChatScreen(
                                                         playingVoiceId = msg.id
                                                     }
                                                 },
-                                                onLongPress = { messageMenuAnchor = rowBounds; messageMenu = msg },
+                                                onLongPress = { openMessageMenu(msg, rowBounds) },
                                             )
                                             // 转文字结果：显示在语音条下方，左右跟随气泡对齐。
                                             // content 就是识别出的文字（同时也是喂给模型的那份），
@@ -710,7 +738,7 @@ fun ChatScreen(
                                                 size = msg.attachmentSize,
                                                 hasExtractedText = msg.content.isNotBlank(),
                                                 maxWidth = bubbleMaxWidth,
-                                                onLongPress = { messageMenuAnchor = rowBounds; messageMenu = msg },
+                                                onLongPress = { openMessageMenu(msg, rowBounds) },
                                             )
                                         }
 
@@ -733,10 +761,7 @@ fun ChatScreen(
                                                             callLogSession = msg.attachmentPath.toLongOrNull() ?: 0L
                                                             callLogTitle = msg.content
                                                         },
-                                                        onLongClick = {
-                                                            messageMenuAnchor = rowBounds
-                                                            messageMenu = msg
-                                                        },
+                                                        onLongClick = { openMessageMenu(msg, rowBounds) },
                                                     )
                                                     .padding(horizontal = 16.dp, vertical = 10.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
@@ -756,7 +781,7 @@ fun ChatScreen(
                                         msg,
                                         bubbleMaxWidth,
                                         item.gapBefore,
-                                        onLongPress = { messageMenuAnchor = rowBounds; messageMenu = msg },
+                                        onLongPress = { openMessageMenu(msg, rowBounds) },
                                     )
                                 }   // 关闭 when(kind)
 
@@ -803,7 +828,7 @@ fun ChatScreen(
                                     }
                                 }
 
-                                }   // 关闭"多选留白"内层 Box（v0.54.3）
+                                }   // 关闭"多选留白"内层 Column（v0.54.3 建 Box，v0.54.7 改 Column）
                                 // v0.54.3：多选态 —— 整行可点切换选中，左侧画勾选圈
                                 if (multiSelect) {
                                     Box(

@@ -79,12 +79,12 @@ object AiCall {
         // 踩过的坑：以前这里查了总开关与人设规则，用户明明叫它打、它却静默不打，
         // 而且用户完全不知道为什么（界面上什么提示都没有）。
         val requested = reason == AiCallReason.REQUESTED
+        // 规则在任何一路都要读：REQUESTED（用户点名）不看它，但要拿它的 instruction（说什么）
+        val rule = runCatching { settings.aiCallRules.first() }
+            .getOrDefault(emptyList())
+            .firstOrNull { it.personaId == personaId }
         if (!requested) {
-            val rule = runCatching { settings.aiCallRules.first() }
-                .getOrDefault(emptyList())
-                .firstOrNull { it.personaId == personaId }
-                ?: return false
-            if (!rule.enabled) return false
+            if (rule == null || !rule.enabled) return false
             val now = System.currentTimeMillis()
             if (AiCallLogic.inQuietHours(AiCallLogic.minuteOfDayAt(now))) return false
             val today = java.time.LocalDate.now().toEpochDay()
@@ -95,7 +95,9 @@ object AiCall {
         if (!api.isComplete) return false
 
         val persona = runCatching { db.personaDao().getById(personaId) }.getOrNull() ?: return false
-        val greeting = runCatching { generateGreeting(db, api, persona) }.getOrNull() ?: return false
+        val greeting = runCatching {
+            generateGreeting(db, api, persona, rule?.instruction.orEmpty())
+        }.getOrNull() ?: return false
         if (greeting.isBlank()) return false
 
         // 只有"AI 自己决定打的"才占每天一次的名额；用户点名的不占
@@ -125,8 +127,18 @@ object AiCall {
     // v0.53.6：不再"自动挑一个人设"——规则按人设存，谁来打完全由规则决定
     // （旧版 pickPersona 的"指定人设 → 主人设 → 第一个人设"这套兜底已经不需要了）
 
-    /** 让模型写一句开场白（档案 + 未完成任务 + 最近几句对话，与"主动关心"同一套取材） */
-    private suspend fun generateGreeting(db: AppDatabase, api: ApiConfig, persona: Persona): String? {
+    /**
+     * 让模型写一句开场白（档案 + 未完成任务 + 最近几句对话，与"主动关心"同一套取材）。
+     *
+     * [instruction] = 用户在这个角色的「电话」里填的**"说什么"**（v0.54.7）：
+     * 非空时作为**硬性内容要求**排在情境材料前面 —— 用户明确要我说的，优先于模型自己发挥。
+     */
+    private suspend fun generateGreeting(
+        db: AppDatabase,
+        api: ApiConfig,
+        persona: Persona,
+        instruction: String,
+    ): String? {
         val facts = runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList())
         val tasks = runCatching { db.taskDao().observeAll().first() }
             .getOrDefault(emptyList())
@@ -137,6 +149,11 @@ object AiCall {
             .takeLast(6)
 
         val userContext = buildString {
+            if (instruction.isNotBlank()) {
+                append("【这次打电话要说的内容（用户指定，必须围绕它开口）】\n")
+                append(instruction)
+                append("\n\n")
+            }
             append("【用户档案】")
             if (facts.isEmpty()) append("暂无")
             else facts.take(10).forEach { append("\n- ").append(it.key).append("：").append(it.value) }

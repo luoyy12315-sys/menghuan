@@ -18,6 +18,10 @@ import org.json.JSONObject
  *
  * [lastCallDay] 是**该人设各自**的"今天打过没"记录（epochDay），
  * 所以人设之间天然互不影响：小美今天打过，不影响教练今晚也打一次。
+ *
+ * v0.54.7：新增 [instruction]（**打电话过来时想让我说什么**）——
+ * 用户要求"跟定时消息一样可以设定一个时间让 AI 打电话过来、说什么"。
+ * 留空 = 沿用原来的做法（AI 按档案/任务/最近聊天自己组织开场白）。
  */
 data class AiCallRule(
     val personaId: Long,
@@ -25,6 +29,8 @@ data class AiCallRule(
     val time: String = DEFAULT_AI_CALL_TIME,
     val idleDays: Int = 3,
     val lastCallDay: Long = 0L,
+    /** 打电话时要说的内容（开场白要求）；空 = 交给模型自己按情境组织 */
+    val instruction: String = "",
 )
 
 /** 规则的编解码（纯函数；脏数据跳过而不是崩，与本项目其它 JSON 存储同一套姿势） */
@@ -39,7 +45,8 @@ object AiCallRuleCodec {
                     .put("enabled", r.enabled)
                     .put("time", r.time)
                     .put("idleDays", r.idleDays)
-                    .put("lastCallDay", r.lastCallDay),
+                    .put("lastCallDay", r.lastCallDay)
+                    .put("instruction", r.instruction),
             )
         }
         return array.toString()
@@ -60,6 +67,7 @@ object AiCallRuleCodec {
                         time = o.optString("time").trim().ifEmpty { DEFAULT_AI_CALL_TIME },
                         idleDays = o.optInt("idleDays", 3).coerceIn(1, 30),
                         lastCallDay = o.optLong("lastCallDay", 0L),
+                        instruction = o.optString("instruction").trim(),
                     ),
                 )
             }
