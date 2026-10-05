@@ -1,63 +1,63 @@
 package com.menghuan.app.ui.settings
 
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.EaseOutQuart
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menghuan.app.BuildConfig
-import com.menghuan.app.data.AsrModelManager
-import com.menghuan.app.data.AsrModelRules
-import com.menghuan.app.data.DEFAULT_PROFILE_ID
 import com.menghuan.app.data.DEFAULT_THEME_MODE
-import com.menghuan.app.data.TtsConfig
-import com.menghuan.app.notify.AlarmScheduler
-import com.menghuan.app.ui.common.NeuChip
-import com.menghuan.app.ui.profile.MeViewModel
+import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.theme.MIcons
-import com.menghuan.app.ui.theme.MutedText
+import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.ThemeMode
-import kotlinx.coroutines.launch
 
 /**
- * 设置主页（v0.54.0 重构）。
+ * 设置主页（v0.54.2 定型，**方案二：九张入口卡，点进去才是二级页**）。
  *
- * ## 改了什么
- * 以前是 **7 个入口一列平铺、没有小标题** ——「API 配置」和「关于」是同一种卡片，
- * 视觉权重完全一致，用户看不出哪个是天天要改的、哪个只是查一下版本号。
- * 现在按**职责分四组**，组标题带一句"这组管什么"：
+ * ## 结构（用户 2026-10-06 拍板）
+ * 顶部搜索框，下面就是**九张自题名的入口卡**，一卡一个板块：
  *
- * ① **AI 与模型** —— 喂给模型的东西（对话 / 提示词），改完立刻影响每一次对话
- * ② **语音与通话** —— 合成与识别（能力）、打电话与铃声（行为）
- * ③ **提醒与通知** —— 全部**开关就地显示**，不用点进二级页才知道当前状态
- * ④ **数据与系统** —— 低频项；外观只有 3 个胶囊，就地平铺，不再单独占一页
+ * ① 模型配置 ② 提示词库 ③ 音色 ④ 通话行为 ⑤ 提醒与通知
+ * ⑥ 外观 ⑦ 权限 ⑧ 数据与隐私 ⑨ 关于
  *
- * ## 三条结构决定（v0.54.0 用户拍板）
- * - **组标题只是视觉标签，不可点、不折叠** —— 用户要的是"全屏显示"：
- *   每张卡片点进去仍然是**全屏页** + 顶部返回按钮。
- * - **「语音」这个中转层取消了**：原来 5 个子项要先点「语音」才看得到，
- *   现在直接上提到第 ② 组（设置链最深 4 层 → 2 层）。
- * - **「外观」「通知与提醒」两页取消**：三个胶囊与三个开关都搬回主页就地显示。
+ * **主页不再有分组小标题**（v0.54.1 那套"模型配置带标题 + 4 张平铺卡"被推翻）：多条目板块
+ * （模型配置 / 通话行为）现在也是**一张卡**，点进去才是那几张子卡。
  *
- * ## 搜索
- * 顶部搜索框按标题 / 副标题过滤下面所有行卡与开关。分组标签**不参与过滤也不隐藏**，
- * 命中项照常显示在自己那一组下面 —— 避免"搜出来的东西飘在组外、看不出归属"。
- * 空查询时恢复完整列表。
+ * ## 搜索（v0.54.4 改成与「消息」页同款）
+ * 顶部是**凹陷搜索行**（点一下才进入搜索态）；上滑离开顶部时它收起、顶栏右侧冒出放大镜，
+ * 与消息页会话列表完全一致。搜索态下按标题 / 副标题（外加别名）过滤这九张卡。
+ *
+ * ## v0.54.4 变更
+ * 「定时主动消息」与「人设主动关心」**从设置里移除** —— 它们改到**每个角色**的整页设置里
+ * （对话框右上角 ⋮ → 整页），设置页不再管这两件事。
  */
 @Composable
 fun SettingsScreen(
@@ -66,33 +66,17 @@ fun SettingsScreen(
 ) {
     val app = settingsContainer()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val vm: MeViewModel = viewModel(factory = MeViewModel.Factory)
 
     var query by remember { mutableStateOf("") }
+    var searchMode by remember { mutableStateOf(false) }
 
-    val profiles by app.settingsRepository.apiProfiles.collectAsState(initial = emptyList())
-    val activeProfileId by app.settingsRepository.activeProfileId
-        .collectAsState(initial = DEFAULT_PROFILE_ID)
-    val imageProfiles by app.settingsRepository.imageProfiles.collectAsState(initial = emptyList())
-    val themeModeName by app.settingsRepository.themeMode.collectAsState(initial = DEFAULT_THEME_MODE)
-    val ttsConfig by app.settingsRepository.ttsConfig.collectAsState(initial = TtsConfig())
-    // 模型状态只在进页时读一次：磁盘 stat 不贵，但也不该每帧重组都去碰
-    val asrReady = remember { AsrModelManager.isReady(app) }
-
-    // 通知类开关：就地显示，状态一眼可见（v0.54.0 取消了「通知与提醒」二级页）
-    val notifyOn by vm.notificationsEnabled.collectAsState()
-    val agentNotify by app.settingsRepository.agentNotifyEnabled.collectAsState(initial = true)
-    val proactive by app.settingsRepository.proactiveEnabled.collectAsState(initial = false)
-
-    val activeProfileName = profiles.firstOrNull { it.id == activeProfileId }?.name
-    val asrSubtitle = if (asrReady) {
-        "已就绪 · SenseVoice 离线"
-    } else {
-        "未下载 · 需 ${AsrModelRules.humanSize(AsrModelManager.pendingBytes(app))}"
+    // 滚动状态提前声明：顶部时搜索行常驻，上滑离开后换成顶栏放大镜（同消息页）
+    val scrollState = rememberScrollState()
+    val atTop by remember {
+        derivedStateOf { scrollState.value == 0 }
     }
-    val notifySubtitle = "已开 " +
-        listOf(notifyOn, agentNotify, proactive).count { it } + "/3 项"
+
+    val themeModeName by app.settingsRepository.themeMode.collectAsState(initial = DEFAULT_THEME_MODE)
 
     // 权限汇总（v0.53.8）：进页与从系统设置返回时都重查一次
     var permTick by remember { mutableStateOf(0) }
@@ -113,54 +97,91 @@ fun SettingsScreen(
         }
     }
 
-    // 搜索命中判据 = 标题或副标题含关键词（不区分大小写）。
-    // 每行都额外塞了几个**用户真会搜的别名**（如"AI 接口"→ 对话模型、"ASR" → 识别模型），
-    // 否则搜"接口"会一条都搜不到。
+    // 从放大镜进入搜索态时把页面拉回顶部，否则输入框在当前滚动位置之上、用户看不见
+    LaunchedEffect(searchMode) {
+        if (searchMode) scrollState.animateScrollTo(0)
+    }
+
+    // 搜索命中判据 = 标题或副标题（含别名）含关键词（不区分大小写）。
     fun hit(vararg parts: String): Boolean {
         val q = query.trim()
         if (q.isEmpty()) return true
         return parts.any { it.contains(q, ignoreCase = true) }
     }
 
-    SettingsPage(title = "设置", onBack = onBack) {
-        Spacer(Modifier.height(10.dp))
-        SettingsSearchField(value = query, onValueChange = { query = it })
-        if (query.isNotBlank()) {
-            Text(
-                "搜索「${query.trim()}」",
-                fontSize = 11.sp,
-                color = MutedText,
-                modifier = Modifier.padding(top = 8.dp, bottom = 0.dp),
-            )
+    SettingsPage(
+        title = "设置",
+        onBack = onBack,
+        scrollState = scrollState,
+        actions = {
+            // 上滑离开顶部 → 顶栏右侧放大镜（无圆圈），点它进入搜索态（同消息页）
+            if (!searchMode && !atTop) {
+                Icon(
+                    MIcons.Search,
+                    contentDescription = "搜索",
+                    tint = TextPrimary,
+                    modifier = Modifier
+                        .size(21.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { searchMode = true },
+                )
+            }
+        },
+    ) {
+        if (searchMode) {
+            Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    SettingsSearchField(
+                        value = query,
+                        onValueChange = { query = it },
+                        placeholder = "搜索设置项",
+                    )
+                }
+                Spacer(Modifier.width(10.dp))
+                NeuTextButton(
+                    text = "取消",
+                    onClick = {
+                        searchMode = false
+                        query = ""
+                    },
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+        } else {
+            // 搜索行只在拉到最顶部时出现；上滑即收起（换成顶栏放大镜），淡入淡出 + 平滑推移
+            AnimatedVisibility(
+                visible = atTop,
+                enter = fadeIn(tween(200)) + expandVertically(tween(240, easing = EaseOutQuart)),
+                exit = fadeOut(tween(150)) + shrinkVertically(tween(200)),
+            ) {
+                Box(Modifier.fillMaxWidth()) {
+                    SettingsSearchRow(onClick = { searchMode = true })
+                }
+            }
+            // 搜索行与第一张卡之间留出间距（原来紧贴在一起）
+            Spacer(Modifier.height(14.dp))
         }
 
-        // ───────────── ① AI 与模型 ─────────────
-        SettingsGroupLabel("① AI 与模型", "喂给模型的东西，改完立刻影响每一次对话")
+        // ① 模型配置（点进去 = 对话 / 生图 / 识别 / 语音 / 联网搜索 五张卡）
         SettingsRow(
-            show = hit("对话模型", activeProfileName ?: "未配置", "AI 接口", "聊天模型"),
+            show = hit("模型配置", "对话模型 生图模型 识别模型 语音模型 联网搜索", "模型", "AI 接口"),
             icon = MIcons.Code,
-            title = "对话模型",
-            subtitle = apiSubtitle(activeProfileName, profiles.size, imageProfiles.any { it.isComplete }),
-            onClick = { onOpen(SettingsRoutes.API_CONFIG) },
+            title = "模型配置",
+            subtitle = "对话 · 生图 · 识别 · 语音模型 · 联网搜索",
+            onClick = { onOpen(SettingsRoutes.MODEL_CONFIG) },
         )
+        // ② 提示词库
         SettingsRow(
-            show = hit("AI 提示词", "人设设定词 基础提示词 档案注入", "提示词"),
+            show = hit("提示词库", "AI 提示词", "人设设定词 基础提示词 档案注入", "提示词"),
             icon = MIcons.ChatBubble,
-            title = "AI 提示词",
+            title = "提示词库",
             subtitle = "人设设定词 · 基础提示词 · 档案注入说明",
             onClick = { onOpen(SettingsRoutes.PROMPTS) },
         )
-
-        // ───────────── ② 语音与通话 ─────────────
-        SettingsGroupLabel("② 语音与通话", "让 AI 出声、听懂你，并接听你打去的电话")
-        SettingsSubLabel("合成与识别")
-        SettingsRow(
-            show = hit("语音合成", ttsSubtitle(ttsConfig), "TTS", "出声"),
-            icon = MIcons.VoiceWave,
-            title = "语音合成",
-            subtitle = ttsSubtitle(ttsConfig),
-            onClick = { onOpen(SettingsRoutes.TTS_CONFIG) },
-        )
+        // ③ 音色
         SettingsRow(
             show = hit("音色", "男声 女声 克隆", "声音", "TTS"),
             icon = MIcons.Person,
@@ -168,80 +189,31 @@ fun SettingsScreen(
             subtitle = "男声 / 女声 / 我克隆的声音 · 可试听",
             onClick = { onOpen(SettingsRoutes.VOICE_LIBRARY) },
         )
+        // ④ 通话行为（点进去 = 语音通话铃声；AI 主动打电话 v0.54.5 起按角色在会话设置页里设）
         SettingsRow(
-            show = hit("识别模型", asrSubtitle, "ASR", "听懂"),
-            icon = MIcons.Mic,
-            title = "识别模型",
-            subtitle = asrSubtitle,
-            onClick = { onOpen(SettingsRoutes.ASR_MODEL) },
-        )
-        SettingsSubLabel("通话行为")
-        SettingsRow(
-            show = hit("AI 主动打电话", "主动打给我 到点", "来电"),
+            show = hit("通话行为", "语音通话铃声 来电 去电 铃声", "通话"),
             icon = MIcons.Phone,
-            title = "AI 主动打电话",
-            subtitle = "到点、或太久没聊，TA 会打给你（默认关）",
-            onClick = { onOpen(SettingsRoutes.AI_CALL) },
+            title = "通话行为",
+            subtitle = "语音通话铃声",
+            onClick = { onOpen(SettingsRoutes.CALL_BEHAVIOR) },
         )
+        // ⑤ 提醒与通知（点进去 = 两个提醒开关；定时消息与主动关心已挪进每个角色的整页）
         SettingsRow(
-            show = hit("语音通话铃声", "来电 去电 铃声 响铃", "接听延迟"),
+            show = hit("提醒与通知", "任务到点提醒 提醒 通知", "通知 提醒"),
             icon = MIcons.Bell,
-            title = "语音通话铃声",
-            subtitle = "来电与去电共用 · 可传音频或视频",
-            onClick = { onOpen(SettingsRoutes.CALL_RINGTONE) },
+            title = "提醒与通知",
+            subtitle = "任务到点提醒 · 手机操作通知",
+            onClick = { onOpen(SettingsRoutes.REMINDERS) },
         )
+        // ⑥ 外观
         SettingsRow(
-            show = hit("定时主动消息", "到点主动发 联网搜索", "主动消息"),
-            icon = MIcons.ChatBubble,
-            title = "定时主动消息",
-            subtitle = "指定人设到点主动发给你 · 可配多条、可联网搜最新",
-            onClick = { onOpen(SettingsRoutes.SCHEDULED_MESSAGE) },
+            show = hit("外观", "主题 深色 浅色 夜间", ThemeMode.fromName(themeModeName).label),
+            icon = MIcons.Palette,
+            title = "外观",
+            subtitle = "主题 · ${ThemeMode.fromName(themeModeName).label}",
+            onClick = { onOpen(SettingsRoutes.APPEARANCE) },
         )
-
-        // ───────────── ③ 提醒与通知 ─────────────
-        SettingsGroupLabel("③ 提醒与通知", "什么情况下让 App 主动打扰你")
-        SettingsSwitchRow(
-            show = hit("任务到点提醒", "任务提醒"),
-            title = "任务到点提醒",
-            caption = "任务设定的提醒时间到点发系统通知",
-            checked = notifyOn,
-            onToggle = { vm.setNotificationsEnabled(it) },
-        )
-        SettingsSwitchRow(
-            show = hit("手机操作进行中通知", "操作通知 进度条"),
-            title = "手机操作进行中通知",
-            caption = "AI 操控手机时的常驻进度条，点开回到会话",
-            checked = agentNotify,
-            onToggle = { on -> scope.launch { app.settingsRepository.setAgentNotifyEnabled(on) } },
-        )
-        SettingsSwitchRow(
-            show = hit("人设主动关心", "主动关心 问候"),
-            title = "人设主动关心",
-            caption = "每天最多一条 · 晚间发送，基于你的档案与任务",
-            checked = proactive,
-            onToggle = { on ->
-                scope.launch {
-                    app.settingsRepository.setProactiveEnabled(on)
-                    if (on) {
-                        AlarmScheduler.scheduleProactive(context)
-                    } else {
-                        AlarmScheduler.cancelProactive(context)
-                    }
-                }
-            },
-        )
-
-        // ───────────── ④ 数据与系统 ─────────────
-        SettingsGroupLabel("④ 数据与系统", "低频项：备份、授权、主题与版本")
-        SettingsInlineLabel("外观")
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ThemeMode.entries.forEach { mode ->
-                NeuChip(text = mode.label, selected = ThemeMode.fromName(themeModeName) == mode) {
-                    scope.launch { app.settingsRepository.setThemeMode(mode.name) }
-                }
-            }
-        }
-        Spacer(Modifier.height(10.dp))
+        // ⑦ 权限
         SettingsRow(
             show = hit("权限", permSubtitle, "授权", "通知 麦克风 相机 闹钟"),
             icon = MIcons.Shield,
@@ -249,6 +221,7 @@ fun SettingsScreen(
             subtitle = permSubtitle,
             onClick = { onOpen(SettingsRoutes.PERMISSIONS) },
         )
+        // ⑧ 数据与隐私
         SettingsRow(
             show = hit("数据与隐私", "导出 导入 清除 重置 备份", "数据"),
             icon = MIcons.FileText,
@@ -256,6 +229,7 @@ fun SettingsScreen(
             subtitle = "导出 · 导入 · 清除数据",
             onClick = { onOpen(SettingsRoutes.DATA_PRIVACY) },
         )
+        // ⑨ 关于
         SettingsRow(
             show = hit("关于", "版本 ${BuildConfig.VERSION_NAME}", "崩溃 记录"),
             icon = MIcons.Info,
@@ -270,35 +244,33 @@ fun SettingsScreen(
 /**
  * 设置链的路由名（MainActivity 注册、各页跳转都引这里，避免字符串字面量散落各处写错）。
  *
- * v0.54.0 删掉三个：`APPEARANCE`（三个胶囊并入主页第 ④ 组）、
- * `NOTIFICATIONS`（三个开关并入主页第 ③ 组）、`VOICE`（5 个子项上提，取消中转层）。
+ * v0.54.1：`API_CONFIG` 拆成 `CHAT_MODEL` / `IMAGE_MODEL`；恢复 `APPEARANCE`。
+ * v0.54.2：主页改成方案二，新增三个二级页 `MODEL_CONFIG` / `CALL_BEHAVIOR` / `REMINDERS`，
+ * 联网搜索从「定时主动消息」里拎出，独立成 `SEARCH_CONFIG`。
+ * v0.54.5：`AI_CALL` 删除 —— AI 主动打电话从设置里移除，改在**每个角色会话的整页设置**里按角色配。
  */
 object SettingsRoutes {
     const val SETTINGS = "settings"
-    const val API_CONFIG = "api_config"
+    const val MODEL_CONFIG = "model_config"
+    const val CALL_BEHAVIOR = "call_behavior"
+    const val REMINDERS = "reminders"
+    const val SEARCH_CONFIG = "search_config"
+    const val CHAT_MODEL = "chat_model"
+    const val IMAGE_MODEL = "image_model"
     const val DATA_PRIVACY = "data_privacy"
     const val PERMISSIONS = "permissions"
     const val ABOUT = "about"
+    const val APPEARANCE = "appearance"
     const val TTS_CONFIG = "tts_config"
     const val VOICE_LIBRARY = "voice_library"
-    const val AI_CALL = "ai_call"
     const val CALL_RINGTONE = "call_ringtone"
     const val SCHEDULED_MESSAGE = "scheduled_message"
     const val ASR_MODEL = "asr_model"
     const val PROMPTS = "prompts"
     const val PROFILE = "profile"
     const val GALLERY = "gallery"
+    /** v0.54.4：崩溃记录独立成页（关于页右上角红字入口） */
+    const val CRASH_LOG = "crash_log"
+    /** v0.54.4：某个角色的整页设置（对话框右上角 ⋮ → 整页） */
+    const val CHAT_SETTINGS = "chat_settings"
 }
-
-/** 对话模型副标题：默认模型名 + 生图模型状态，一眼看清聊天用的是谁 */
-private fun apiSubtitle(activeName: String?, profileCount: Int, imageReady: Boolean): String = when {
-    profileCount == 0 -> "未配置 · AI 暂不可用"
-    else -> buildString {
-        append("当前：").append(activeName ?: "默认模型")
-        append(" · 生图").append(if (imageReady) "已配置" else "未配置")
-    }
-}
-
-/** 语音合成副标题：哪家 +哪个模型；没配就明说"不出声" */
-private fun ttsSubtitle(cfg: TtsConfig): String =
-    if (cfg.isComplete) "${cfg.provider.label} · ${cfg.effectiveModel()}" else "未配置 · AI 与通话都不会出声"

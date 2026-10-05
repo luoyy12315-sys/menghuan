@@ -20,8 +20,8 @@ import kotlinx.coroutines.flow.first
  * 让最常聊的人设以自己的口吻主动发一条消息进会话，并推送通知。
  *
  * 约束：
- * - **默认关**（通知设置里的开关），打开即排当晚闹钟；
- * - **每天最多一条**（proactive_last_day = epochDay 去重），只在有对话过的人设、
+ * - **按角色开关**（v0.54.4：在每个人设的整页里，默认关），只有开了的角色才会轮到；
+ * - **每个角色每天最多一条**（persona_proactive_last_day 按 id 记 epochDay 去重），
  *   API 配置齐全、生成成功时才落库——宁缺毋滥，绝不打扰；
  * - 内容基于档案 + 近 7 天任务情况，硬约束 60 字内、自然口吻、不解释"我在执行任务"。
  */
@@ -43,27 +43,19 @@ object ProactiveChat {
      * @return true = 本次真的生成并落库了一条消息
      */
     suspend fun maybeGreet(db: AppDatabase, settingsRepository: SettingsRepository, context: Context): Boolean {
-        if (!settingsRepository.proactiveEnabled.first()) return false
-        val today = java.time.LocalDate.now().toEpochDay()
-        if (settingsRepository.proactiveLastDay() == today) return false
+        // v0.54.4：改为**按角色**——逐个检查开了「主动关心」的人设，每人每天最多一条
+        val enabled = settingsRepository.personaProactive.first().filterValues { it }.keys
+        if (enabled.isEmpty()) return false
 
         val api = settingsRepository.apiConfig.first()
         if (!api.isComplete) return false
 
-        // 目标人设：最近有消息的普通会话（排除内置应用助手）；一个聊过都没有就不打扰
-        val lastMessages = db.messageDao().observeLastMessages().first()
-        val personaIds = db.personaDao().observeAll().first()
-            .filter { it.id != MENTOR_PERSONA_ID }
-            .map { it.id }
-            .toSet()
-        val target = lastMessages
-            .filter { it.conversationId in personaIds }
-            .maxByOrNull { it.timestamp }
-            ?.conversationId
-            ?: return false
-        val persona = db.personaDao().getById(target) ?: return false
+        val today = java.time.LocalDate.now().toEpochDay()
+        val personas = db.personaDao().observeAll().first()
+            .filter { it.id != MENTOR_PERSONA_ID && it.id in enabled }
+        if (personas.isEmpty()) return false
 
-        // 上下文：档案（长期画像）+ 近 7 天任务完成情况
+        // 上下文：档案（长期画像）+ 近 7 天任务完成情况（所有角色共读一份）
         val facts = db.profileFactDao().observeAll().first()
         val zone = java.time.ZoneId.systemDefault()
         val weekAgo = java.time.LocalDate.now(zone).minusDays(7)
@@ -81,17 +73,27 @@ object ProactiveChat {
             append("\n\n请直接输出这条主动消息：")
         }
 
-        val reply = OpenAiClient(api.baseUrl, api.apiKey, api.model)
-            .collectReply(persona.systemPrompt, listOf(ChatMessage(conversationId = 0, isFromUser = true, content = userContext)))
-        val text = reply.text.trim()
-        if (text.isEmpty()) return false
+        var sent = false
+        for (persona in personas) {
+            if (settingsRepository.proactiveLastDayOf(persona.id) == today) continue
+            val reply = runCatching {
+                OpenAiClient(api.baseUrl, api.apiKey, api.model)
+                    .collectReply(
+                        persona.systemPrompt,
+                        listOf(ChatMessage(conversationId = 0, isFromUser = true, content = userContext)),
+                    )
+            }.getOrNull() ?: continue
+            val text = reply.text.trim()
+            if (text.isEmpty()) continue
 
-        db.messageDao().insert(
-            ChatMessage(conversationId = persona.id, isFromUser = false, content = text)
-        )
-        settingsRepository.setProactiveLastDay(today)
-        notify(context, persona.id, persona.name, text)
-        return true
+            db.messageDao().insert(
+                ChatMessage(conversationId = persona.id, isFromUser = false, content = text)
+            )
+            settingsRepository.setProactiveLastDayOf(persona.id, today)
+            notify(context, persona.id, persona.name, text)
+            sent = true
+        }
+        return sent
     }
 
     private fun notify(context: Context, personaId: Long, personaName: String, preview: String) {

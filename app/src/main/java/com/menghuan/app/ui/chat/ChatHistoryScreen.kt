@@ -1,19 +1,15 @@
 package com.menghuan.app.ui.chat
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -53,6 +49,9 @@ import java.time.format.DateTimeFormatter
  * 用途：翻很早以前聊过的东西。**搜索走 SQL 的 LIKE**（`messageDao.searchMessages`，本来就有的能力），
  * 拿回来再按本会话过滤 —— 不新增数据库查询、不动 Room。
  * 不填关键词时列出**最近 50 条**（免得一进来就把几千条塞进列表）。
+ *
+ * ⚠️ v0.54.5：列表**不要用 LazyColumn** —— 本页骨架是 [SettingsPage]（`Column(verticalScroll)`），
+ * 嵌套可滚动组件会因无限高约束直接崩（真机点本页必闪退的根因，见正文注释）。
  */
 @Composable
 fun ChatHistoryScreen(personaId: Long, onBack: () -> Unit) {
@@ -128,14 +127,18 @@ fun ChatHistoryScreen(personaId: Long, onBack: () -> Unit) {
                     color = MutedText,
                 )
                 Spacer(Modifier.height(8.dp))
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(matched, key = { it.id }) { m ->
+                // ⚠️ v0.54.5：这里**不能用 LazyColumn** —— SettingsPage 的内容是
+                // `Column(verticalScroll)`（无限高约束），LazyColumn 被无限高测量时 Compose
+                // 直接抛 "Vertically scrollable component was measured with an infinity
+                // maximum height constraints"，用户点「查看聊天记录」必闪退（真机反馈）。
+                // 数据量本来就有界（默认最近 50 条；搜索走 SQL 的 LIMIT 50），普通 Column
+                // 一次排完没有问题。
+                Column(Modifier.fillMaxWidth()) {
+                    matched.forEach { m ->
                         HistoryRow(message = m, personaName = persona?.name.orEmpty())
+                        Spacer(Modifier.height(10.dp))
                     }
-                    item { Spacer(Modifier.height(20.dp)) }
+                    Spacer(Modifier.height(20.dp))
                 }
             }
         }

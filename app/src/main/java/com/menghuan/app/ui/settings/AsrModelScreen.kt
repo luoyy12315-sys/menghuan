@@ -10,9 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,12 +34,12 @@ import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSectionTitle
+import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuDanger
-import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
@@ -154,35 +152,31 @@ fun AsrModelScreen(onBack: () -> Unit) {
     }
 
     if (confirmDelete) {
-        AlertDialog(
-            tonalElevation = 0.dp, // v0.42.1 全应用去阴影（该重载阴影来自 tonalElevation）
-            onDismissRequest = { confirmDelete = false },
-            containerColor = NeuSurface,
-            title = { Text("删除模型文件", color = TextPrimary) },
-            text = {
-                Text(
-                    "将删除：已下载的 SenseVoice 模型与 tokens（约 228 MB），以及未下完的续传分片。\n" +
-                        "保留：聊天记录、人设、任务与全部设置。删除后语音输入与通话不可用，" +
-                        "文字聊天不受影响；随时可重新下载。",
-                    color = TextPrimary,
-                    lineHeight = 20.sp,
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        AsrDownloadSession.pause()
-                        AsrModelManager.delete(context)
-                        confirmDelete = false
-                        notice = "已删除模型文件"
-                        refresh()
-                    },
-                ) { Text("删除", color = NeuDanger) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmDelete = false }) { Text("取消", color = MutedText) }
-            },
-        )
+        // v0.54.6：确认框也从底部弹（用户点名"所有弹窗改为从底下弹"）
+        NeuSheetScaffold(title = "删除模型文件", onDismiss = { confirmDelete = false }) {
+            Text(
+                "将删除：已下载的 SenseVoice 模型与 tokens（约 228 MB），以及未下完的续传分片。\n" +
+                    "保留：聊天记录、人设、任务与全部设置。删除后语音输入与通话不可用，" +
+                    "文字聊天不受影响；随时可重新下载。",
+                fontSize = 13.sp,
+                lineHeight = 21.sp,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(18.dp))
+            NeuButton(
+                text = "删除",
+                kind = NeuButtonKind.Danger,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    AsrDownloadSession.pause()
+                    AsrModelManager.delete(context)
+                    confirmDelete = false
+                    notice = "已删除模型文件"
+                    refresh()
+                },
+            )
+            Spacer(Modifier.height(10.dp))
+        }
     }
 }
 

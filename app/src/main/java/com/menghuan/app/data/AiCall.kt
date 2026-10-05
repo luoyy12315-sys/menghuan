@@ -57,8 +57,12 @@ object AiCall {
     /**
      * 发起一次来电（v0.53.6：**按人设**）。返回 true = 真的响了（开场白也生成好了）。
      *
-     * 这里只做"最后一道兜底校验"：总开关、这个人的规则、静默时段、每人设每天一次的频率。
+     * 这里只做"最后一道兜底校验"：这个人的规则、静默时段、每人设每天一次的频率。
      * 时机判定（到点 + 好久没聊）在 [com.menghuan.app.notify.AiCallReceiver] 里已经做过。
+     *
+     * ⚠️ v0.54.5：**总开关已删掉** —— 设置里不再有「AI 主动打电话」这一页，改成
+     * **每个角色自己的开关**（会话设置页的卡片）。所以这里只看**该角色的 rule.enabled**，
+     * 不再有"全局关着就全体不打"这道门槛。
      */
     suspend fun ring(
         context: Context,
@@ -70,13 +74,12 @@ object AiCall {
         if (personaId <= 0L) return false
 
         // ⚠️ v0.53.8：**用户在聊天里点名要求的那一通（REQUESTED）不受任何预设限制** ——
-        // 不看总开关、不看那个人设的规则、不管静默时段、也不算每天次数。
+        // 不看那个人设的规则、不管静默时段、也不算每天次数。
         // 用户原话是"我叫他待会打他也得打"。
         // 踩过的坑：以前这里查了总开关与人设规则，用户明明叫它打、它却静默不打，
         // 而且用户完全不知道为什么（界面上什么提示都没有）。
         val requested = reason == AiCallReason.REQUESTED
         if (!requested) {
-            if (!runCatching { settings.aiCallEnabled.first() }.getOrDefault(false)) return false
             val rule = runCatching { settings.aiCallRules.first() }
                 .getOrDefault(emptyList())
                 .firstOrNull { it.personaId == personaId }
@@ -105,10 +108,12 @@ object AiCall {
 
     /**
      * App 启动 / 开机 / 覆盖安装后重排闹钟：**逐个启用了的人设**各排一个。
-     * **只排闹钟、不发任何请求** —— 与「进程启动不主动打 LLM」的既有约定一致。
+     * **只排闹钟、不发任何请求** —— 与"进程启动不主动打 LLM"的既有约定一致。
+     *
+     * v0.54.5：总开关删掉后，这里不再有"全局关着就全不排"的分支 —— 开关就在各个角色的
+     * 规则里（[AiCallRule.enabled]），只要那个角色自己开着就排。
      */
     suspend fun rearm(settings: SettingsRepository, context: Context) {
-        if (!settings.aiCallEnabled.first()) return
         settings.aiCallRules.first()
             .filter { it.enabled }
             .forEach {
@@ -170,7 +175,7 @@ object AiCall {
 
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "AI 来电", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "AI 主动打给你的来电（可在设置里关掉「AI 主动打电话」）"
+                description = "AI 主动打给你的来电（可在每个角色会话右上角 ⋮ 的整页设置里关掉「允许主动打电话」）"
             }
         )
 

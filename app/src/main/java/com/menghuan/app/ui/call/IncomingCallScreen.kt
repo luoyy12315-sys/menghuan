@@ -172,7 +172,7 @@ private fun IncomingCallScreen(
         value = runCatching { app.db.personaDao().getById(personaId) }.getOrNull()
     }
 
-    // 响铃（v0.53.7）：设了自定义铃声就用它，否则用系统默认铃声；退出页面必定停
+    // 响铃（v0.53.7；v0.54.4 起按角色）：角色专属铃声 → 设置里的默认铃声 → 系统默认铃声
     var customPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     val systemRingtone = remember {
         runCatching {
@@ -180,7 +180,8 @@ private fun IncomingCallScreen(
         }.getOrNull()
     }
     LaunchedEffect(Unit) {
-        val custom = runCatching { app.settingsRepository.callRingtonePath.first() }.getOrDefault("")
+        val custom = runCatching { app.settingsRepository.ringtoneForPersona(personaId) }
+            .getOrDefault("")
         val player = custom.takeIf { it.isNotBlank() }?.let { CallRingtone.loopPlayer(it) }
         if (player != null) customPlayer = player else runCatching { systemRingtone?.play() }
     }

@@ -239,6 +239,10 @@ interface ImageGenerationDao {
     @Query("SELECT * FROM image_generations ORDER BY timestamp DESC")
     suspend fun getAll(): List<ImageGenerationRecord>
 
+    /** AI 图库长按删除（v0.54.3）：删记录，图片文件由调用方一并删除 */
+    @Query("DELETE FROM image_generations WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
     @Query("SELECT COUNT(*) FROM image_generations")
     fun observeCount(): Flow<Long>
 }

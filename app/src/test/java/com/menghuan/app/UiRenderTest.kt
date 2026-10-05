@@ -144,6 +144,32 @@ class UiRenderTest {
     private fun clickDesc(desc: String) = compose.onNodeWithContentDescription(desc).performClick()
 
     /**
+     * 点设置二级页顶栏的「返回」。
+     * 推进/回退转场期间**新旧两个 destination 会同时在组合树里**，
+     * 此时 `onNodeWithContentDescription("返回")` 会匹配到多个节点直接抛异常
+     * （设置主页与二级页各有一颗）。这里等到只剩一颗再点。
+     */
+    private fun clickBack() {
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                compose.waitForIdle()
+            } catch (e: AssertionError) {
+                // 动画未收敛：继续轮询
+            }
+            val nodes = compose.onAllNodesWithContentDescription("返回").fetchSemanticsNodes()
+            if (nodes.size == 1) {
+                compose.onNodeWithContentDescription("返回").performClick()
+                runCatching { compose.waitForIdle() } // 等回退转场走完再交给下一步
+                Thread.sleep(300)
+                return
+            }
+            Thread.sleep(80)
+        }
+        throw AssertionError("等待唯一「返回」按钮超时（15s）")
+    }
+
+    /**
      * 滚到指定 tag 的节点再点击。
      * 数据页底部入口（记账本 / AI 洞察与周报）在首屏之外，直接 performClick 会被
      * 测试框架裁到可视区外而不生效——且页面自身的文案会"骗过"后续断言。
@@ -339,8 +365,10 @@ class UiRenderTest {
     }
 
     /**
-     * v0.54.0 设置页收纳重构：主页按四组排开，语音六项直接上提（不再有「语音」中转页），
-     * 通知三开关就地显示，外观三胶囊就地平铺，「AI 提示词」从「我的」搬进第 ① 组。
+     * v0.54.2 设置主页「方案二」：主页只有**九张自题名入口卡**（无分组小标题、无编号），
+     * 多条目卡点进去才是那几张子卡 —— 模型配置（5 项，含联网搜索）/ 通话行为（1 项，
+     * v0.54.5 起 AI 主动打电话已从设置里删掉、改按角色）/ 提醒与通知（2 项）；
+     * 「语音」「通知与提醒」两个中转页已取消，外观恢复成独立页。
      */
     @Test
     fun render27SettingsGroups() {
@@ -348,34 +376,51 @@ class UiRenderTest {
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
         clickText("设置")
-        // 四个分组标签（v0.54.0 新增）
-        awaitText("① AI 与模型")
-        awaitText("② 语音与通话")
-        awaitText("③ 提醒与通知")
-        awaitText("④ 数据与系统")
-        // ①组
-        awaitText("对话模型")
-        awaitText("AI 提示词")
-        // ②组：语音六项全部在这一页，不再点「语音」中转
-        awaitText("语音合成")
+        // 顶部是**搜索行**（点一下才进入搜索态，v0.54.4 起与消息页同款；不再是常驻输入框）
+        awaitText("搜索")
+        // 主页九张入口卡
+        awaitText("模型配置")
+        awaitText("提示词库")
         awaitText("音色")
-        awaitText("识别模型")
-        awaitText("AI 主动打电话")
-        awaitText("语音通话铃声")
-        awaitText("定时主动消息")
-        assertFalse(compose.onAllNodesWithText("语音").fetchSemanticsNodes().isNotEmpty())
-        // ③组：三个开关就地
-        awaitText("任务到点提醒")
-        awaitText("手机操作进行中通知")
-        awaitText("人设主动关心")
-        // ④组：外观三胶囊就地
-        awaitText("跟随系统")
-        awaitText("浅色")
-        awaitText("深色")
+        awaitText("通话行为")
+        awaitText("提醒与通知")
+        awaitText("外观")
         awaitText("权限")
         awaitText("数据与隐私")
         awaitText("关于")
-        snap("51-settings-groups")
+        // 子卡内容不该直接出现在主页（v0.54.1 的平铺形态已推翻）
+        assertFalse(compose.onAllNodesWithText("对话模型").fetchSemanticsNodes().isNotEmpty())
+        assertFalse(compose.onAllNodesWithText("语音通话铃声").fetchSemanticsNodes().isNotEmpty())
+        snap("51-settings-home")
+
+        // 「模型配置」是一张卡 → 点进去才是 5 张子卡（第 5 张 = 联网搜索）
+        clickText("模型配置")
+        awaitText("对话模型")
+        awaitText("生图模型")
+        awaitText("识别模型")
+        awaitText("语音模型")
+        awaitText("联网搜索")
+        snap("51b-settings-model-config")
+        clickBack()
+
+        // 「通话行为」点进去只剩 1 张子卡：语音通话铃声
+        // （v0.54.5：AI 主动打电话已从设置里删掉，改在**每个角色会话右上角 ⋮ 的整页设置**里按角色配）
+        clickText("通话行为")
+        awaitText("语音通话铃声")
+        assertFalse(compose.onAllNodesWithText("AI 主动打电话").fetchSemanticsNodes().isNotEmpty())
+        snap("51d-settings-call-behavior")
+        clickBack()
+
+        // 「提醒与通知」点进去只剩 2 个开关（v0.54.4：「定时主动消息」「人设主动关心」已搬到会话设置页）
+        clickText("提醒与通知")
+        awaitText("任务到点提醒")
+        awaitText("手机操作进行中通知")
+        snap("51c-settings-reminders")
+        clickBack()
+        assertFalse(compose.onAllNodesWithText("人设主动关心").fetchSemanticsNodes().isNotEmpty())
+
+        // 「语音」中转页已取消：不该再有一个正好叫「语音」的入口行
+        assertFalse(compose.onAllNodesWithText("语音").fetchSemanticsNodes().isNotEmpty())
         // 点「音色」卡片 → 独立全屏音色页：名单 + 顶栏两个按钮
         clickText("音色")
         awaitText("Alex · 男声")
@@ -404,16 +449,16 @@ class UiRenderTest {
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
         clickText("设置")
-        awaitText("语音")
-        clickText("语音")
-        awaitText("语音合成")
-        clickText("语音合成")
+        // v0.54.2：「语音」中转页早已取消，语音模型在设置主页「模型配置」卡的第 4 张子卡
+        clickText("模型配置")
+        awaitText("语音模型")
+        clickText("语音模型")
         awaitText("硅基流动")
         awaitText("小米 MiMo")
         awaitText("自定义端点")
         awaitText("当前生效")
         awaitText("API Key") // 当前生效那家默认展开，字段就在
-        // 克隆与音色管理已经搬去「语音」页的板块，这一页只管配置
+        // 克隆与音色管理已经搬去独立的「音色」页，这一页只管配置
         assertFalse(compose.onAllNodesWithText("音色克隆").fetchSemanticsNodes().isNotEmpty())
         snap("52-tts-config")
 
@@ -423,7 +468,7 @@ class UiRenderTest {
         snap("53-tts-config-mimo")
     }
 
-    /** v0.53.4 API 配置：按模型列表展示，点一行直接进详情（列表里没有勾选、没有输入框） */
+    /** v0.53.4 API 配置：按模型列表展示，点一行直接进详情（列表里没有勾选、没有输入框）；v0.54.1 独立成「对话模型」页 */
     @Test
     fun render29ApiConfigModels() {
         val app = compose.activity.application as MenghuanApp
@@ -436,10 +481,10 @@ class UiRenderTest {
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
         clickText("设置")
-        awaitText("API 配置")
-        clickText("API 配置")
+        // v0.54.2：对话 / 生图是「模型配置」卡里的两张子卡，这条只验对话模型页
+        clickText("模型配置")
         awaitText("对话模型")
-        awaitText("生图模型")
+        clickText("对话模型")
         awaitText("＋ 添加模型")
         // 列表页只有卡片，没有输入框
         assertFalse(compose.onAllNodesWithText("接口地址").fetchSemanticsNodes().isNotEmpty())
@@ -720,8 +765,8 @@ class UiRenderTest {
     }
 
     /**
-     * 外观（v0.35.1 起在设置里；**v0.54.0 起不再单独占一页**）：
-     * 主题三选一的胶囊直接摆在设置主页第 ④ 组里。
+     * 外观（v0.35.1 起在设置里；v0.54.0 曾并入设置主页，**v0.54.1 起恢复成独立全屏页**）：
+     * 设置主页的「外观」卡点进去，主题三选一的胶囊在这一页里。
      */
     @Test
     fun render15AppearanceScreen() {
@@ -730,14 +775,14 @@ class UiRenderTest {
         compose.onNodeWithTag("bottom_tab_3").performClick() // 我的
         awaitText("设置")
         clickText("设置")
-        awaitText("④ 数据与系统")
+        awaitText("外观")
+        snap("27-settings-list")
+        // 「外观」是设置主页的一张入口卡 → 点进去是独立全屏页（主题胶囊在这页里）
+        clickText("外观")
         awaitText("跟随系统")
         awaitText("浅色")
         awaitText("深色")
-        snap("27-settings-list")
-        // 「外观」三个胶囊已并入主页，**不该再有**一个独立的「外观」入口行
-        assertFalse(compose.onAllNodesWithText("外观").fetchSemanticsNodes().isNotEmpty())
-        // 切到深色确认生效，然后还原（settingsStore 是进程级单例）
+        // 切到浅色确认生效，然后还原（settingsStore 是进程级单例）
         clickText("浅色")
         awaitState("点了「浅色」后 themeMode 应为 LIGHT") {
             kotlinx.coroutines.runBlocking { app.settingsRepository.themeMode.first() } == "LIGHT"

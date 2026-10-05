@@ -1,5 +1,6 @@
 package com.menghuan.app.ui.settings
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -27,6 +29,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.MenghuanApp
@@ -35,11 +39,13 @@ import com.menghuan.app.ui.common.NeuCircleButton
 import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTopBar
+import com.menghuan.app.ui.common.neuRowPress
 import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
-import com.menghuan.app.ui.theme.NeuSurface
+import com.menghuan.app.ui.theme.NeuHairline
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
@@ -47,7 +53,7 @@ import com.menghuan.app.ui.theme.TextSecondary
 /**
  * 设置链全屏页的统一骨架（v0.51.0）。
  *
- * **为什么从弹层改成整页**：设置链现在有三层（设置 → 语音 → 语音合成），
+ * **为什么从弹层改成整页**：设置链现在最深两层（设置 → 各功能页，如 设置 → 语音模型），
  * 弹层叠弹层在手机上会把整屏盖死、返回手势也说不清退到哪一层；
  * 而且识别模型下载要跑几分钟，用户需要能退出去干别的再回来——
  * 那正是"页面有返回栈"才成立的事。
@@ -58,6 +64,9 @@ import com.menghuan.app.ui.theme.TextSecondary
 fun SettingsPage(
     title: String,
     onBack: () -> Unit,
+    actions: (@Composable () -> Unit)? = null,
+    actionsWidth: Dp? = null,
+    scrollState: ScrollState = rememberScrollState(),
     content: @Composable ColumnScope.() -> Unit,
 ) {
     AdaptiveScreen {
@@ -73,12 +82,13 @@ fun SettingsPage(
                     )
                 }
             },
-            actionsWidth = 56.dp,
+            actions = actions,
+            actionsWidth = actionsWidth,
         )
         Column(
             Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(scrollState)
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 40.dp),
             content = content,
@@ -120,32 +130,6 @@ fun SettingsGroupLabel(title: String, caption: String? = null) {
             Text(caption, fontSize = 11.sp, lineHeight = 15.sp, color = MutedText)
         }
     }
-}
-
-/** 组内二级标签（如「合成与识别」）：比 [SettingsGroupLabel] 更轻，只隔开同组的两类内容 */
-@Composable
-fun SettingsSubLabel(text: String) {
-    Text(
-        text,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Medium,
-        color = TextSecondary,
-        letterSpacing = 0.6.sp,
-        modifier = Modifier.padding(top = 6.dp, bottom = 7.dp),
-    )
-}
-
-/** 组内「标题 + 同行内容」的标签（当前只有「外观」用到，所以留一个具名入口） */
-@Composable
-fun SettingsInlineLabel(text: String) {
-    Text(
-        text,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Medium,
-        color = TextSecondary,
-        letterSpacing = 0.6.sp,
-        modifier = Modifier.padding(bottom = 7.dp),
-    )
 }
 
 /**
@@ -240,45 +224,102 @@ fun SettingsSearchField(
 }
 
 /**
- * 居中详情弹窗（v0.53.0）：接口卡片点右箭头 → 中间弹出这条的详细信息，
- * 改、保存、删除都在里面。
+ * 顶部搜索**行**（点一下才进入搜索态）：与「消息」页会话列表顶部那条同款——
+ * 凹陷灰槽 + 放大镜 + 「搜索」，不是可编辑输入框（v0.54.4）。
  *
- * **为什么是居中弹窗而不是底部弹层**：用户明确要"从中间弹窗展开卡片详细信息"；
- * 底部弹层会把整页配置盖住，改一条要来回滚动，而弹窗只占屏幕中部一小块、
- * 背后那张卡片还在原位。
+ * 为什么不用 [SettingsSearchField] 常驻：设置主页是"上滑看卡片"的页面，
+ * 一个真实输入框常驻会抢焦点、弹键盘，把卡片顶下去。改成"点一下才搜"，
+ * 与消息页行为一致，用户不用学两套。
  */
 @Composable
-fun SettingsCardDialog(
-    title: String,
-    onDismiss: () -> Unit,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 6.dp)
-                .neuSurface(22.dp, color = NeuSurface)
-                .padding(horizontal = 20.dp, vertical = 20.dp),
-        ) {
-            Text(
-                title,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = (-0.2).sp,
-                color = TextPrimary,
-            )
-            Spacer(Modifier.height(14.dp))
-            content()
-        }
+fun SettingsSearchRow(placeholder: String = "搜索", onClick: () -> Unit) {
+    val track = NeuTrack
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .neuSurface(16.dp, color = track, inset = true)
+            .neuRowPress(onClick)
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            MIcons.Search,
+            contentDescription = null,
+            tint = MutedText,
+            modifier = Modifier.size(15.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(placeholder, fontSize = 14.sp, color = MutedText)
     }
 }
+
+/**
+ * 灰线分隔的一行（v0.54.6）。
+ *
+ * 用户点名"取消卡片，直接用灰线分隔开"：会话设置页整页都不再用 `NeuSheetRow` 那种
+ * 白面圆角卡片，改成**一条条平铺的行**，行与行之间只用一条 1dp 发丝线（[NeuHairline]）分隔
+ * ——这也是全应用"唯一分隔手段是细线"的既定语言。
+ *
+ * 与 [SettingsSwitchRow] 的区别：那个是"标题 + 右侧开关"的开关行；这个是通用行
+ * （可带副标题、右侧控件、右侧箭头、可点/不可点）。
+ */
+@Composable
+fun SettingsLineRow(
+    title: String,
+    subtitle: String = "",
+    trailing: (@Composable () -> Unit)? = null,
+    /** 右侧不挂控件时是否画那颗浅箭头（默认画：表明"点进去还有东西"） */
+    showChevron: Boolean = true,
+    /**
+     * 点击回调。放在**最后一个参数**上是为了能用尾随 lambda 写
+     * （`SettingsLineRow("音色") { … }`）；默认空实现 = 这一行点不动。
+     */
+    onClick: () -> Unit = {},
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onClick,
+                )
+                .padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 15.sp, color = TextPrimary)
+                if (subtitle.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(subtitle, fontSize = 12.sp, color = MutedText, maxLines = 1)
+                }
+            }
+            when {
+                trailing != null -> {
+                    Spacer(Modifier.width(10.dp))
+                    trailing()
+                }
+                showChevron -> {
+                    Spacer(Modifier.width(10.dp))
+                    Icon(
+                        MIcons.ChevronRight,
+                        contentDescription = null,
+                        tint = FaintText,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(NeuHairline))
+    }
+}
+
 /**
  * 手风琴段行：标题 + 「已自定义」徽标 + 可选尾部控件 + 展开箭头。
  *
  * 现在只用在**能一次看完、不需要边看边改**的名单类分段（「AI 提示词」八段、「语音」页的手填音色 ID）。
- * API 配置 / 语音合成不用它——那些是"卡片列表 + 点卡片看详情"，见 [SettingsCardDialog]。
+ * API 配置 / 语音合成不用它——那些是"卡片列表 + 点卡片看详情"（详情走 `NeuSheetScaffold` 底部弹层）。
  */
 @Composable
 fun SettingsSectionRow(
@@ -286,6 +327,8 @@ fun SettingsSectionRow(
     expanded: Boolean,
     customized: Boolean = false,
     caption: String? = null,
+    /** v0.54.4：段标题字号（「AI 提示词」要求加大到 17sp，其它名单页沿用默认 13sp） */
+    titleSize: TextUnit = 13.sp,
     trailing: (@Composable RowScope.() -> Unit)? = null,
     onToggle: () -> Unit,
 ) {
@@ -303,7 +346,7 @@ fun SettingsSectionRow(
         Column(Modifier.weight(1f)) {
             Text(
                 title,
-                fontSize = 13.sp,
+                fontSize = titleSize,
                 fontWeight = FontWeight.SemiBold,
                 color = TextPrimary,
             )

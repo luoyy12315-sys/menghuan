@@ -4,6 +4,7 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,18 +13,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -32,19 +34,22 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menghuan.app.BuildConfig
 import com.menghuan.app.data.CrashLog
+import com.menghuan.app.data.DEFAULT_THEME_MODE
 import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
+import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSheetRow
+import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.profile.MeViewModel
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
-import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
+import com.menghuan.app.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 
 /** 本机数据统计快照（数据与隐私页展示） */
@@ -118,56 +123,50 @@ fun DataPrivacyScreen(
     }
 
     if (confirmClear) {
-        AlertDialog(
-            tonalElevation = 0.dp, // v0.42.1 全应用去阴影（该重载阴影来自 tonalElevation）
-            onDismissRequest = { confirmClear = false },
-            containerColor = NeuSurface,
-            title = { Text("清除全部数据", color = TextPrimary) },
-            text = {
-                Text(
-                    "将删除：全部聊天消息、AI 洞察、AI 周报、用户档案、任务与打卡记录，且不可恢复。\n" +
-                        "保留：人设、API 接口配置、提示词、主题与通知开关。确定继续吗？",
-                    color = TextPrimary,
-                    lineHeight = 20.sp,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { vm.clearAllData(context); confirmClear = false }) {
-                    Text("清除", color = NeuDanger)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmClear = false }) { Text("取消", color = MutedText) }
-            },
-        )
+        // v0.54.6：确认框也从底部弹（用户点名"所有弹窗改为从底下弹"）
+        NeuSheetScaffold(title = "清除全部数据", onDismiss = { confirmClear = false }) {
+            Text(
+                "将删除：全部聊天消息、AI 洞察、AI 周报、用户档案、任务与打卡记录，且不可恢复。\n" +
+                    "保留：人设、API 接口配置、提示词、主题与通知开关。确定继续吗？",
+                fontSize = 13.sp,
+                lineHeight = 21.sp,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(18.dp))
+            NeuButton(
+                text = "清除",
+                kind = NeuButtonKind.Danger,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    vm.clearAllData(context)
+                    confirmClear = false
+                },
+            )
+            Spacer(Modifier.height(10.dp))
+        }
     }
     if (confirmResetAll) {
-        AlertDialog(
-            tonalElevation = 0.dp, // v0.42.1 全应用去阴影（该重载阴影来自 tonalElevation）
-            onDismissRequest = { confirmResetAll = false },
-            containerColor = NeuSurface,
-            title = { Text("一键重置", color = TextPrimary) },
-            text = {
-                Text(
-                    "将清空本机的全部数据与设置：人设、聊天、任务、打卡、档案、洞察、周报、API 配置与各项开关，" +
-                        "仅保留内置应用助手。此操作不可恢复，建议先导出备份。确定继续吗？",
-                    color = TextPrimary,
-                    lineHeight = 20.sp,
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        confirmResetAll = false
-                        vm.resetAll(context)
-                        onBack()
-                    },
-                ) { Text("重置", color = NeuDanger) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmResetAll = false }) { Text("取消", color = MutedText) }
-            },
-        )
+        NeuSheetScaffold(title = "一键重置", onDismiss = { confirmResetAll = false }) {
+            Text(
+                "将清空本机的全部数据与设置：人设、聊天、任务、打卡、档案、洞察、周报、API 配置与各项开关，" +
+                    "仅保留内置应用助手。此操作不可恢复，建议先导出备份。确定继续吗？",
+                fontSize = 13.sp,
+                lineHeight = 21.sp,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(18.dp))
+            NeuButton(
+                text = "重置",
+                kind = NeuButtonKind.Danger,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    confirmResetAll = false
+                    vm.resetAll(context)
+                    onBack()
+                },
+            )
+            Spacer(Modifier.height(10.dp))
+        }
     }
 }
 
@@ -195,12 +194,29 @@ private fun SectionLabel(text: String) {
     Spacer(Modifier.height(8.dp))
 }
 
-/** 设置 · 关于 */
+/** 设置 · 关于（v0.54.4：崩溃记录不再占一张卡，改成顶栏右上角的红字入口，点开是整页） */
 @Composable
-fun AboutScreen(onBack: () -> Unit) {
+fun AboutScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
     val context = LocalContext.current
-    var showCrash by remember { mutableStateOf(false) }
-    SettingsPage(title = "关于", onBack = onBack) {
+    val hasCrash = CrashLog.hasCrash(context)
+    SettingsPage(
+        title = "关于",
+        onBack = onBack,
+        actions = {
+            if (hasCrash) {
+                Text(
+                    "崩溃记录",
+                    fontSize = 14.sp,
+                    color = NeuDanger,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .clickable { onOpen(SettingsRoutes.CRASH_LOG) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+            }
+        },
+        actionsWidth = 76.dp,
+    ) {
         Spacer(Modifier.height(24.dp))
         Column(
             Modifier.fillMaxWidth(),
@@ -222,33 +238,55 @@ fun AboutScreen(onBack: () -> Unit) {
             color = MutedText,
         )
         Spacer(Modifier.height(18.dp))
-        // 崩溃现场（v0.53.1）：真机没有 logcat，闪退后什么线索都不留。
-        // 现在崩溃前会写 filesDir/crash.log，这里给一个入口看到它——截图发过来就能定位。
-        if (CrashLog.hasCrash(context)) {
-            NeuSheetRow(
-                icon = MIcons.Bell,
-                title = "上次崩溃记录",
-                subtitle = "点这里查看堆栈",
-                onClick = { showCrash = true },
-            )
-        }
-        Spacer(Modifier.height(6.dp))
     }
-    if (showCrash) {
-        SettingsCardDialog(title = "上次崩溃记录", onDismiss = { showCrash = false }) {
+}
+
+/** 设置 · 崩溃记录（v0.54.4）：整页显示上次崩溃堆栈，可选中复制、可清除 */
+@Composable
+fun CrashLogScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val text = CrashLog.latest(context).orEmpty()
+    SettingsPage(title = "崩溃记录", onBack = onBack) {
+        Spacer(Modifier.height(14.dp))
+        if (text.isBlank()) {
+            Text("没有记录", fontSize = 13.sp, color = MutedText)
+        } else {
             SelectionContainer {
-                Text(
-                    CrashLog.latest(context).orEmpty(),
-                    fontSize = 11.sp,
-                    lineHeight = 16.sp,
-                    color = TextSecondary,
-                )
+                Text(text, fontSize = 11.sp, lineHeight = 16.sp, color = TextSecondary)
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(18.dp))
             NeuTextButton("清除这条记录", color = NeuDanger, onClick = {
                 CrashLog.clear(context)
-                showCrash = false
+                onBack()
             })
         }
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+/**
+ * 设置 · 外观（v0.54.1 恢复独立页）。
+ *
+ * v0.54.0 曾把这三个胶囊并进设置主页第 ④ 组就地显示；用户要求「外观跟原来一样」，
+ * 于是回到独立页 —— 设置主页只留一个入口，点进来再选主题模式。
+ */
+@Composable
+fun AppearanceScreen(onBack: () -> Unit) {
+    val app = settingsContainer()
+    val scope = rememberCoroutineScope()
+    val themeModeName by app.settingsRepository.themeMode
+        .collectAsState(initial = DEFAULT_THEME_MODE)
+
+    SettingsPage(title = "外观", onBack = onBack) {
+        Spacer(Modifier.height(14.dp))
+        SectionLabel("主题")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ThemeMode.entries.forEach { mode ->
+                NeuChip(text = mode.label, selected = ThemeMode.fromName(themeModeName) == mode) {
+                    scope.launch { app.settingsRepository.setThemeMode(mode.name) }
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
     }
 }

@@ -192,6 +192,20 @@ object MIcons {
         "M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2",
         "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14Z",
     )
+    /** v0.54.3：多选勾选圈的 ✓ */
+    val Check = strokes("Check", 2f, "M4.5 12.5L9.5 17.5L19.5 7")
+    /** v0.54.3：长按菜单「多选」（方框内一个勾） */
+    val SelectAll = strokes(
+        "SelectAll", 1.8f,
+        "M4 4h16v16H4Z",
+        "M8.4 12.2L11 14.8L15.8 9.2",
+    )
+    /** v0.54.3：多选操作栏「转发」（右向箭头 + 引出线） */
+    val Forward = strokes(
+        "Forward", 1.8f,
+        "M13 4.5L20.5 12L13 19.5",
+        "M20.5 12H10.5C6.9 12 4 14.9 4 18.5",
+    )
     val Person = strokes(
         "Person", 1.6f,
         circleData(12f, 8f, 3.4f),

@@ -42,6 +42,9 @@ class PersonaRepository(
         settingsRepository?.removeExtractionWatermark(id)
         settingsRepository?.removePersonaApiProfile(id)
         settingsRepository?.removeVoiceRef(id)
+        // v0.54.4：专属铃声与「主动关心」开关一并清掉（不留孤儿键）
+        settingsRepository?.setPersonaRingtone(id, "")
+        settingsRepository?.setPersonaProactive(id, false)
     }
 
     /** 对话风格按 persona 持久化（长按头像切换后保存） */

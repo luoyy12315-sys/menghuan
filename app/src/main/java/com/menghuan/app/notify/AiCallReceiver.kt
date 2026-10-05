@@ -18,12 +18,14 @@ import java.time.LocalDate
  * 「AI 主动打电话」的闹钟落点（v0.53.6 起**按人设**）。
  *
  * 每个人设一个闹钟（requestCode 由 personaId 派生），到点只为**那一个人**做判定：
- * - 总开关关着 → 全体不打；
  * - 那个人没配规则、或规则关着 → 只有这个人不打（**不影响别人**）；
  * - 否则按它的 `idleDays` 看"距**跟 TA 的**最后一次聊天"够不够久，够了才打；
  * - 打完/没打都**自排明天**（调度不能断）。
  *
- * 口头约定那一路（`once`）也带 personaId：用户让谁打就谁打，只查总开关 + 那个人的规则。
+ * v0.54.5：**总开关已删** —— 设置里不再有「AI 主动打电话」页，开关就是各角色自己的规则
+ * （会话设置页的「允许主动打电话」卡片）。
+ *
+ * 口头约定那一路（`once`）也带 personaId：用户让谁打就谁打，不看规则。
  *
  * ⚠️ 这里只做规则判定，不调 LLM：开场白生成在 [AiCall.ring] 里（网络请求），
  * 所以整段走 `goAsync()` + IO 线程。
@@ -41,11 +43,11 @@ class AiCallReceiver : BroadcastReceiver() {
                 val app = context.applicationContext as? MenghuanApp ?: return@launch
                 val settings = app.settingsRepository
 
-                // 总开关：AI 自己决定打的（定时 / 智能）关着就全体安静。
-                // ⚠️ 但**用户在聊天里点名要求的那一通不受总开关限制**（reason = REQUESTED），
+                // 总开关已在 v0.54.5 删掉（设置里不再有「AI 主动打电话」页）：开关就是
+                // **各角色自己的 rule.enabled**（会话设置页的卡片）。
+                // ⚠️ **用户在聊天里点名要求的那一通不受规则限制**（reason = REQUESTED），
                 // 所以这里只拦非 once 的两路（用户踩过："我叫他打，他没打过来"）。
                 val requested = once
-                if (!requested && !settings.aiCallEnabled.first()) return@launch
                 val rule = settings.aiCallRules.first().firstOrNull { it.personaId == personaId }
 
                 val now = System.currentTimeMillis()

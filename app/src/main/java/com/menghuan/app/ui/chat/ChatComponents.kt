@@ -6,10 +6,12 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.ui.composed
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -210,7 +212,7 @@ fun ImageBubble(
                 .then(
                     if (onClick != null) {
                         Modifier.clickable(
-                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                             onClick = onClick,
                         )
@@ -581,15 +583,21 @@ fun FileBubble(
     }
 }
 
-/** 长按 + 点击（indication 关闭，与项目其它手势入口一致） */
+/**
+ * 长按 + 点击（indication 关闭，与项目其它手势入口一致）。
+ *
+ * v0.54.6：原来是自己用 `composed { pointerInput { detectTapGestures(...) } }` 拼的，
+ * 两个毛病 —— ① `composed` 已废弃；② `pointerInput` 的 key 用 lambda，**每次重组都会重启手势检测**，
+ * 长按很容易被打断（用户反馈"长按语音条唤不起菜单"）。改用官方 `combinedClickable`。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 private fun Modifier.combinedClickable2(
     onLongPress: () -> Unit,
     onClick: () -> Unit,
-): Modifier = this.composed {
-    pointerInput(onClick, onLongPress) {
-        detectTapGestures(
-            onTap = { onClick() },
-            onLongPress = { onLongPress() },
-        )
-    }
-}
+): Modifier = combinedClickable(
+    interactionSource = remember { MutableInteractionSource() },
+    indication = null,
+    onLongClick = onLongPress,
+    onClick = onClick,
+)

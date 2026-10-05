@@ -33,6 +33,7 @@ import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSheetRow
+import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.theme.MIcons
@@ -89,21 +90,32 @@ private fun ApiProfile.toEditorState() = EditorState(
     model = model,
 )
 
+/** 这条页只管一类模型：对话 or 生图（v0.54.1 由同一个「API 配置」页拆成两页） */
+enum class ApiModelKind { CHAT, IMAGE }
+
+/** 设置 · 模型配置 · 对话模型 */
+@Composable
+fun ChatModelScreen(onBack: () -> Unit) = ApiConfigScreen(onBack, ApiModelKind.CHAT)
+
+/** 设置 · 模型配置 · 生图模型 */
+@Composable
+fun ImageModelScreen(onBack: () -> Unit) = ApiConfigScreen(onBack, ApiModelKind.IMAGE)
+
 /**
- * API 配置（v0.53.4 按「模型」而非「接口」组织）：
+ * API 配置（v0.53.4 按「模型」而非「接口」组织；v0.54.1 按 [kind] 拆成对话 / 生图两页）：
  *
- * - 两段都是**模型列表**（对话模型 / 生图模型），每行 = 一个模型条目；
+ * - 列的是**模型列表**，每行 = 一个模型条目；
  * - **点行 = 切换当前生效（默认）**；**点右侧箭头 = 打开这条模型的详情**；
  * - 详情弹窗里改 / 测试 / 保存 / **设为默认** / **删除**；
  * - 当前默认那条的副标题前加「默认 · 」，选中态**不再画 ✓**（用户点名：已经有标识了，勾多余）；
- * - **生图与对话模型行为完全一致**：可配多条、可设默认，默认那条调不通时
+ * - 生图与对话模型行为完全一致：可配多条、可设默认，默认那条调不通时
  *   生图会自动换列表里其他模型继续试（见 ChatViewModel.imageClients）。
  *
- * 两组预设 chips 尾部都追加「自定义」——选中态 = 当前 baseUrl 不匹配任何预设；
+ * 预设 chips 尾部都追加「自定义」——选中态 = 当前 baseUrl 不匹配任何预设；
  * 点击时清空 baseUrl 与 model 让用户从头填（若已经是自定义态则不动，避免误清）。
  */
 @Composable
-fun ApiConfigScreen(onBack: () -> Unit) {
+fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
     val app = LocalContext.current.applicationContext as MenghuanApp
     val scope = rememberCoroutineScope()
 
@@ -122,69 +134,69 @@ fun ApiConfigScreen(onBack: () -> Unit) {
     // 关掉就没了，所以列表级的话必须单独一个槽（v0.37.1 的教训不变）
     var listMsg by remember { mutableStateOf<String?>(null) }
 
-    SettingsPage(title = "API 配置", onBack = onBack) {
+    SettingsPage(
+        title = if (kind == ApiModelKind.CHAT) "对话模型" else "生图模型",
+        onBack = onBack,
+    ) {
         Spacer(Modifier.height(14.dp))
 
-        SectionTitle("对话模型")
-        Spacer(Modifier.height(8.dp))
-        profiles.forEach { profile ->
-            ModelRow(
-                icon = MIcons.Code,
-                profile = profile,
-                isDefault = profile.id == activeId,
-                onSwitch = {
-                    scope.launch {
-                        app.settingsRepository.setActiveProfile(profile.id)
-                        listMsg = "已切换到「${profile.name}」"
-                    }
-                },
-                onOpenDetail = { listMsg = null; editor = profile.toEditorState() },
-            )
-            Spacer(Modifier.height(8.dp))
+        if (kind == ApiModelKind.CHAT) {
+            profiles.forEach { profile ->
+                ModelRow(
+                    icon = MIcons.Code,
+                    profile = profile,
+                    isDefault = profile.id == activeId,
+                    onSwitch = {
+                        scope.launch {
+                            app.settingsRepository.setActiveProfile(profile.id)
+                            listMsg = "已切换到「${profile.name}」"
+                        }
+                    },
+                    onOpenDetail = { listMsg = null; editor = profile.toEditorState() },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            if (profiles.isEmpty()) {
+                Text(
+                    "还没有添加模型",
+                    fontSize = 13.sp,
+                    color = MutedText,
+                    modifier = Modifier.height(30.dp),
+                )
+            }
+            NeuTextButton("＋ 添加模型", onClick = {
+                listMsg = null
+                editor = EditorState()
+            })
+        } else {
+            imageProfiles.forEach { profile ->
+                ModelRow(
+                    icon = MIcons.ImageIcon,
+                    profile = profile,
+                    isDefault = profile.id == imageActiveId,
+                    onSwitch = {
+                        scope.launch {
+                            app.settingsRepository.setActiveImageProfile(profile.id)
+                            listMsg = "已切换到「${profile.name}」"
+                        }
+                    },
+                    onOpenDetail = { listMsg = null; imageEditor = profile.toEditorState() },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            if (imageProfiles.isEmpty()) {
+                Text(
+                    "还没有添加生图模型",
+                    fontSize = 13.sp,
+                    color = MutedText,
+                    modifier = Modifier.height(30.dp),
+                )
+            }
+            NeuTextButton("＋ 添加生图模型", onClick = {
+                listMsg = null
+                imageEditor = EditorState()
+            })
         }
-        if (profiles.isEmpty()) {
-            Text(
-                "还没有添加模型",
-                fontSize = 13.sp,
-                color = MutedText,
-                modifier = Modifier.height(30.dp),
-            )
-        }
-        NeuTextButton("＋ 添加模型", onClick = {
-            listMsg = null
-            editor = EditorState()
-        })
-
-        Spacer(Modifier.height(22.dp))
-        SectionTitle("生图模型")
-        Spacer(Modifier.height(8.dp))
-        imageProfiles.forEach { profile ->
-            ModelRow(
-                icon = MIcons.ImageIcon,
-                profile = profile,
-                isDefault = profile.id == imageActiveId,
-                onSwitch = {
-                    scope.launch {
-                        app.settingsRepository.setActiveImageProfile(profile.id)
-                        listMsg = "已切换到「${profile.name}」"
-                    }
-                },
-                onOpenDetail = { listMsg = null; imageEditor = profile.toEditorState() },
-            )
-            Spacer(Modifier.height(8.dp))
-        }
-        if (imageProfiles.isEmpty()) {
-            Text(
-                "还没有添加生图模型",
-                fontSize = 13.sp,
-                color = MutedText,
-                modifier = Modifier.height(30.dp),
-            )
-        }
-        NeuTextButton("＋ 添加生图模型", onClick = {
-            listMsg = null
-            imageEditor = EditorState()
-        })
 
         listMsg?.let {
             Spacer(Modifier.height(10.dp))
@@ -206,7 +218,7 @@ fun ApiConfigScreen(onBack: () -> Unit) {
     }
 
     // ===== 对话模型详情（中间弹窗：改 / 测试 / 保存 / 设默认 / 删除都在这里） =====
-    editor?.let { initial ->
+    editor?.takeIf { kind == ApiModelKind.CHAT }?.let { initial ->
         ModelEditorDialog(
             initial = initial,
             presets = apiPresets,
@@ -271,7 +283,7 @@ fun ApiConfigScreen(onBack: () -> Unit) {
     }
 
     // ===== 生图模型详情（与对话模型同一个弹窗形态） =====
-    imageEditor?.let { initial ->
+    imageEditor?.takeIf { kind == ApiModelKind.IMAGE }?.let { initial ->
         ModelEditorDialog(
             initial = initial,
             presets = imagePresets,
@@ -390,7 +402,7 @@ private fun ModelEditorDialog(
     var testResult by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
 
-    SettingsCardDialog(
+    NeuSheetScaffold(
         title = if (draft.isNew) "新模型" else "编辑模型",
         onDismiss = onDismiss,
     ) {
@@ -489,18 +501,6 @@ private fun ModelEditorDialog(
             }
         }
     }
-}
-
-/** 板块标题：v0.53.0 起 API 配置不再折叠成手风琴，标题就是普通标题 */
-@Composable
-private fun SectionTitle(title: String) {
-    Text(
-        title,
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Medium,
-        color = TextSecondary,
-        letterSpacing = 0.6.sp,
-    )
 }
 
 /**

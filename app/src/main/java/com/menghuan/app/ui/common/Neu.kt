@@ -515,6 +515,12 @@ fun NeuSheetRow(
      * 选中态还有虚线框，勾是多余的（v0.53.4 用户点名去掉）。
      */
     showCheck: Boolean = true,
+    /**
+     * v0.54.5：卡片右侧的自定义控件（开关 / 当前值选择器）。
+     * 给了它就不再画默认那颗浅箭头 —— 右侧已经有明确的控件当"这个位置能操作"的提示，
+     * 再挂一颗箭头会让人以为点箭头还有别的东西（用户点名"开关按钮放在卡片右边就行"）。
+     */
+    trailing: (@Composable () -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
     onChevronClick: (() -> Unit)? = null,
 ) {
@@ -560,6 +566,10 @@ fun NeuSheetRow(
                 Text(subtitle, fontSize = 12.sp, color = MutedText, maxLines = 1)
             }
         }
+        if (trailing != null) {
+            Spacer(Modifier.width(8.dp))
+            trailing()
+        }
         if (selected && showCheck) {
             Text("✓", fontSize = 15.sp, color = NeuAccent, fontWeight = FontWeight.Bold)
         }
@@ -585,7 +595,7 @@ fun NeuSheetRow(
                     modifier = Modifier.size(21.dp),
                 )
             }
-        } else if (!selected) {
+        } else if (!selected && trailing == null) {
             Icon(
                 com.menghuan.app.ui.theme.MIcons.ChevronRight,
                 contentDescription = null,

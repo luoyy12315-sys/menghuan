@@ -10,11 +10,12 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * 语音通话铃声（v0.53.7）。
+ * 语音通话铃声（v0.53.7；v0.54.4 起**可添加多个**）。
  *
  * 用户可以传**音频或视频**：音频**原样留用**（不重编码，音质不损）；
  * 视频则用项目里已有的 [MediaAudioDecoder] 把音轨**抽出来存成 WAV**（不引新依赖、不重编码）。
- * **来电与去电共用同一个铃声**；没设过就用系统默认铃声。
+ * 文件名保留用户原文件名（便于在列表里认出来）。哪个铃声生效由
+ * [SettingsRepository.ringtoneForPersona] 决定：角色专属 → 设置里的默认铃声 → 系统默认铃声。
  */
 object CallRingtone {
 
@@ -25,9 +26,14 @@ object CallRingtone {
     private fun isAudio(name: String): Boolean =
         name.substringAfterLast('.', "").lowercase() in AUDIO_EXT
 
-    /** 展示用的文件名（存的是绝对路径） */
+    /** 展示用的文件名（存的是绝对路径）；空路径 = 系统默认铃声 */
     fun displayNameOf(path: String): String =
         if (path.isBlank()) "系统默认铃声" else File(path).name
+
+    /** 删除一个已添加的铃声文件（从铃声库移除时调用） */
+    fun delete(path: String) {
+        if (path.isNotBlank()) runCatching { File(path).delete() }
+    }
 
     /** 系统默认铃声（试听 / 展示用）；这台手机没设默认铃声时返回 null */
     fun defaultRingtone(context: Context): android.media.Ringtone? = runCatching {
@@ -72,7 +78,8 @@ object CallRingtone {
 
     /**
      * 导入铃声，返回落盘路径（失败 null）。
-     * 音频 → 直接拷贝；视频 → 抽音轨写 WAV。**同一时刻只保留一个自定义铃声**，旧的会被删掉。
+     * 音频 → 直接拷贝；视频 → 抽音轨写 WAV。**可添加多个**：文件名沿用用户原文件名，
+     * 重名时补一个时间戳后缀（v0.54.4 起不再"只留一个"）。
      */
     suspend fun import(context: Context, uri: Uri, displayName: String): String? =
         withContext(Dispatchers.IO) {
@@ -85,13 +92,20 @@ object CallRingtone {
                 if (!temp.exists() || temp.length() <= 0L) return@runCatching null
 
                 val audio = isAudio(displayName)
-                val stamp = System.currentTimeMillis()
-                val target = if (audio) {
-                    val ext = displayName.substringAfterLast('.', "mp3").lowercase().ifBlank { "mp3" }
-                    File(directory, "ringtone_$stamp.$ext")
+                val ext = if (audio) {
+                    displayName.substringAfterLast('.', "mp3").lowercase().ifBlank { "mp3" }
                 } else {
-                    File(directory, "ringtone_$stamp.wav")
+                    "wav"
                 }
+                // 保留原文件名（去掉不安全字符），重名补时间戳——列表里能认出自己加的是哪首
+                val base = displayName.substringBeforeLast('.', displayName)
+                    .replace(Regex("[^\\p{L}\\p{N} _\\-（）()]"), "_")
+                    .trim()
+                    .take(40)
+                    .ifBlank { "铃声" }
+                val stamp = System.currentTimeMillis()
+                var target = File(directory, "$base.$ext")
+                if (target.exists()) target = File(directory, "${base}_$stamp.$ext")
 
                 if (audio) {
                     temp.copyTo(target, overwrite = true)
@@ -100,11 +114,6 @@ object CallRingtone {
                     writeWav(target, pcm.samples, pcm.sampleRate)
                 }
                 temp.delete()
-
-                // 只留最新的一个，别把应用目录撑大
-                directory.listFiles()
-                    ?.filter { it.name.startsWith("ringtone_") && it.absolutePath != target.absolutePath }
-                    ?.forEach { it.delete() }
 
                 target.takeIf { it.length() > 0L }?.absolutePath
             }.getOrNull()

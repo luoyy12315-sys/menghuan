@@ -200,7 +200,7 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
 
     // 手填音色 ID（顶部「ID」按钮打开）
     if (showManual) {
-        SettingsCardDialog(title = "手填音色 ID", onDismiss = { showManual = false }) {
+        NeuSheetScaffold(title = "手填音色 ID", onDismiss = { showManual = false }) {
             NeuTextField(
                 value = manualDraft,
                 onValueChange = { manualDraft = it },

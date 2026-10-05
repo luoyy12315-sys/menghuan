@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -16,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -33,31 +33,43 @@ import com.menghuan.app.ui.chat.IMAGE_HINT_DEFAULT_STRATEGY
 import com.menghuan.app.ui.chat.IMAGE_HINT_FRAMEWORK
 import com.menghuan.app.ui.chat.VOICE_NOTE_DEFAULT_STRATEGY
 import com.menghuan.app.ui.chat.VOICE_NOTE_FRAMEWORK
-import com.menghuan.app.ui.chat.insightLogicText
-import com.menghuan.app.ui.chat.reportLogicText
-import com.menghuan.app.ui.common.NeuButton
-import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.neuSurface
-import com.menghuan.app.ui.theme.MutedText
-import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/** 该页所有可编提示词的**当前草稿**（v0.54.4） */
+private data class PromptDraft(
+    val assistant: String = AiPrompts.DEFAULT_ASSISTANT_PROMPT,
+    val base: String = AiPrompts.DEFAULT_BASE_PROMPT,
+    val preamble: String = AiPrompts.DEFAULT_PROFILE_PREAMBLE,
+    val extraction: String = ProfileExtractor.DEFAULT_STRATEGY,
+    val weekly: String = WeeklyReportMath.DEFAULT_STRATEGY,
+    val image: String = IMAGE_HINT_DEFAULT_STRATEGY,
+    val agentEnabled: Boolean = true,
+    val agent: String = AGENT_CHAT_DEFAULT_STRATEGY,
+    val voiceNote: String = VOICE_NOTE_DEFAULT_STRATEGY,
+)
+
 /**
- * 设置 · AI 提示词：**七段**可编辑（v0.37.2 起手风琴布局）。
+ * 设置 · AI 提示词：**八段**可编辑（手风琴布局）。
  *
- * **v0.37.2 布局重构（用户反馈"太繁琐"）**：此前七段全部平铺——框架只读框 + 策略输入框 +
- * 每段恢复默认按钮 + 两段生成逻辑长文，整页是一面提示词墙。现在改为**手风琴**：
- * - 默认全部收起，整页只有 8 行索引（七段 + 生成逻辑说明），「已自定义」徽标在行内直接可见；
- * - 点一段才展开编辑，同一时间只展开一段（再点收起）；
- * - 「本段恢复默认」只在改过（≠默认值）时出现，没改过的段不放空按钮；
- * - 框架/策略分层语义不变：框架硬编码只读（改了 parse 会崩），策略可编可恢复。
+ * 分层语义不变：框架（硬编码只读，改了 parse 会崩）+ 策略（可编可恢复）。
  *
- * 分层设计（v0.36.0 引入）：最终发给模型的 system prompt = 框架 + "\n" + 策略。
+ * **v0.54.4 改版（用户点名）**：
+ * - 段标题**字体加大**（13sp → 17sp）；
+ * - 去掉标题与标签里的**括号文字**（「（仅生图模型配齐时注入）」这类）；
+ * - 去掉解释性小字（手机操控段那句说明、列表底部的「生成逻辑说明」整段删除）；
+ * - 分层标签只留「框架」「策略」四个字；
+ * - 底部「全部恢复默认 / 保存」两个大按钮**删掉**，改成**改动过的段**在提示词下方
+ *   自己显示「恢复 / 保存」两颗；没改动的段不显示。
+ *
+ * **v0.54.5（用户点名）**：输入框不再重复显示段标题 —— 原来「应用助手提示词」这类段名
+ * 在屏幕上出现**两遍**（段标题一行、输入框 label 一行），「策略」也是两行；现在只留段标题，
+ * 输入框自己不带 label。
  */
 @Composable
 fun PromptSettingsScreen(onBack: () -> Unit) {
@@ -65,45 +77,44 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
     val app = context.applicationContext as MenghuanApp
     val scope = rememberCoroutineScope()
 
-    var assistantPrompt by remember { mutableStateOf("") }
-    var basePrompt by remember { mutableStateOf(AiPrompts.DEFAULT_BASE_PROMPT) }
-    var profilePreamble by remember { mutableStateOf(AiPrompts.DEFAULT_PROFILE_PREAMBLE) }
-    var extractionStrategy by remember { mutableStateOf(ProfileExtractor.DEFAULT_STRATEGY) }
-    var weeklyReportStrategy by remember { mutableStateOf(WeeklyReportMath.DEFAULT_STRATEGY) }
-    var imageHintStrategy by remember { mutableStateOf(IMAGE_HINT_DEFAULT_STRATEGY) }
-    var agentChatEnabled by remember { mutableStateOf(true) }
-    var agentChatStrategy by remember { mutableStateOf(AGENT_CHAT_DEFAULT_STRATEGY) }
-    var voiceNoteStrategy by remember { mutableStateOf(VOICE_NOTE_DEFAULT_STRATEGY) }
+    // draft = 正在编辑的值；persisted = 已落库的值。两者不等 = 这一段有改动 → 显示「恢复 / 保存」
+    var draft by remember { mutableStateOf(PromptDraft()) }
+    var persisted by remember { mutableStateOf(PromptDraft()) }
     var loaded by remember { mutableStateOf(false) }
-    // 手风琴：同一时间只展开一段；null = 全收起
     var openSection by remember { mutableStateOf<String?>(null) }
     fun toggle(key: String) {
         openSection = if (openSection == key) null else key
     }
 
     LaunchedEffect(Unit) {
-        assistantPrompt = runCatching {
-            app.db.personaDao().getByName(ASSISTANT_PERSONA_NAME)?.systemPrompt
-        }.getOrNull() ?: AiPrompts.DEFAULT_ASSISTANT_PROMPT
-        basePrompt = app.settingsRepository.basePrompt.first()
-        profilePreamble = app.settingsRepository.profilePreamble.first()
-        extractionStrategy = app.settingsRepository.extractionStrategy.first()
-        weeklyReportStrategy = app.settingsRepository.weeklyReportStrategy.first()
-        imageHintStrategy = app.settingsRepository.imageHintStrategy.first()
-        agentChatEnabled = app.settingsRepository.agentChatEnabled.first()
-        agentChatStrategy = app.settingsRepository.agentChatStrategy.first()
-        voiceNoteStrategy = app.settingsRepository.voiceNoteStrategy.first()
+        val initial = PromptDraft(
+            assistant = runCatching {
+                app.db.personaDao().getByName(ASSISTANT_PERSONA_NAME)?.systemPrompt
+            }.getOrNull() ?: AiPrompts.DEFAULT_ASSISTANT_PROMPT,
+            base = app.settingsRepository.basePrompt.first(),
+            preamble = app.settingsRepository.profilePreamble.first(),
+            extraction = app.settingsRepository.extractionStrategy.first(),
+            weekly = app.settingsRepository.weeklyReportStrategy.first(),
+            image = app.settingsRepository.imageHintStrategy.first(),
+            agentEnabled = app.settingsRepository.agentChatEnabled.first(),
+            agent = app.settingsRepository.agentChatStrategy.first(),
+            voiceNote = app.settingsRepository.voiceNoteStrategy.first(),
+        )
+        draft = initial
+        persisted = initial
         loaded = true
     }
 
+    /** 把草稿整体落库；「保存」只落库、不退出（用户可以一段段保存） */
     fun save() {
         scope.launch {
+            val current = draft
             runCatching {
                 // 应用助手：改内置人设的设定词；被删除后保存会以固定名字重建。
                 // 必须走 personaRepository.save——那里记下"用户亲手改过手册"，
                 // App 才不会在下个版本把用户写的东西冲掉（v0.51.1 升级机制）
                 val existing = app.db.personaDao().getByName(ASSISTANT_PERSONA_NAME)
-                val trimmed = assistantPrompt.trim()
+                val trimmed = current.assistant.trim()
                 app.personaRepository.save(
                     existing?.copy(systemPrompt = trimmed)
                         ?: Persona(
@@ -114,29 +125,17 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                             systemPrompt = trimmed,
                         )
                 )
-                app.settingsRepository.setBasePrompt(basePrompt)
-                app.settingsRepository.setProfilePreamble(profilePreamble)
-                app.settingsRepository.setExtractionStrategy(extractionStrategy)
-                app.settingsRepository.setWeeklyReportStrategy(weeklyReportStrategy)
-                app.settingsRepository.setImageHintStrategy(imageHintStrategy)
-                app.settingsRepository.setAgentChatEnabled(agentChatEnabled)
-                app.settingsRepository.setAgentChatStrategy(agentChatStrategy)
-                app.settingsRepository.setVoiceNoteStrategy(voiceNoteStrategy)
+                app.settingsRepository.setBasePrompt(current.base)
+                app.settingsRepository.setProfilePreamble(current.preamble)
+                app.settingsRepository.setExtractionStrategy(current.extraction)
+                app.settingsRepository.setWeeklyReportStrategy(current.weekly)
+                app.settingsRepository.setImageHintStrategy(current.image)
+                app.settingsRepository.setAgentChatEnabled(current.agentEnabled)
+                app.settingsRepository.setAgentChatStrategy(current.agent)
+                app.settingsRepository.setVoiceNoteStrategy(current.voiceNote)
             }
-            onBack()
+            persisted = current
         }
-    }
-
-    fun resetDefaults() {
-        assistantPrompt = AiPrompts.DEFAULT_ASSISTANT_PROMPT
-        basePrompt = AiPrompts.DEFAULT_BASE_PROMPT
-        profilePreamble = AiPrompts.DEFAULT_PROFILE_PREAMBLE
-        extractionStrategy = ProfileExtractor.DEFAULT_STRATEGY
-        weeklyReportStrategy = WeeklyReportMath.DEFAULT_STRATEGY
-        imageHintStrategy = IMAGE_HINT_DEFAULT_STRATEGY
-        agentChatEnabled = true
-        agentChatStrategy = AGENT_CHAT_DEFAULT_STRATEGY
-        voiceNoteStrategy = VOICE_NOTE_DEFAULT_STRATEGY
     }
 
     if (!loaded) {
@@ -146,215 +145,205 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
         return
     }
 
-    val assistantCustomized = assistantPrompt.trim() != AiPrompts.DEFAULT_ASSISTANT_PROMPT
-    val baseCustomized = basePrompt.trim() != AiPrompts.DEFAULT_BASE_PROMPT
-    val preambleCustomized = profilePreamble.trim() != AiPrompts.DEFAULT_PROFILE_PREAMBLE
-    val extractionCustomized = extractionStrategy.trim() != ProfileExtractor.DEFAULT_STRATEGY
-    val weeklyCustomized = weeklyReportStrategy.trim() != WeeklyReportMath.DEFAULT_STRATEGY
-    val imageCustomized = imageHintStrategy.trim() != IMAGE_HINT_DEFAULT_STRATEGY
-    val agentChatCustomized = agentChatStrategy.trim() != AGENT_CHAT_DEFAULT_STRATEGY
-    val voiceNoteCustomized = voiceNoteStrategy.trim() != VOICE_NOTE_DEFAULT_STRATEGY
+    // 「已自定义」徽标 = 与默认值不同（语义沿用旧版）
+    fun customized(value: String, default: String) = value.trim() != default
 
     SettingsPage(title = "AI 提示词", onBack = onBack) {
         Spacer(Modifier.height(8.dp))
 
         SettingsSectionRow(
-            title = "① 应用助手提示词",
-            customized = assistantCustomized,
+            title = "应用助手提示词",
+            titleSize = 17.sp,
+            customized = customized(draft.assistant, AiPrompts.DEFAULT_ASSISTANT_PROMPT),
             expanded = openSection == "assistant",
         ) { toggle("assistant") }
         if (openSection == "assistant") {
             NeuTextField(
-                value = assistantPrompt,
-                onValueChange = { assistantPrompt = it },
-                label = "应用助手提示词",
+                value = draft.assistant,
+                onValueChange = { draft = draft.copy(assistant = it) },
                 singleLine = false,
                 minLines = 4,
                 maxLines = 12,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(10.dp))
+            SectionFooter(
+                dirty = draft.assistant != persisted.assistant,
+                onReset = { draft = draft.copy(assistant = AiPrompts.DEFAULT_ASSISTANT_PROMPT) },
+                onSave = { save() },
+            )
         }
 
         SettingsSectionRow(
-            title = "② 基础提示词",
-            customized = baseCustomized,
+            title = "基础提示词",
+            titleSize = 17.sp,
+            customized = customized(draft.base, AiPrompts.DEFAULT_BASE_PROMPT),
             expanded = openSection == "base",
         ) { toggle("base") }
         if (openSection == "base") {
             NeuTextField(
-                value = basePrompt,
-                onValueChange = { basePrompt = it },
-                label = "基础提示词（人设未填设定词时生效）",
+                value = draft.base,
+                onValueChange = { draft = draft.copy(base = it) },
                 singleLine = false,
                 minLines = 2,
                 maxLines = 8,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(10.dp))
+            SectionFooter(
+                dirty = draft.base != persisted.base,
+                onReset = { draft = draft.copy(base = AiPrompts.DEFAULT_BASE_PROMPT) },
+                onSave = { save() },
+            )
         }
 
         SettingsSectionRow(
-            title = "③ 档案注入说明",
-            customized = preambleCustomized,
+            title = "档案注入说明",
+            titleSize = 17.sp,
+            customized = customized(draft.preamble, AiPrompts.DEFAULT_PROFILE_PREAMBLE),
             expanded = openSection == "preamble",
         ) { toggle("preamble") }
         if (openSection == "preamble") {
             NeuTextField(
-                value = profilePreamble,
-                onValueChange = { profilePreamble = it },
-                label = "档案注入说明（档案进入对话的包装语）",
+                value = draft.preamble,
+                onValueChange = { draft = draft.copy(preamble = it) },
                 singleLine = false,
                 minLines = 3,
                 maxLines = 8,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Spacer(Modifier.height(10.dp))
+            SectionFooter(
+                dirty = draft.preamble != persisted.preamble,
+                onReset = { draft = draft.copy(preamble = AiPrompts.DEFAULT_PROFILE_PREAMBLE) },
+                onSave = { save() },
+            )
         }
 
         SettingsSectionRow(
-            title = "④ AI 洞察提炼策略",
-            customized = extractionCustomized,
+            title = "AI 洞察提炼策略",
+            titleSize = 17.sp,
+            customized = customized(draft.extraction, ProfileExtractor.DEFAULT_STRATEGY),
             expanded = openSection == "extraction",
         ) { toggle("extraction") }
         if (openSection == "extraction") {
             LayeredEditor(
-                frameworkLabel = "框架（硬编码不可改：JSON schema + 输出格式）",
                 framework = ProfileExtractor.FRAMEWORK,
-                strategyLabel = "策略（可编：什么该记 / 什么不该记 / 数量指引）",
-                strategy = extractionStrategy,
-                customized = extractionCustomized,
-                onStrategyChange = { extractionStrategy = it },
-                onResetStrategy = { extractionStrategy = ProfileExtractor.DEFAULT_STRATEGY },
+                strategy = draft.extraction,
+                dirty = draft.extraction != persisted.extraction,
+                onStrategyChange = { draft = draft.copy(extraction = it) },
+                onReset = { draft = draft.copy(extraction = ProfileExtractor.DEFAULT_STRATEGY) },
+                onSave = { save() },
             )
-            Spacer(Modifier.height(10.dp))
         }
 
         SettingsSectionRow(
-            title = "⑤ AI 周报撰写策略",
-            customized = weeklyCustomized,
+            title = "AI 周报撰写策略",
+            titleSize = 17.sp,
+            customized = customized(draft.weekly, WeeklyReportMath.DEFAULT_STRATEGY),
             expanded = openSection == "weekly",
         ) { toggle("weekly") }
         if (openSection == "weekly") {
             LayeredEditor(
-                frameworkLabel = "框架（硬编码不可改：输出格式约束）",
                 framework = WeeklyReportMath.FRAMEWORK,
-                strategyLabel = "策略（可编：字数 / 语气 / 结构）",
-                strategy = weeklyReportStrategy,
-                customized = weeklyCustomized,
-                onStrategyChange = { weeklyReportStrategy = it },
-                onResetStrategy = { weeklyReportStrategy = WeeklyReportMath.DEFAULT_STRATEGY },
+                strategy = draft.weekly,
+                dirty = draft.weekly != persisted.weekly,
+                onStrategyChange = { draft = draft.copy(weekly = it) },
+                onReset = { draft = draft.copy(weekly = WeeklyReportMath.DEFAULT_STRATEGY) },
+                onSave = { save() },
             )
-            Spacer(Modifier.height(10.dp))
         }
 
         SettingsSectionRow(
-            title = "⑥ 生图触发策略（仅生图模型配齐时注入）",
-            customized = imageCustomized,
+            title = "生图触发策略",
+            titleSize = 17.sp,
+            customized = customized(draft.image, IMAGE_HINT_DEFAULT_STRATEGY),
             expanded = openSection == "image",
         ) { toggle("image") }
         if (openSection == "image") {
             LayeredEditor(
-                frameworkLabel = "框架（硬编码不可改：[生图:...] 标记格式）",
                 framework = IMAGE_HINT_FRAMEWORK,
-                strategyLabel = "策略（可编：何时触发 / 如何写提示词）",
-                strategy = imageHintStrategy,
-                customized = imageCustomized,
-                onStrategyChange = { imageHintStrategy = it },
-                onResetStrategy = { imageHintStrategy = IMAGE_HINT_DEFAULT_STRATEGY },
+                strategy = draft.image,
+                dirty = draft.image != persisted.image,
+                onStrategyChange = { draft = draft.copy(image = it) },
+                onReset = { draft = draft.copy(image = IMAGE_HINT_DEFAULT_STRATEGY) },
+                onSave = { save() },
             )
-            Spacer(Modifier.height(10.dp))
         }
 
         SettingsSectionRow(
-            title = "⑦ 手机操控（无障碍服务开启时生效）",
-            customized = agentChatCustomized,
+            title = "手机操控",
+            titleSize = 17.sp,
+            customized = customized(draft.agent, AGENT_CHAT_DEFAULT_STRATEGY),
             expanded = openSection == "agent",
             trailing = {
-                NeuSwitch(checked = agentChatEnabled, onToggle = { agentChatEnabled = it })
+                NeuSwitch(
+                    checked = draft.agentEnabled,
+                    onToggle = { draft = draft.copy(agentEnabled = it) },
+                )
             },
         ) { toggle("agent") }
         if (openSection == "agent") {
-            Text(
-                "允许 AI 在对话中直接操控手机 · 发起即执行，无确认；白名单与悬浮停止仍生效",
-                fontSize = 11.sp,
-                lineHeight = 16.sp,
-                color = TextSecondary,
-            )
-            Spacer(Modifier.height(10.dp))
             LayeredEditor(
-                frameworkLabel = "框架（硬编码不可改：[操作手机:...] 标记格式）",
                 framework = AGENT_CHAT_HINT_FRAMEWORK,
-                strategyLabel = "策略（可编：何时触发 / 目标怎么写）",
-                strategy = agentChatStrategy,
-                customized = agentChatCustomized,
-                onStrategyChange = { agentChatStrategy = it },
-                onResetStrategy = { agentChatStrategy = AGENT_CHAT_DEFAULT_STRATEGY },
+                strategy = draft.agent,
+                dirty = draft.agent != persisted.agent || draft.agentEnabled != persisted.agentEnabled,
+                onStrategyChange = { draft = draft.copy(agent = it) },
+                onReset = { draft = draft.copy(agent = AGENT_CHAT_DEFAULT_STRATEGY) },
+                onSave = { save() },
             )
-            Spacer(Modifier.height(10.dp))
         }
 
         SettingsSectionRow(
-            title = "⑧ AI 语音条（仅语音合成配齐时注入）",
-            customized = voiceNoteCustomized,
+            title = "AI 语音条",
+            titleSize = 17.sp,
+            customized = customized(draft.voiceNote, VOICE_NOTE_DEFAULT_STRATEGY),
             expanded = openSection == "voiceNote",
         ) { toggle("voiceNote") }
         if (openSection == "voiceNote") {
             LayeredEditor(
-                frameworkLabel = "框架（硬编码不可改：【语音条】 标记格式）",
                 framework = VOICE_NOTE_FRAMEWORK,
-                strategyLabel = "策略（可编：什么时候该用说的、什么时候必须打字）",
-                strategy = voiceNoteStrategy,
-                customized = voiceNoteCustomized,
-                onStrategyChange = { voiceNoteStrategy = it },
-                onResetStrategy = { voiceNoteStrategy = VOICE_NOTE_DEFAULT_STRATEGY },
-            )
-            Spacer(Modifier.height(10.dp))
-        }
-
-        Spacer(Modifier.height(14.dp))
-        Row(Modifier.fillMaxWidth()) {
-            NeuTextButton("全部恢复默认", onClick = { resetDefaults() })
-            Spacer(Modifier.weight(1f))
-            NeuButton(
-                text = "保存",
-                onClick = { save() },
-                kind = NeuButtonKind.Primary,
-                modifier = Modifier.width(140.dp),
+                strategy = draft.voiceNote,
+                dirty = draft.voiceNote != persisted.voiceNote,
+                onStrategyChange = { draft = draft.copy(voiceNote = it) },
+                onReset = { draft = draft.copy(voiceNote = VOICE_NOTE_DEFAULT_STRATEGY) },
+                onSave = { save() },
             )
         }
 
-        // ===== 生成逻辑说明：收进折叠行，需要时再展开 =====
-        SettingsSectionRow(
-            title = "生成逻辑说明（洞察 / 周报何时触发）",
-            expanded = openSection == "logic",
-        ) { toggle("logic") }
-        if (openSection == "logic") {
-            Text(insightLogicText, fontSize = 12.sp, lineHeight = 19.sp, color = MutedText)
-            Spacer(Modifier.height(12.dp))
-            Text(reportLogicText, fontSize = 12.sp, lineHeight = 19.sp, color = MutedText)
-            Spacer(Modifier.height(10.dp))
-        }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+/** 有改动才出现的两颗操作：「恢复」（本段回默认值）/「保存」（落库） */
+@Composable
+private fun SectionFooter(dirty: Boolean, onReset: () -> Unit, onSave: () -> Unit) {
+    if (!dirty) return
+    Spacer(Modifier.height(6.dp))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        NeuTextButton("恢复", onClick = onReset)
+        Spacer(Modifier.weight(1f))
+        NeuTextButton("保存", onClick = onSave)
     }
 }
 
 /**
- * 分层编辑区（展开态内容）：框架只读凹陷面 + 策略可编输入框。
- * 「本段恢复默认」只在改过（≠默认值）时显示，没改过的段不放空按钮。
+ * 分层编辑区：框架只读凹陷面 + 策略可编输入框，标签只写「框架」「策略」四个字。
+ * 有改动时下方出现「恢复 / 保存」。
+ *
+ * v0.54.5（用户点名"你为什么要写两个策略？"）：**输入框自己不再带 label** ——
+ * 原来"策略"这个标题在屏幕上是**两行**（上面的小标题一行、输入框的 label 一行），
+ * 用户看到的就是重复。同理，上面三段（应用助手提示词 / 基础提示词 / 档案注入说明）
+ * 的输入框 label 也一并删掉：段标题已经说明了它是哪一段。
  */
 @Composable
 private fun LayeredEditor(
-    frameworkLabel: String,
     framework: String,
-    strategyLabel: String,
     strategy: String,
-    customized: Boolean,
+    dirty: Boolean,
     onStrategyChange: (String) -> Unit,
-    onResetStrategy: () -> Unit,
+    onReset: () -> Unit,
+    onSave: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth()) {
-        Text(frameworkLabel, fontSize = 10.sp, color = TextSecondary, letterSpacing = 0.4.sp)
+        Text("框架", fontSize = 11.sp, color = TextSecondary, letterSpacing = 0.4.sp)
         Spacer(Modifier.height(4.dp))
         Box(
             Modifier
@@ -365,20 +354,16 @@ private fun LayeredEditor(
             Text(framework, fontSize = 11.sp, lineHeight = 17.sp, color = TextSecondary)
         }
         Spacer(Modifier.height(10.dp))
-        Text(strategyLabel, fontSize = 10.sp, color = TextSecondary, letterSpacing = 0.4.sp)
+        Text("策略", fontSize = 11.sp, color = TextSecondary, letterSpacing = 0.4.sp)
         Spacer(Modifier.height(4.dp))
         NeuTextField(
             value = strategy,
             onValueChange = onStrategyChange,
-            label = "策略",
             singleLine = false,
             minLines = 4,
             maxLines = 12,
             modifier = Modifier.fillMaxWidth(),
         )
-        if (customized) {
-            Spacer(Modifier.height(4.dp))
-            NeuTextButton("本段恢复默认", onClick = onResetStrategy)
-        }
+        SectionFooter(dirty = dirty, onReset = onReset, onSave = onSave)
     }
 }

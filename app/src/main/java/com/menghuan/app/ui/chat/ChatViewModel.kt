@@ -608,6 +608,30 @@ class ChatViewModel(
         runCatching { db.messageDao().delete(message.id) }
     }
 
+    /** 批量删除（v0.54.3 多选）：逐条删已落库消息，观察者流会实时重发 */
+    fun deleteMessages(messages: List<ChatMessage>) = viewModelScope.launch {
+        messages.filter { it.id > 0 }.forEach { runCatching { db.messageDao().delete(it.id) } }
+    }
+
+    /**
+     * 批量转发（v0.54.3 多选）：把选中消息**复制**一份写进目标会话，原消息不动。
+     * 时间戳按顺序递增，保证在目标会话里保持原有先后；
+     * 媒体消息（图/语音/文件）直接复用本机文件路径，不复制文件。
+     */
+    fun forwardMessages(messages: List<ChatMessage>, targetPersonaId: Long) = viewModelScope.launch {
+        if (messages.isEmpty()) return@launch
+        val base = System.currentTimeMillis()
+        withContext(Dispatchers.IO) {
+            messages.forEachIndexed { index, m ->
+                runCatching {
+                    db.messageDao().insert(
+                        m.copy(id = 0, conversationId = targetPersonaId, timestamp = base + index),
+                    )
+                }
+            }
+        }
+    }
+
     /** 上次请求失败后重试（用户消息已在历史中） */
     fun retry() {
         if (_uiState.value.isStreaming) return
@@ -745,9 +769,10 @@ class ChatViewModel(
                     }
                 }
             }
-            // 打电话能力说明（v0.53.8）：**总是注入**，不再看「AI 主动打电话」总开关。
-            // 理由：用户明确点名要的一通（"立刻打给我"）不该被总开关拦住 ——
+            // 打电话能力说明（v0.53.8）：**总是注入**，不再看任何开关。
+            // 理由：用户明确点名要的一通（"立刻打给我"）不该被拦住 ——
             // 以前关着就不注入，用户叫它打、它连标记都不输出，用户以为坏了（踩过）。
+            // （v0.54.5 起连「AI 主动打电话」总开关本身都删了，开关只决定"TA 自己打不打"，与这条无关）
             if (isNotEmpty()) append("\n\n")
             append(AI_CALL_HINT)
             // AI 语音条能力说明（v0.50.0；v0.53.4 起总开关已删，只看 TTS 是否配齐）——
@@ -1258,7 +1283,7 @@ class ChatViewModel(
     }
 
     companion object {
-        /** v0.53.5：口头约定打电话的能力说明（v0.53.7 起**总是注入**，不再依赖总开关） */
+        /** v0.53.5：口头约定打电话的能力说明（v0.53.7 起**总是注入**，不依赖开关；v0.54.5 总开关已删） */
         const val AI_CALL_HINT =
             "## 打电话\n" +
                 "用户让你「立刻打给他 / 待会打给他 / 半小时后叫醒他 / 今晚九点打给他」时，你**做得到**：" +

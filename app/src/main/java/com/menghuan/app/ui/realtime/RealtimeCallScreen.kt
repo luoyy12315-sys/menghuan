@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -60,6 +61,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -150,14 +152,14 @@ fun RealtimeCallScreen(
 
     // v0.53.7：**去电也响铃声**（用户要求"我打给 AI 也能选铃声"）——
     // 从进页的"连接中"一直响到真正接通；一旦 AI 开始说话就停，别盖住它。
-    // 用的是设置里那一个铃声（来电去电共用），没设过就用系统默认铃声。
+    // 用的是该角色的专属铃声（角色专属 → 设置里的默认铃声 → 系统默认铃声），来电去电同一套规则。
     val appContainer = context.applicationContext as com.menghuan.app.MenghuanApp
     var dialPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     var dialFallback by remember { mutableStateOf<android.media.Ringtone?>(null) }
     LaunchedEffect(ui.state) {
         val connecting = ui.state == RealtimeCallState.IDLE || ui.state == RealtimeCallState.CONNECTING
         if (connecting && dialPlayer == null && dialFallback == null) {
-            val custom = runCatching { appContainer.settingsRepository.callRingtonePath.first() }
+            val custom = runCatching { appContainer.settingsRepository.ringtoneForPersona(personaId) }
                 .getOrDefault("")
             val player = custom.takeIf { it.isNotBlank() }?.let { CallRingtone.loopPlayer(it) }
             if (player != null) {
@@ -267,14 +269,21 @@ fun RealtimeCallScreen(
                 }
             }
 
-            // 字幕区（v0.54.0）：完整对话记录 + 可上下翻阅。
-            // 贴着底部时新句自动跟随；用户一向上翻就**不再被拽回**，
+            // 字幕区（v0.54.0；v0.54.1 限高 + 每段最多两行）：
+            // 最多露出最近约 4 段，更早的历史默认被挡在可视区上方，向上翻才看得到；
+            // 贴着底部时新句自动跟随，用户一向上翻就**不再被拽回**，
             // 右下角给一颗「回到底部」按钮，随时一键回到最新。
-            Box(Modifier.weight(1f).fillMaxWidth().padding(top = 10.dp)) {
+            Box(
+                Modifier.weight(1f).fillMaxWidth().padding(top = 10.dp),
+                contentAlignment = Alignment.BottomCenter,
+            ) {
                 CallSubtitlePanel(
                     lines = remember(ui.turns, ui.userPartial, ui.aiPartial) { buildLines(ui) },
                     name = name,
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 30.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = SubtitleViewportHeight)
+                        .padding(horizontal = 30.dp),
                 )
             }
 
@@ -312,6 +321,13 @@ fun RealtimeCallScreen(
 }
 
 /**
+ * 字幕可视高度 = **一屏最多 6 行文字**（v0.54.3 用户拍板，非"6 段"）。
+ * 按 20sp 行高：6 行 ≈ 120dp，加每段上下各 3dp 内边距与列表两端 24dp contentPadding，
+ * 取 150dp。行数由可视高度天然封顶 —— 长句再长也只会占满这一屏。
+ */
+private val SubtitleViewportHeight = 150.dp
+
+/**
  * 字幕面板（v0.54.0）：歌词式排版 + 可滚动完整记录。
  *
  * 交互规则（与 ChatScreen 的贴底跟随同一套做法，用户在那儿已经习惯）：
@@ -319,8 +335,12 @@ fun RealtimeCallScreen(
  * ② **只要用户自己向上翻过，就停止自动滚动**，流式增量不再打断翻阅；
  * ③ 离开底部时右下角浮出「↓ 回到底部」，点一下立刻回到最新并恢复跟随。
  *
- * 淡出只作用在**最新那几句**（歌词感）；再往上的历史一律给可读的不透明度，
- * 否则翻到通话开头时整屏都是"看不清的灰字"。
+ * 显示规则（v0.54.3）：面板可视高度只放得下**一屏 6 行文字**（每段最多占满这 6 行），
+ * 更早的历史默认藏在可视区上方，向上翻才看得到。
+ *
+ * 渐隐是"歌词式"的（v0.54.3 加强）：**最新一句最亮、最大**，越往上越**淡且越小**，
+ * 像"远离了"一样缩小后退；淡/小都设了可读下限（alpha≥0.6、scale≥0.82），
+ * 翻到通话开头时不会整屏都是"看不清的灰字"。
  */
 @Composable
 private fun CallSubtitlePanel(
@@ -382,13 +402,14 @@ private fun CallSubtitlePanel(
             ) { i, line ->
                 val fromEnd = lines.lastIndex - i
                 val isNewest = fromEnd == 0
-                // 淡出阶梯只覆盖最新 5 句；更早的历史保持可读
-                val fresh = fromEnd < 5
-                val fade = if (!fresh) {
-                    1f
-                } else {
-                    listOf(0.3f, 0.45f, 0.62f, 0.82f, 1f)[fromEnd]
-                }
+                // 渐隐阶梯：**最新一句最亮，越旧越淡**（歌词式）。
+                // v0.54.1 修正方向 —— 原来这排数反着取了（最新的 fromEnd=0 拿到 0.3f），
+                // 导致正在说的那句被压成灰、整屏像蒙了一层；现在改成线性递减 + 可读下限，
+                // 翻出去的历史不会淡到看不清。
+                val fade = (1f - fromEnd * 0.13f).coerceAtLeast(0.6f)
+                // v0.54.3：越旧的字还要**越小**（"远离了"的观感），同样是线性递减 + 下限，
+                // 免得翻出去的历史缩成看不清的小字。
+                val recede = (1f - fromEnd * 0.045f).coerceAtLeast(0.82f)
                 Text(
                     subtitleText(line, name, MutedText),
                     fontSize = if (isNewest) 15.sp else 14.sp,
@@ -396,13 +417,18 @@ private fun CallSubtitlePanel(
                     fontWeight = if (isNewest) FontWeight.SemiBold else FontWeight.Normal,
                     color = when {
                         isNewest -> TextPrimary
-                        fresh -> TextSecondary
+                        fromEnd < 5 -> TextSecondary
                         else -> MutedText
                     },
+                    // v0.54.3：每段最多占满一屏 6 行（超了截断省略号）——
+                    // 配合可视高度封顶，一屏最多只露 6 行文字。
+                    maxLines = 6,
+                    overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Start,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(vertical = 3.dp)
+                        .scale(recede)
                         .alpha(fade),
                 )
             }

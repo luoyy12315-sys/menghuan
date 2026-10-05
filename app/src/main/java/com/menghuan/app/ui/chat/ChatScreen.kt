@@ -46,8 +46,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -71,12 +69,24 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import com.menghuan.app.ui.theme.AccentInk
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -93,7 +103,6 @@ import com.menghuan.app.agent.AgentRunner
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.MediaKind
 import com.menghuan.app.ui.common.LocalContentWidth
-import com.menghuan.app.ui.persona.PersonaVoiceSheet
 import com.menghuan.app.ui.realtime.CallLogSheet
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.common.EaseOutQuart
@@ -109,6 +118,7 @@ import com.menghuan.app.ui.common.neuRowPress
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
 import com.menghuan.app.ui.settings.SettingsRoutes
+import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
@@ -160,10 +170,18 @@ fun ChatScreen(
     val taskSuggestions by vm.taskSuggestions.collectAsState()
     var viewerPath by remember { mutableStateOf<String?>(null) } // 全屏图片查看（v0.39.0）
     var messageMenu by remember { mutableStateOf<ChatMessage?>(null) }
+    // v0.54.3：长按菜单改成"微信那种"贴着气泡的横向图标菜单，需要气泡在屏幕中的位置来定位
+    var messageMenuAnchor by remember { mutableStateOf<Rect?>(null) }
+    // v0.54.3：多选模式（批量删除 / 复制 / 转发）+ 已选消息 id + 转发目标选择弹层
+    var multiSelect by remember { mutableStateOf(false) }
+    val selectedIds = remember { mutableStateListOf<Long>() }
+    var showForwardSheet by remember { mutableStateOf(false) }
     // 语音条「已展开转文字」的消息 id 集合（v0.43.1）。
     // 放在列表层而不是气泡内部：气泡滚出屏会被回收，状态放里面会丢。
     val voiceTranscriptIds = remember { mutableStateListOf<Long>() }
-    var reasoningView by remember { mutableStateOf<ChatMessage?>(null) } // 思考链查看（v0.41.4）
+    // v0.54.6：思考过程改成**就地展开在消息下方**（可点开/收起），不再是底部弹层；
+    // 与转文字同理放列表层，气泡被回收也不丢展开状态。
+    val reasoningOpenIds = remember { mutableStateListOf<Long>() }
     var showApiSwitch by remember { mutableStateOf(false) }
     // v0.47.1：三点 = 编辑人设（v0.53.5 起走独立路由页，不再需要本地开关）
     var callLogSession by remember { mutableStateOf<Long?>(null) } // v0.49.0：点开的通话记录卡
@@ -179,64 +197,13 @@ fun ChatScreen(
     val stickers by appContainer.db.stickerDao().observeAll()
         .collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
+    // v0.54.3：多选「转发」的目标会话列表（排除当前会话）
+    val allPersonas by appContainer.personaRepository.observePersonas()
+        .collectAsState(initial = emptyList())
 
-    // ===== v0.53.6：右上角三点的菜单 + 三个"选文件"入口 =====
-    // 立绘 / Live 2D / 聊天背景**只存不显**：用户明确说"以后打电话的时候展示"，展示方式还没定，
-    // 所以这里只负责"能选、能存、能清、能换"，不接渲染。
-    var chatMenuOpen by remember { mutableStateOf(false) }
-    var showVoiceSheet by remember { mutableStateOf(false) }
-    val settingsRepo = appContainer.settingsRepository
-    val callRules by settingsRepo.aiCallRules.collectAsState(initial = emptyList())
-    val chatWebSearch by settingsRepo.chatWebSearch.collectAsState(initial = emptyMap())
-    val callAllowed = callRules.firstOrNull { it.personaId == personaId }?.enabled == true
-    val webOn = chatWebSearch[personaId] == true
-
-    fun importAsset(uri: android.net.Uri, subDir: String, ext: String, hint: String, onDone: (String) -> Unit) {
-        scope.launch {
-            val path = runCatching {
-                val dir = java.io.File(context.filesDir, subDir).apply { mkdirs() }
-                val target = java.io.File(dir, "asset_${System.currentTimeMillis()}.$ext")
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                }
-                target.takeIf { it.length() > 0 }?.absolutePath
-            }.getOrNull()
-            if (path == null) {
-                Toast.makeText(context, "这个文件读不出来", Toast.LENGTH_SHORT).show()
-            } else {
-                onDone(path)
-                Toast.makeText(context, hint, Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    val artPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
-    ) { uri ->
-        uri?.let {
-            importAsset(it, "persona_art", "jpg", "立绘已保存（等想好怎么展示再接）") { p ->
-                scope.launch { settingsRepo.setPersonaArt(personaId, p) }
-            }
-        }
-    }
-    val live2dPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
-    ) { uri ->
-        uri?.let {
-            importAsset(it, "persona_live2d", "bin", "Live 2D 资源已保存（等想好怎么展示再接）") { p ->
-                scope.launch { settingsRepo.setPersonaLive2d(personaId, p) }
-            }
-        }
-    }
-    val backgroundPicker = androidx.activity.compose.rememberLauncherForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.GetContent(),
-    ) { uri ->
-        uri?.let {
-            importAsset(it, "chat_background", "jpg", "聊天背景已保存") { p ->
-                scope.launch { settingsRepo.setChatBackground(personaId, p) }
-            }
-        }
-    }
+    // v0.54.4：右上角三点的那些入口（编辑人设 / 聊天记录 / 主动打电话 / 立绘 / Live 2D /
+    // 聊天背景 / 联网 / 音色 / 模型）连同新增的专属铃声、定时主动消息、人设主动关心
+    // 一并搬进整页 ChatSettingsScreen，这里不再保留任何菜单状态与选文件入口。
     // 正在播放的语音消息 id（同一时刻只播一条；null = 没在播）
     var playingVoiceId by remember { mutableStateOf<Long?>(null) }
     val voicePlayer = remember { VoicePlayer() }
@@ -365,7 +332,6 @@ fun ChatScreen(
         panel = 0
         voiceMode = false
         messageMenu = null
-        reasoningView = null
         viewerPath = null
     }
 
@@ -421,11 +387,16 @@ fun ChatScreen(
     // 顺序即优先级：录音 → 面板 → 语音态。
     // ⚠️ 面板分支里**不能再调 `keyboardController.hide()`**：点表情时键盘早已收走，
     //    这一句只会在"面板还开着 + 用户刚点回输入框"的窗口里把新唤起的键盘又按下去。
-    val hasDismissableLayer = recording || panel != 0 || voiceMode
+    val hasDismissableLayer = recording || multiSelect || panel != 0 || voiceMode
     androidx.activity.compose.BackHandler(enabled = hasDismissableLayer) {
         when {
             // 录音中：吃掉返回，避免录制被中断（松手才算结束）
             recording -> Unit
+            // v0.54.3：多选态返回 = 退出多选（清空已选）
+            multiSelect -> {
+                multiSelect = false
+                selectedIds.clear()
+            }
             panel != 0 -> panel = 0
             voiceMode -> voiceMode = false
         }
@@ -514,78 +485,20 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // v0.53.6：三个点 = **弹出菜单**（「编辑人设」降级成其中一项）
-                    // v0.50.0：喇叭（AI 回复朗读）已删——朗读功能整体取消，AI 想说话改用【语音条】标记。
-                    Box {
-                        Icon(
-                            MIcons.MoreVert,
-                            contentDescription = "更多",
-                            tint = TextPrimary,
-                            modifier = Modifier
-                                .size(21.dp)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                ) { chatMenuOpen = true },
-                        )
-                        DropdownMenu(
-                            expanded = chatMenuOpen,
-                            onDismissRequest = { chatMenuOpen = false },
-                            modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(14.dp)),
-                            containerColor = NeuSurface,
-                            shape = RoundedCornerShape(14.dp),
-                            shadowElevation = 0.dp,
-                        ) {
-                            ChatMenuItem("编辑人设") {
-                                chatMenuOpen = false
-                                persona?.let { onOpenSettings("persona_editor/${it.id}") }
-                            }
-                            ChatMenuItem("查看聊天记录") {
-                                chatMenuOpen = false
-                                onOpenSettings("chat_history/$personaId")
-                            }
-                            ChatMenuItem(if (callAllowed) "取消主动打电话" else "允许主动打电话") {
-                                chatMenuOpen = false
-                                val current = callRules.firstOrNull { it.personaId == personaId }
-                                    ?: com.menghuan.app.data.AiCallRule(personaId = personaId)
-                                scope.launch {
-                                    val next = current.copy(enabled = !callAllowed)
-                                    settingsRepo.upsertAiCallRule(next)
-                                    if (next.enabled) {
-                                        com.menghuan.app.notify.AlarmScheduler
-                                            .scheduleAiCallForPersona(context, personaId, next.time)
-                                    } else {
-                                        com.menghuan.app.notify.AlarmScheduler
-                                            .cancelAiCallForPersona(context, personaId)
-                                    }
-                                }
-                            }
-                            ChatMenuItem("角色立绘") {
-                                chatMenuOpen = false
-                                artPicker.launch("image/*")
-                            }
-                            ChatMenuItem("Live 2D") {
-                                chatMenuOpen = false
-                                live2dPicker.launch("*/*")
-                            }
-                            ChatMenuItem("聊天背景") {
-                                chatMenuOpen = false
-                                backgroundPicker.launch("image/*")
-                            }
-                            ChatMenuItem(if (webOn) "联网：已开" else "联网：已关") {
-                                chatMenuOpen = false
-                                scope.launch { settingsRepo.setChatWebSearchEnabled(personaId, !webOn) }
-                            }
-                            ChatMenuItem("音色") {
-                                chatMenuOpen = false
-                                showVoiceSheet = true
-                            }
-                            ChatMenuItem("模型") {
-                                chatMenuOpen = false
-                                showApiSwitch = true
-                            }
-                        }
-                    }
+                    // v0.54.4：三个点 = 进入**整页**会话设置（不再弹小菜单）。
+                    // 编辑人设 / 聊天记录 / 主动打电话 / 立绘 / Live 2D / 聊天背景 / 联网 /
+                    // 音色 / 模型，以及新增的**专属铃声 / 定时主动消息 / 人设主动关心**都在那一页。
+                    Icon(
+                        MIcons.MoreVert,
+                        contentDescription = "会话设置",
+                        tint = TextPrimary,
+                        modifier = Modifier
+                            .size(21.dp)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { onOpenSettings("chat_settings/$personaId") },
+                    )
                 },
             )
 
@@ -694,10 +607,18 @@ fun ChatScreen(
                                 )
                             }
 
-                            is ChatListItem.Msg -> Box(
-                                Modifier.animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null),
-                            ) {
+                            is ChatListItem.Msg -> {
                                 val msg = item.message
+                                // v0.54.3：记录本条在屏幕中的位置，长按菜单要贴着气泡弹出
+                                var rowBounds by remember { mutableStateOf<Rect?>(null) }
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
+                                        .onGloballyPositioned { rowBounds = it.boundsInRoot() },
+                                ) {
+                                // 多选态：左侧留出勾选圈的空档（v0.54.3）
+                                Box(Modifier.fillMaxWidth().padding(start = if (multiSelect) 34.dp else 0.dp)) {
                                 // v0.43.0：媒体类型优先（存量消息 mediaKind 为空，按老规则推断）
                                 val kind = MediaKind.fromLegacy(msg.mediaKind, msg.imagePath)
                                 when (kind) {
@@ -759,7 +680,7 @@ fun ChatScreen(
                                                         playingVoiceId = msg.id
                                                     }
                                                 },
-                                                onLongPress = { messageMenu = msg },
+                                                onLongPress = { messageMenuAnchor = rowBounds; messageMenu = msg },
                                             )
                                             // 转文字结果：显示在语音条下方，左右跟随气泡对齐。
                                             // content 就是识别出的文字（同时也是喂给模型的那份），
@@ -789,11 +710,13 @@ fun ChatScreen(
                                                 size = msg.attachmentSize,
                                                 hasExtractedText = msg.content.isNotBlank(),
                                                 maxWidth = bubbleMaxWidth,
-                                                onLongPress = { messageMenu = msg },
+                                                onLongPress = { messageMenuAnchor = rowBounds; messageMenu = msg },
                                             )
                                         }
 
-                                    // 语音通话记录卡（v0.49.0）：挂断后落进聊天流，点开看文字转写
+                                    // 语音通话记录卡（v0.49.0）：挂断后落进聊天流，点开看文字转写；
+                                    // v0.54.6：**长按也弹消息菜单**（以前只有 clickable，
+                                    // 长按完全没反应——用户反馈"长按语音通话条唤起不了菜单"）
                                     MediaKind.CALL ->
                                         Box(
                                             Modifier.fillMaxWidth(),
@@ -803,13 +726,18 @@ fun ChatScreen(
                                             Row(
                                                 Modifier
                                                     .neuSurface(999.dp, color = NeuSurface)
-                                                    .clickable(
+                                                    .combinedClickable(
                                                         interactionSource = remember { MutableInteractionSource() },
                                                         indication = null,
-                                                    ) {
-                                                        callLogSession = msg.attachmentPath.toLongOrNull() ?: 0L
-                                                        callLogTitle = msg.content
-                                                    }
+                                                        onClick = {
+                                                            callLogSession = msg.attachmentPath.toLongOrNull() ?: 0L
+                                                            callLogTitle = msg.content
+                                                        },
+                                                        onLongClick = {
+                                                            messageMenuAnchor = rowBounds
+                                                            messageMenu = msg
+                                                        },
+                                                    )
                                                     .padding(horizontal = 16.dp, vertical = 10.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                             ) {
@@ -828,12 +756,73 @@ fun ChatScreen(
                                         msg,
                                         bubbleMaxWidth,
                                         item.gapBefore,
-                                        onLongPress = { messageMenu = msg },
+                                        onLongPress = { messageMenuAnchor = rowBounds; messageMenu = msg },
+                                    )
+                                }   // 关闭 when(kind)
+
+                                // v0.54.6：思考过程 —— 长按菜单点「思考过程」后**就地展开在消息下方**
+                                // （不再跳底部弹层），点标题行可收起。字号小、颜色淡，不抢正文。
+                                if (msg.reasoning.isNotBlank() && reasoningOpenIds.contains(msg.id)) {
+                                    Column(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 6.dp)
+                                            .padding(
+                                                start = if (msg.isFromUser) 0.dp else 2.dp,
+                                                end = if (msg.isFromUser) 2.dp else 0.dp,
+                                            ),
+                                        horizontalAlignment = if (msg.isFromUser) Alignment.End
+                                        else Alignment.Start,
+                                    ) {
+                                        Row(
+                                            Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable(
+                                                    interactionSource = remember { MutableInteractionSource() },
+                                                    indication = null,
+                                                ) { reasoningOpenIds.remove(msg.id) },
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Icon(
+                                                MIcons.Brain,
+                                                contentDescription = null,
+                                                tint = FaintText,
+                                                modifier = Modifier.size(11.dp),
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("思考过程 · 点此收起", fontSize = 10.sp, color = FaintText)
+                                        }
+                                        Spacer(Modifier.height(3.dp))
+                                        Text(
+                                            msg.reasoning,
+                                            modifier = Modifier.widthIn(max = bubbleMaxWidth),
+                                            fontSize = 11.sp,
+                                            lineHeight = 17.sp,
+                                            color = MutedText,
+                                        )
+                                    }
+                                }
+
+                                }   // 关闭"多选留白"内层 Box（v0.54.3）
+                                // v0.54.3：多选态 —— 整行可点切换选中，左侧画勾选圈
+                                if (multiSelect) {
+                                    Box(
+                                        Modifier
+                                            .matchParentSize()
+                                            .clickable(
+                                                interactionSource = remember { MutableInteractionSource() },
+                                                indication = null,
+                                            ) { if (!selectedIds.remove(msg.id)) selectedIds.add(msg.id) },
+                                    )
+                                    SelectionMark(
+                                        selected = selectedIds.contains(msg.id),
+                                        modifier = Modifier.align(Alignment.CenterStart),
                                     )
                                 }
-                            }
-                        }
-                    }
+                                }   // 关闭 item Box
+                                }   // 关闭 is ChatListItem.Msg 分支块
+                            }       // 关闭 when (val item = chatItems[idx])
+                        }           // 关闭 items 内容 lambda
 
                     // 生成中的三点气泡（v0.41.4）：AI 在后台写完再整段上屏，
                     // 期间只挂一个只含三点动效的空 AI 气泡（不再逐字吐字）
@@ -923,7 +912,7 @@ fun ChatScreen(
                         message = message,
                         kind = kind,
                         onRetry = { vm.retry() },
-                        onOpenApi = { onOpenSettings(SettingsRoutes.API_CONFIG) },
+                        onOpenApi = { onOpenSettings(SettingsRoutes.CHAT_MODEL) },
                     )
                 }
             }
@@ -1220,11 +1209,6 @@ fun ChatScreen(
         )
     }
 
-    // v0.53.6：菜单 → 音色（这个 AI 用谁的声音；编辑人设里那一项已按用户要求移除）
-    if (showVoiceSheet) {
-        PersonaVoiceSheet(personaId = personaId, onDismiss = { showVoiceSheet = false })
-    }
-
     // 长按头像 = 切换"本会话"的 AI 接口（v0.36.4 按会话独立；不影响其他会话和全局）
     if (showApiSwitch) {
         ApiSwitchSheet(
@@ -1261,27 +1245,72 @@ fun ChatScreen(
     viewerPath?.let { path ->
         ImageViewerOverlay(path = path, onDismiss = { viewerPath = null })
     }
+
+    // v0.54.3：多选操作栏（贴着底部覆盖输入栏 —— 微信式）。整行铺底、吃掉触摸，
+    // 避免点击从按钮缝隙漏到底下仍可用的输入栏。
+    if (multiSelect) {
+        MultiSelectBar(
+            count = selectedIds.size,
+            onCancel = {
+                multiSelect = false
+                selectedIds.clear()
+            },
+            onCopy = {
+                val text = uiState.messages.filter { it.id in selectedIds }
+                    .map { it.content }
+                    .filter { it.isNotBlank() }
+                    .joinToString("\n")
+                if (text.isBlank()) {
+                    Toast.makeText(context, "没有可复制的文字", Toast.LENGTH_SHORT).show()
+                } else {
+                    copyToClipboard(context, text)
+                }
+                multiSelect = false
+                selectedIds.clear()
+            },
+            onForward = { showForwardSheet = true },
+            onDelete = {
+                vm.deleteMessages(uiState.messages.filter { it.id in selectedIds })
+                multiSelect = false
+                selectedIds.clear()
+            },
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+    }
     }
 
     messageMenu?.let { message ->
-        MessageMenuSheet(
+        MessageActionMenu(
             message = message,
+            anchor = messageMenuAnchor,
             canDelete = message.id > 0 && !uiState.isStreaming,
             onCopy = {
                 copyToClipboard(context, message.content)
                 messageMenu = null
+                messageMenuAnchor = null
             },
             onDelete = {
                 vm.deleteMessage(message)
                 messageMenu = null
+                messageMenuAnchor = null
             },
-            // 思考链（v0.41.4）：只有模型真的吐过推理内容的消息才给这个入口
-            onViewReasoning = if (message.reasoning.isNotBlank()) {
+            // v0.54.3：进入多选（当前这条默认已选）
+            onMultiSelect = {
+                selectedIds.clear()
+                if (message.id > 0) selectedIds.add(message.id)
+                multiSelect = true
+                messageMenu = null
+                messageMenuAnchor = null
+            },
+            // 思考链（v0.41.4；v0.54.6 改成**就地展开**）：只有模型真吐过推理内容的消息才给这个入口
+            onToggleReasoning = if (message.reasoning.isNotBlank()) {
                 {
-                    reasoningView = message
+                    if (!reasoningOpenIds.remove(message.id)) reasoningOpenIds.add(message.id)
                     messageMenu = null
+                    messageMenuAnchor = null
                 }
             } else null,
+            reasoningShown = reasoningOpenIds.contains(message.id),
             // 语音条转文字开关（v0.43.1）：只有真识别出文字的语音条才给
             onToggleTranscript = if (message.mediaKind == MediaKind.AUDIO.name &&
                 message.content.isNotBlank()
@@ -1289,17 +1318,46 @@ fun ChatScreen(
                 {
                     if (!voiceTranscriptIds.remove(message.id)) voiceTranscriptIds.add(message.id)
                     messageMenu = null
+                    messageMenuAnchor = null
                 }
             } else null,
             transcriptShown = voiceTranscriptIds.contains(message.id),
-            onDismiss = { messageMenu = null },
+            onDismiss = {
+                messageMenu = null
+                messageMenuAnchor = null
+            },
         )
     }
 
-    // 思考链全文查看（v0.41.4）：推理类模型的思维过程，只在这里按需展示
-    reasoningView?.let { message ->
-        ReasoningSheet(content = message.reasoning, onDismiss = { reasoningView = null })
+    // v0.54.3：多选「转发」—— 选一个目标会话，把选中消息复制过去
+    if (showForwardSheet) {
+        NeuSheetScaffold(title = "转发到", onDismiss = { showForwardSheet = false }) {
+            Spacer(Modifier.height(8.dp))
+            val targets = allPersonas.filter { it.id != personaId }
+            if (targets.isEmpty()) {
+                Text("还没有其它会话", fontSize = 13.sp, color = MutedText, modifier = Modifier.padding(14.dp))
+            } else {
+                targets.forEach { p ->
+                    NeuSheetRow(
+                        icon = MIcons.Person,
+                        title = p.name,
+                        subtitle = p.title,
+                        onClick = {
+                            vm.forwardMessages(uiState.messages.filter { it.id in selectedIds }, p.id)
+                            Toast.makeText(context, "已转发给${p.name}", Toast.LENGTH_SHORT).show()
+                            showForwardSheet = false
+                            multiSelect = false
+                            selectedIds.clear()
+                        },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+        }
     }
+
+    // 思考链已在 v0.54.6 改成**就地展开在消息下方**（见上方 reasoningOpenIds），不再有弹层
 
 }
 
@@ -1354,94 +1412,184 @@ private fun ChatErrorBar(
 }
 
 /**
- * 长按气泡弹出：查看思考过程（仅推理模型的消息）/ 复制 / 删除
- * （已落库消息才可删；种子演示消息仅可复制）。
- * [onViewReasoning] 为 null = 该消息没有思考链，不显示这一行。
+ * 长按气泡弹出的操作菜单（v0.54.3 建；v0.54.6 瘦身）：贴着气泡的横向菜单。
+ * 用户消息靠右、AI 消息靠左；气泡上方放不下就翻到下方；点空白 / 返回即收起。
+ *
+ * **v0.54.6（用户点名）**：
+ * - **只显示图标，不再显示文字**（原来图标 + 文字两行，整体又高又宽）；
+ * - 整体**缩小**（图标 17dp、内边距收紧），不再"比聊天记录还大"；
+ * - 「思考过程」由"打开底部弹层"改成**就地展开/收起**（toggle），展开位置在消息下方。
+ *
+ * 条目按需出现：转文字（仅识别成功的语音条）/ 思考过程（仅推理模型的消息）/
+ * 复制 / 多选 / 删除（已落库消息才可删）。
  */
 @Composable
-private fun MessageMenuSheet(
+private fun MessageActionMenu(
     message: ChatMessage,
+    anchor: Rect?,
     canDelete: Boolean,
     onCopy: () -> Unit,
     onDelete: () -> Unit,
-    onViewReasoning: (() -> Unit)?,
-    onToggleTranscript: (() -> Unit)? = null,
-    transcriptShown: Boolean = false,
+    onMultiSelect: () -> Unit,
+    onToggleReasoning: (() -> Unit)?,
+    reasoningShown: Boolean,
+    onToggleTranscript: (() -> Unit)?,
+    transcriptShown: Boolean,
     onDismiss: () -> Unit,
 ) {
-    NeuSheetScaffold(
-        title = if (message.isFromUser) "我的消息" else "AI 消息",
-        onDismiss = onDismiss,
-    ) {
-        // 语音条（v0.43.1）：菜单第一项是「转文字 / 取消转文字」开关。
-        // 识别失败（content 为空）的语音条不给这个入口——点开也是空的。
+    val density = LocalDensity.current
+    val actions = buildList {
         if (onToggleTranscript != null) {
-            Spacer(Modifier.height(14.dp))
-            NeuSheetRow(
-                icon = MIcons.FileText,
-                title = if (transcriptShown) "取消转文字" else "转文字",
-                subtitle = if (transcriptShown) "收起语音下方的文字" else "把这段语音识别成文字显示在下方",
-                onClick = onToggleTranscript,
-            )
+            add(Triple(MIcons.FileText, if (transcriptShown) "收起文字" else "转文字", onToggleTranscript))
         }
-        if (onViewReasoning != null) {
-            Spacer(Modifier.height(14.dp))
-            NeuSheetRow(
-                icon = MIcons.Brain,
-                title = "查看思考过程",
-                subtitle = "这段回复生成前的推理过程",
-                onClick = onViewReasoning,
-            )
+        if (onToggleReasoning != null) {
+            add(Triple(MIcons.Brain, if (reasoningShown) "收起思考" else "思考过程", onToggleReasoning))
         }
-        Spacer(Modifier.height(if (onViewReasoning != null || onToggleTranscript != null) 10.dp else 14.dp))
-        NeuSheetRow(
-            icon = MIcons.Copy,
-            title = "复制全文",
-            subtitle = "",
-            onClick = onCopy,
-        )
-        Spacer(Modifier.height(10.dp))
-        if (canDelete) {
-            NeuSheetRow(
-                icon = MIcons.Delete,
-                title = "删除消息",
-                subtitle = "",
-                onClick = onDelete,
-            )
+        add(Triple(MIcons.Copy, "复制", onCopy))
+        add(Triple(MIcons.SelectAll, "多选", onMultiSelect))
+        if (canDelete) add(Triple(MIcons.Delete, "删除", onDelete))
+    }
+    Popup(
+        popupPositionProvider = remember(anchor, message.isFromUser) {
+            object : PopupPositionProvider {
+                override fun calculatePosition(
+                    anchorBounds: IntRect,
+                    windowSize: IntSize,
+                    layoutDirection: LayoutDirection,
+                    popupContentSize: IntSize,
+                ): IntOffset {
+                    val gap = with(density) { 8.dp.roundToPx() }
+                    val maxX = (windowSize.width - popupContentSize.width - gap).coerceAtLeast(gap)
+                    val maxY = (windowSize.height - popupContentSize.height - gap).coerceAtLeast(gap)
+                    val rect = anchor
+                    val x = (if (rect == null) {
+                        if (message.isFromUser) maxX else gap
+                    } else if (message.isFromUser) {
+                        rect.right.toInt() - popupContentSize.width
+                    } else {
+                        rect.left.toInt()
+                    }).coerceIn(gap, maxX)
+                    // 优先放在气泡上方；上方不够就翻到气泡下方
+                    val above = rect?.let { it.top.toInt() - popupContentSize.height - gap }
+                    val y = (if (above != null && above >= gap) above
+                    else rect?.let { it.bottom.toInt() + gap }
+                        ?: (windowSize.height / 2)).coerceIn(gap, maxY)
+                    return IntOffset(x, y)
+                }
+            }
+        },
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(focusable = true),
+    ) {
+        Row(
+            Modifier
+                .neuSurface(12.dp, color = NeuSurface)
+                .padding(horizontal = 2.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            actions.forEach { (icon, label, onClick) ->
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onClick,
+                        )
+                        .padding(horizontal = 11.dp, vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    // v0.54.6：只留图标（文字进 contentDescription，无障碍照样读得出来）
+                    Icon(
+                        icon,
+                        contentDescription = label,
+                        tint = TextPrimary,
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
+            }
         }
-        Spacer(Modifier.height(4.dp))
+    }
+}
+
+/** 多选勾选圈（v0.54.3）：未选 = 细线空心圆；已选 = 强调色实心 + ✓ */
+@Composable
+private fun SelectionMark(selected: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(20.dp)
+            .clip(CircleShape)
+            .background(if (selected) NeuAccent else Color.Transparent)
+            .border(1.6.dp, if (selected) NeuAccent else MutedText, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) {
+            Icon(MIcons.Check, contentDescription = null, tint = AccentInk, modifier = Modifier.size(12.dp))
+        }
     }
 }
 
 /**
- * 思考链全文（v0.41.4）：推理类模型生成正文前的思维过程，等宽行距、灰字、可滚动。
- * 顶部一句固定说明，避免用户把模型的自我对话当成"它对我说的话"。
+ * 多选操作栏（v0.54.3）：铺满底部、盖住输入栏；左「取消」，右侧三个动作
+ * 「复制 / 转发 / 删除」，没选任何消息时动作置灰不可点。
  */
 @Composable
-private fun ReasoningSheet(content: String, onDismiss: () -> Unit) {
-    NeuSheetScaffold(title = "思考过程", onDismiss = onDismiss) {
-        Spacer(Modifier.height(12.dp))
-        Text(
-            "模型在给出回复之前的推理草稿，不构成回复内容。",
-            fontSize = 12.sp,
-            lineHeight = 18.sp,
-            color = MutedText,
-        )
-        Spacer(Modifier.height(10.dp))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .neuSurface(14.dp, inset = true)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-        ) {
-            Text(
-                content,
-                fontSize = 13.sp,
-                lineHeight = 20.sp,
-                color = TextSecondary,
+private fun MultiSelectBar(
+    count: Int,
+    onCancel: () -> Unit,
+    onCopy: () -> Unit,
+    onForward: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val enabled = count > 0
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(NeuSurface)
+            // 空点也吃掉，避免从按钮缝隙漏到底下仍可用的输入栏
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
             )
-        }
-        Spacer(Modifier.height(10.dp))
+            .navigationBarsPadding()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        NeuTextButton("取消", onClick = onCancel)
+        Spacer(Modifier.weight(1f))
+        Text("已选 $count", fontSize = 12.sp, color = TextSecondary)
+        Spacer(Modifier.width(6.dp))
+        MultiSelectAction(MIcons.Copy, "复制", enabled, onCopy)
+        MultiSelectAction(MIcons.Forward, "转发", enabled, onForward)
+        MultiSelectAction(MIcons.Delete, "删除", enabled, onDelete)
+    }
+}
+
+@Composable
+private fun MultiSelectAction(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val tint = if (enabled) TextPrimary else MutedText.copy(alpha = 0.4f)
+    Column(
+        Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                enabled = enabled,
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.height(4.dp))
+        Text(label, fontSize = 11.sp, color = tint)
     }
 }
 
@@ -1539,15 +1687,6 @@ private fun NeuChatInput(value: String, onValueChange: (String) -> Unit, onFocus
  * （旧版是"上滑取消"，与蒙层里的圆按钮对不上，所以改掉。）
  * 高度与 [NeuChatInput] 的 40dp 对齐，切来切去不会跳。
  */
-/** 对话页三点菜单里的一项（统一样式：15sp、点击即由调用方收起菜单） */
-@Composable
-private fun ChatMenuItem(text: String, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = { Text(text, fontSize = 15.sp, color = TextPrimary) },
-        onClick = onClick,
-    )
-}
-
 @Composable
 private fun VoiceHoldBar(
     recording: Boolean,

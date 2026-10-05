@@ -87,13 +87,13 @@ class MenghuanApp : Application() {
                 }
             }
         }
-        // 人设主动关心：随进程启动排今晚的闹钟（到点自排明天；重启走 BootReceiver）
+        // 人设主动关心：随进程启动排今晚的闹钟（到点自排明天；重启走 BootReceiver）。
+        // v0.54.4 起开关**按角色**（在每个人设的整页里），闹钟一律排上，发送前再逐个复查。
         applicationScope.launch {
             runCatching {
-                if (settingsRepository.proactiveEnabled.first()) {
-                    com.menghuan.app.notify.AlarmScheduler.scheduleProactive(this@MenghuanApp)
-                }
-                // AI 主动打电话（v0.53.5）：开关开着才排两个闹钟（只排钟，不发请求）
+                com.menghuan.app.notify.AlarmScheduler.scheduleProactive(this@MenghuanApp)
+                // AI 主动打电话（v0.53.5）：逐个人设按各自规则排闹钟（只排钟，不发请求；
+                // v0.54.5 起没有全局总开关，开关在各角色的规则里）
                 runCatching { com.menghuan.app.data.AiCall.rearm(settingsRepository, this@MenghuanApp) }
                 // 定时主动消息（v0.53.5）：每条一个闹钟，全部重排（只排钟，不发请求）
                 runCatching {

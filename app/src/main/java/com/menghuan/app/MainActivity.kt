@@ -81,6 +81,7 @@ import androidx.navigation.navDeepLink
 import com.menghuan.app.ui.chat.ChatHistoryScreen
 import com.menghuan.app.ui.chat.ChatListScreen
 import com.menghuan.app.ui.chat.ChatScreen
+import com.menghuan.app.ui.chat.ChatSettingsScreen
 import com.menghuan.app.ui.common.AdaptiveScreen
 import com.menghuan.app.ui.common.AdaptiveSplitScreen
 import com.menghuan.app.ui.common.ContentMaxWidth
@@ -97,19 +98,25 @@ import com.menghuan.app.ui.profile.GalleryScreen
 import com.menghuan.app.ui.profile.MeScreen
 import com.menghuan.app.ui.profile.ProfileScreen
 import com.menghuan.app.ui.settings.AboutScreen
-import com.menghuan.app.ui.settings.AiCallSettingsScreen
-import com.menghuan.app.ui.settings.ApiConfigScreen
+import com.menghuan.app.ui.settings.AppearanceScreen
 import com.menghuan.app.ui.settings.AsrModelScreen
+import com.menghuan.app.ui.settings.CallBehaviorScreen
 import com.menghuan.app.ui.settings.CallRingtoneScreen
+import com.menghuan.app.ui.settings.ChatModelScreen
+import com.menghuan.app.ui.settings.CrashLogScreen
 import com.menghuan.app.ui.settings.DataPrivacyScreen
+import com.menghuan.app.ui.settings.ImageModelScreen
+import com.menghuan.app.ui.settings.ModelConfigScreen
 import com.menghuan.app.ui.settings.PermissionScreen
 import com.menghuan.app.ui.settings.PromptSettingsScreen
+import com.menghuan.app.ui.settings.RemindersScreen
 import com.menghuan.app.ui.settings.ScheduledMessageScreen
 import com.menghuan.app.ui.settings.SettingsRoutes
 import com.menghuan.app.ui.settings.SettingsScreen
 import com.menghuan.app.ui.settings.TtsConfigScreen
 import android.content.Intent
 import com.menghuan.app.ui.settings.VoiceLibraryScreen
+import com.menghuan.app.ui.settings.WebSearchConfigScreen
 import com.menghuan.app.ui.realtime.RealtimeCallScreen
 import com.menghuan.app.ui.tasks.TasksScreen
 import com.menghuan.app.ui.theme.AccentInk
@@ -495,6 +502,28 @@ private fun MenghuanAppRoot(
                     ChatHistoryScreen(personaId = pid, onBack = { navController.popBackStack() })
                 }
             }
+            // 会话设置（v0.54.4）：对话页右上角「⋮」→ **整页**（原来是弹小菜单）
+            composable(
+                route = "${SettingsRoutes.CHAT_SETTINGS}/{personaId}",
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                val pid = entry.arguments?.getString("personaId")?.toLongOrNull() ?: 0L
+                AdaptiveScreen {
+                    ChatSettingsScreen(
+                        personaId = pid,
+                        onBack = { navController.popBackStack() },
+                        onOpen = { route -> navController.navigate(route) },
+                    )
+                }
+            }
             // 记账本（v0.42.0）：数据页底部入口进入的全屏页
             composable(
                 route = "ledger",
@@ -553,10 +582,38 @@ private fun androidx.navigation.NavGraphBuilder.settingsComposables(navControlle
         popExitTransition = { pop + scalePop }) {
         AdaptiveScreen { SettingsScreen(onBack = back, onOpen = open) }
     }
-    composable(SettingsRoutes.API_CONFIG, enterTransition = { push + fadeIn(tween(260)) },
+    // 二级页（v0.54.2 方案二）：主页那些多条目板块也是一张卡，点进来才是这几页
+    composable(SettingsRoutes.MODEL_CONFIG, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
         popExitTransition = { pop + scalePop }) {
-        AdaptiveScreen { ApiConfigScreen(onBack = back) }
+        AdaptiveScreen { ModelConfigScreen(onBack = back, onOpen = open) }
+    }
+    composable(SettingsRoutes.CALL_BEHAVIOR, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { CallBehaviorScreen(onBack = back, onOpen = open) }
+    }
+    composable(SettingsRoutes.REMINDERS, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { RemindersScreen(onBack = back, onOpen = open) }
+    }
+    // 联网搜索（v0.54.2）：从「定时主动消息」里拎出的独立配置页，入口在「模型配置」下
+    composable(SettingsRoutes.SEARCH_CONFIG, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { WebSearchConfigScreen(onBack = back) }
+    }
+    // 模型配置（v0.54.1）：对话模型与生图模型由同一个「API 配置」页拆成两页，各自只管一类
+    composable(SettingsRoutes.CHAT_MODEL, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { ChatModelScreen(onBack = back) }
+    }
+    composable(SettingsRoutes.IMAGE_MODEL, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { ImageModelScreen(onBack = back) }
     }
     composable(SettingsRoutes.DATA_PRIVACY, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
@@ -566,26 +623,30 @@ private fun androidx.navigation.NavGraphBuilder.settingsComposables(navControlle
     composable(SettingsRoutes.ABOUT, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
         popExitTransition = { pop + scalePop }) {
-        AdaptiveScreen { AboutScreen(onBack = back) }
+        AdaptiveScreen { AboutScreen(onBack = back, onOpen = open) }
     }
-    // v0.54.0：AppearanceScreen / NotificationSettingsScreen / VoiceScreen 三个路由已删
-    //（外观三胶囊与通知三开关都并进了设置主页，语音 5 个子项上提为一级卡）。
+    // 崩溃记录（v0.54.4）：从「关于」页右上角红字入口进入的整页
+    composable(SettingsRoutes.CRASH_LOG, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { CrashLogScreen(onBack = back) }
+    }
+    // 外观（v0.54.1）：从设置主页的「外观」卡进入，三个主题胶囊
+    composable(SettingsRoutes.APPEARANCE, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { AppearanceScreen(onBack = back) }
+    }
     composable(SettingsRoutes.TTS_CONFIG, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
         popExitTransition = { pop + scalePop }) {
         AdaptiveScreen { TtsConfigScreen(onBack = back) }
     }
-    // 音色页（v0.53.5）：从「语音」页的「音色」卡片进入，顶栏右侧是克隆音色与 ID
+    // 音色页（v0.53.5）：设置主页第 ③ 板块进入，顶栏右侧是克隆音色与 ID
     composable(SettingsRoutes.VOICE_LIBRARY, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
         popExitTransition = { pop + scalePop }) {
         VoiceLibraryScreen(onBack = back)
-    }
-    // AI 主动打电话（v0.53.5）：开关 / 时间 / 阈值 / 选人设 / 全屏来电权限都在这一页
-    composable(SettingsRoutes.AI_CALL, enterTransition = { push + fadeIn(tween(260)) },
-        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
-        popExitTransition = { pop + scalePop }) {
-        AdaptiveScreen { AiCallSettingsScreen(onBack = back) }
     }
     // 定时主动消息（v0.53.5）：自己配「谁、几点、发什么」，可配多条、可联网搜最新
     composable(SettingsRoutes.SCHEDULED_MESSAGE, enterTransition = { push + fadeIn(tween(260)) },

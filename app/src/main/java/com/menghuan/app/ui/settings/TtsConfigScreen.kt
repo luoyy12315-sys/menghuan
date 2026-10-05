@@ -28,6 +28,7 @@ import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSheetRow
+import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.theme.MIcons
@@ -119,7 +120,7 @@ fun TtsConfigScreen(onBack: () -> Unit) {
 
     // 先选服务商，再填那一份配置
     if (picking) {
-        SettingsCardDialog(title = "添加到哪一家", onDismiss = { picking = false }) {
+        NeuSheetScaffold(title = "添加到哪一家", onDismiss = { picking = false }) {
             Row(Modifier.fillMaxWidth()) {
                 TtsProvider.entries.forEach { p ->
                     NeuChip(
@@ -147,7 +148,7 @@ fun TtsConfigScreen(onBack: () -> Unit) {
         var draft by remember { mutableStateOf(initial) }
         var busy by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf<String?>(null) }
-        SettingsCardDialog(
+        NeuSheetScaffold(
             title = "${draft.provider.label} · 语音合成",
             onDismiss = { editor = null },
         ) {

@@ -395,10 +395,11 @@ class SettingsRepository(
     private val keyAgentChatStrategy = stringPreferencesKey("agent_chat_strategy")
     // v0.50.0：AI 语音条策略（标记格式 【语音条】 硬编码在 VOICE_NOTE_FRAMEWORK）
     private val keyVoiceNoteStrategy = stringPreferencesKey("voice_note_strategy")
-    // v0.38.0：Agent 进度通知 / 人设主动关心 / token 用量记账
+    // v0.38.0：Agent 进度通知 / token 用量记账
     private val keyAgentNotifyEnabled = booleanPreferencesKey("agent_notify_enabled")
-    private val keyProactiveEnabled = booleanPreferencesKey("proactive_enabled")
-    private val keyProactiveLastDay = longPreferencesKey("proactive_last_day")
+    // v0.54.4：人设主动关心改为**按角色**（旧的两个全局键 proactive_enabled / proactive_last_day 已删除）
+    private val keyPersonaProactive = stringPreferencesKey("persona_proactive")
+    private val keyPersonaProactiveLastDay = stringPreferencesKey("persona_proactive_last_day")
     // v0.53.5：AI 主动打电话
     private val keyAiCallEnabled = booleanPreferencesKey("ai_call_enabled")
     private val keyAiCallTime = stringPreferencesKey("ai_call_time")
@@ -420,6 +421,10 @@ class SettingsRepository(
     private val keyChatWebSearch = stringPreferencesKey("chat_web_search")
     /** v0.53.7：语音通话铃声（自定义音频文件路径；空 = 用系统默认铃声） */
     private val keyCallRingtonePath = stringPreferencesKey("call_ringtone_path")
+    /** v0.54.4：本机添加的铃声库（文件路径，每行一个） */
+    private val keyCallRingtoneLibrary = stringPreferencesKey("call_ringtone_library")
+    /** v0.54.4：每个角色的专属铃声（`id\t路径`） */
+    private val keyPersonaRingtone = stringPreferencesKey("persona_call_ringtone")
     /** v0.53.7：我打给 AI 时，TA 隔几秒才接听（默认 3 秒；0 = 立刻接） */
     private val keyAiAnswerDelay = intPreferencesKey("ai_answer_delay_seconds")
     private val keyUsageMonth = stringPreferencesKey("usage_month")
@@ -803,32 +808,29 @@ class SettingsRepository(
         }
     }
 
-    /** 人设主动关心（默认关：每天晚间最多一条，基于档案与任务情况） */
-    val proactiveEnabled: Flow<Boolean> = store.data.map { it[keyProactiveEnabled] ?: false }
+    // ===== 人设主动关心（v0.38.0；v0.54.4 起**按角色**，只在每个角色的整页里开关）=====
 
-    suspend fun setProactiveEnabled(enabled: Boolean) {
-        store.edit { prefs ->
-            if (enabled) prefs[keyProactiveEnabled] = true else prefs.remove(keyProactiveEnabled)
-        }
+    /** 哪些角色开了「主动关心」（`id\t1`） */
+    val personaProactive: Flow<Map<Long, Boolean>> = store.data.map { prefs ->
+        readIdTable(prefs[keyPersonaProactive]).mapValues { it.value == "1" }
     }
 
-    /** 上次主动关心发送日（epochDay；当天已发过就不再发） */
-    suspend fun proactiveLastDay(): Long = store.data.first()[keyProactiveLastDay] ?: 0L
+    suspend fun setPersonaProactive(personaId: Long, enabled: Boolean) =
+        writeIdTable(keyPersonaProactive, personaId, if (enabled) "1" else "0")
 
-    suspend fun setProactiveLastDay(day: Long) {
-        store.edit { it[keyProactiveLastDay] = day }
-    }
+    /** 该角色上次主动关心的发送日（epochDay；当天已发过就不再发） */
+    suspend fun proactiveLastDayOf(personaId: Long): Long =
+        readIdTable(store.data.first()[keyPersonaProactiveLastDay])[personaId]?.toLongOrNull() ?: 0L
+
+    suspend fun setProactiveLastDayOf(personaId: Long, day: Long) =
+        writeIdTable(keyPersonaProactiveLastDay, personaId, day.toString())
 
     // ===== AI 主动打电话（v0.53.6：**按人设独立配置**）=====
-
-    /** 总开关。默认**关**——打电话比发消息打扰得多，必须用户自己打开 */
-    val aiCallEnabled: Flow<Boolean> = store.data.map { it[keyAiCallEnabled] ?: false }
-
-    suspend fun setAiCallEnabled(enabled: Boolean) {
-        store.edit { prefs ->
-            if (enabled) prefs[keyAiCallEnabled] = true else prefs.remove(keyAiCallEnabled)
-        }
-    }
+    //
+    // v0.54.5：**原来的全局总开关（aiCallEnabled）已删掉** —— 设置里不再有
+    // 「设置 → 通话行为 → AI 主动打电话」这一页，开关改在**每个角色会话的整页设置**里
+    // （「允许主动打电话」卡片，连同时间与阈值一起按角色走）。
+    // 老键 keyAiCallEnabled 只保留给下面 aiCallRules 的**存量推断**读（不再有写入方）。
 
     /**
      * 所有人设的规则（每人设一条，用户没配过的人设不在列表里 = 不允许）。
@@ -1043,15 +1045,60 @@ class SettingsRepository(
         }
     }
 
-    // ===== 语音通话铃声（v0.53.7）=====
+    // ===== 语音通话铃声（v0.53.7；v0.54.4 起支持多个 + 角色专属）=====
 
-    /** 自定义铃声文件路径（空 = 用系统默认铃声）。**来电与去电共用这一个**。 */
+    /** 默认铃声文件路径（空 = 用系统默认铃声）。没给角色设专属铃声时用它。 */
     val callRingtonePath: Flow<String> = store.data.map { it[keyCallRingtonePath] ?: "" }
 
     suspend fun setCallRingtonePath(path: String) = withContext(Dispatchers.IO) {
         store.edit { prefs ->
             if (path.isEmpty()) prefs.remove(keyCallRingtonePath) else prefs[keyCallRingtonePath] = path
         }
+    }
+
+    /** 本机已添加的铃声库（文件路径，每行一个）——设置里那张铃声列表的数据源 */
+    val callRingtoneLibrary: Flow<List<String>> = store.data.map { prefs ->
+        (prefs[keyCallRingtoneLibrary] ?: "").lines().filter { it.isNotBlank() }
+    }
+
+    suspend fun addCallRingtone(path: String) = withContext(Dispatchers.IO) {
+        if (path.isBlank()) return@withContext
+        store.edit { prefs ->
+            val rows = (prefs[keyCallRingtoneLibrary] ?: "").lines()
+                .filter { it.isNotBlank() }.toMutableList()
+            if (path !in rows) rows.add(path)
+            prefs[keyCallRingtoneLibrary] = rows.joinToString("\n")
+        }
+    }
+
+    /** 移出铃声库：同时把「默认铃声」与各角色的引用清掉，不留指向已删文件的死链 */
+    suspend fun removeCallRingtone(path: String) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            val rows = (prefs[keyCallRingtoneLibrary] ?: "").lines()
+                .filter { it.isNotBlank() && it != path }
+            if (rows.isEmpty()) prefs.remove(keyCallRingtoneLibrary)
+            else prefs[keyCallRingtoneLibrary] = rows.joinToString("\n")
+            if ((prefs[keyCallRingtonePath] ?: "") == path) prefs.remove(keyCallRingtonePath)
+            val personaRows = (prefs[keyPersonaRingtone] ?: "").lines()
+                .filter { it.isNotBlank() && it.substringAfter('\t', "") != path }
+            if (personaRows.isEmpty()) prefs.remove(keyPersonaRingtone)
+            else prefs[keyPersonaRingtone] = personaRows.joinToString("\n")
+        }
+    }
+
+    /** 各角色的专属铃声（`id\t路径`） */
+    val personaRingtone: Flow<Map<Long, String>> =
+        store.data.map { readIdTable(it[keyPersonaRingtone]) }
+
+    /** 传空字符串 = 该角色恢复用默认铃声 */
+    suspend fun setPersonaRingtone(personaId: Long, path: String) =
+        writeIdTable(keyPersonaRingtone, personaId, path)
+
+    /** 这个角色打电话时放哪个铃声：角色专属 → 设置里的默认铃声 → 空（= 系统默认铃声） */
+    suspend fun ringtoneForPersona(personaId: Long): String {
+        val own = personaRingtone.first()[personaId]
+        if (!own.isNullOrBlank()) return own
+        return callRingtonePath.first()
     }
 
     /**

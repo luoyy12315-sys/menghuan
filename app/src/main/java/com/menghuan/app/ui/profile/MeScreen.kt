@@ -1,9 +1,12 @@
 package com.menghuan.app.ui.profile
 
 import android.net.Uri
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +23,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -30,12 +35,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -70,6 +78,8 @@ import com.menghuan.app.ui.settings.DataStats
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
+import com.menghuan.app.ui.theme.NeuHairline
+import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.TextPrimary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -515,12 +525,17 @@ fun ProfileScreen(
  * 我的 · AI 图库（v0.40.0）：完整生成记录列表——成功的带缩略图，失败的带标记；
  * 每条记录展示生成时间、画面提示词、使用的生图模型、发起会话。
  * 数据源 = image_generations 表（成功/失败都留痕）；成功但文件已不在磁盘的标「已丢失」。
+ *
+ * v0.54.3：**长按一条记录 → 右下角菜单 → 删除**（删记录 + 删本机图片文件）。
  */
 @Composable
 fun GalleryScreen(onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as MenghuanApp
     var records by remember { mutableStateOf<List<com.menghuan.app.data.model.ImageGenerationRecord>>(emptyList()) }
     var viewerPath by remember { mutableStateOf<String?>(null) }
+    var menuRecord by remember { mutableStateOf<com.menghuan.app.data.model.ImageGenerationRecord?>(null) }
+    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         records = runCatching {
             // 懒回填（v0.40.1）：记录表为空时，把老版本生成的图片从消息表补录为"成功"记录
@@ -563,12 +578,44 @@ fun GalleryScreen(onBack: () -> Unit) {
         } else {
             Spacer(Modifier.height(8.dp))
             records.forEach { record ->
-                GenerationRecordRow(
-                    record = record,
-                    onClick = if (record.success && java.io.File(record.imagePath).exists()) {
-                        { viewerPath = record.imagePath }
-                    } else null,
-                )
+                // 长按菜单锚点：菜单包在条目右下角的小 Box 里（Popup 锚定直接父节点）
+                Box(Modifier.fillMaxWidth()) {
+                    GenerationRecordRow(
+                        record = record,
+                        onClick = if (record.success && java.io.File(record.imagePath).exists()) {
+                            { viewerPath = record.imagePath }
+                        } else null,
+                        onLongClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            menuRecord = record
+                        },
+                    )
+                    Box(Modifier.align(Alignment.BottomEnd).size(1.dp)) {
+                        DropdownMenu(
+                            expanded = menuRecord?.id == record.id,
+                            onDismissRequest = { menuRecord = null },
+                            modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(14.dp)),
+                            containerColor = NeuSurface,
+                            shape = RoundedCornerShape(14.dp),
+                            shadowElevation = 0.dp, // v0.42.1 全应用去阴影
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("删除", fontSize = 14.sp, color = NeuDanger) },
+                                onClick = {
+                                    menuRecord = null
+                                    // 删记录 + 删本机文件；成功后重新拉取列表
+                                    scope.launch {
+                                        runCatching {
+                                            java.io.File(record.imagePath).takeIf { it.exists() }?.delete()
+                                            app.db.imageGenerationDao().deleteById(record.id)
+                                            records = app.db.imageGenerationDao().getAll()
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
             }
             Spacer(Modifier.height(8.dp))
         }
@@ -579,21 +626,21 @@ fun GalleryScreen(onBack: () -> Unit) {
 }
 
 /** 单条生成记录：缩略图（失败=灰面标记）+ 提示词 + 时间 / 模型 / 会话 + 成败标签 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun GenerationRecordRow(record: com.menghuan.app.data.model.ImageGenerationRecord, onClick: (() -> Unit)?) {
+private fun GenerationRecordRow(
+    record: com.menghuan.app.data.model.ImageGenerationRecord,
+    onClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)? = null,
+) {
     Row(
         Modifier
             .fillMaxWidth()
-            .then(
-                if (onClick != null) {
-                    Modifier.clickable(
-                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                        indication = null,
-                        onClick = onClick,
-                    )
-                } else {
-                    Modifier
-                }
+            .combinedClickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = { onClick?.invoke() },
+                onLongClick = { onLongClick?.invoke() },
             )
             .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
