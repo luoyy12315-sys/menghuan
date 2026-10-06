@@ -15,21 +15,32 @@ import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.llm.OpenAiClient
 import kotlinx.coroutines.flow.first
 
+/** 主动关心的默认随机时间段（v0.56.8）：20:00–23:00 */
+const val DEFAULT_PROACTIVE_WINDOW_START = "20:00"
+const val DEFAULT_PROACTIVE_WINDOW_END = "23:00"
+
 /**
- * 人设主动关心（v0.38.0）：每晚 20:30 由 ProactiveReceiver 触发，
- * 让最常聊的人设以自己的口吻主动发一条消息进会话，并推送通知。
+ * 人设主动关心（v0.38.0；**v0.56.8 改成"随机时刻 + 时间感知 + 每天条数自定义"**）。
  *
- * 约束：
- * - **按角色开关**（v0.54.4：在每个人设的整页里，默认关），只有开了的角色才会轮到；
- * - **每个角色每天最多一条**（persona_proactive_last_day 按 id 记 epochDay 去重），
- *   API 配置齐全、生成成功时才落库——宁缺毋滥，绝不打扰；
- * - 内容基于档案 + 近 7 天任务情况，硬约束 60 字内、自然口吻、不解释"我在执行任务"。
+ * 机制：
+ * - **每个角色一套**（v0.56.8 第二批）：各自的时间段（起–止，默认 20:00–23:00）
+ *   与**每天最多几条**（默认 1）、各自的开关 —— 所以是**每个角色一颗闹钟**，互不干扰；
+ * - "最多几条"是**上限不是定额**：当天第一次要发时，在 `1..上限` 里**随机摇一个数**当今天的计划，
+ *   当天就按这个数发完，不超过上限就行（今天设 5 条，可能只来 2 条）；
+ * - 每次到点发完，**在剩下的窗口里再随机取一个时刻**排下一次；
+ *   窗口过完了（或今天的计划条数发完了）就排到明天的窗口 —— "什么时候来"是随机的，不是准点打卡；
+ * - 内容交给模型，并**把当前时间告诉它**（现在是几点 + 早上/中午/下午/晚上/深夜），
+ *   让它说贴合时间的话（早上问候早、深夜轻声）；
+ * - 一轮只服务**这一个角色**（闹钟上带着人设 id）；老版本那条全局闹钟没有 id，
+ *   走兼容分支：所有开了开关的角色里挑一个 —— 今天发得最少、其次最久没发过的优先；
+ * - 每次都要 API 配置齐全、生成成功才落库与计数 —— 宁缺毋滥，绝不打扰。
  */
 object ProactiveChat {
 
     private const val SYSTEM_INSTRUCTION =
-        "请以你的人设身份，主动给用户发今晚的一条消息。" +
-            "结合下面给出的用户档案与最近任务完成情况，自然地表达关心、问候或轻轻的推动：" +
+        "请以你的人设身份，主动给用户发一条消息。" +
+            "结合下面给出的**当前时间**、用户档案与最近任务完成情况，自然地表达关心、问候或轻轻的推动：" +
+            "该问候早的时候就说早，到深夜就轻声一点、不要再安排白天的事；" +
             "聊得好就顺着聊，任务落下了就温和地提一句，不要指责。" +
             "硬性要求：不超过 60 字；只输出这一条消息本身，不要任何解释、列表、标题或 emoji 堆砌；" +
             "不要出现「我注意到系统显示」这类出戏措辞。"
@@ -38,13 +49,102 @@ object ProactiveChat {
     private const val CHANNEL_ID = "proactive_greeting"
     private const val NOTIFICATION_ID = 2_000_000_006
 
+    private const val DAY_MS = 24 * 60 * 60 * 1000L
+
+    /**
+     * 下一次该在什么时候发：在 `[startHhmm]–[endHhmm]` 这个窗口里**随机取一个时刻**。
+     *
+     * - 窗口跨零点（止 ≤ 起）按"到第二天"处理，例如 23:00–01:00；
+     * - 今天窗口还早 → 整个窗口里随机；已经在窗口里 → 从"现在 + 1 分钟"到窗口结束之间随机；
+     * - 窗口已经过完（或剩下的不足 1 分钟）→ 顺延到明天同窗口。
+     *
+     * 纯函数（`now` 与 `random` 都作参数传进来），可单测。
+     */
+    fun nextFireAt(
+        now: Long,
+        startHhmm: String,
+        endHhmm: String,
+        random: java.util.Random = java.util.Random(),
+        zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+    ): Long {
+        val startMin = AiCallLogic.minuteOfDayOf(startHhmm) ?: (20 * 60)
+        val rawEnd = AiCallLogic.minuteOfDayOf(endHhmm) ?: (23 * 60)
+        // 止 ≤ 起 = 跨零点：把"止"挪到第二天，后面用绝对时刻计算，不再受分钟数回绕影响
+        val endMin = if (rawEnd <= startMin) rawEnd + 24 * 60 else rawEnd
+        val dayStart = java.time.LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
+        var winStart = dayStart + startMin * 60_000L
+        var winEnd = dayStart + endMin * 60_000L
+        repeat(2) {
+            if (winEnd > now + 60_000L) {
+                val lo = maxOf(winStart, now + 60_000L)
+                if (winEnd > lo) {
+                    return lo + (random.nextDouble() * (winEnd - lo)).toLong()
+                }
+            }
+            winStart += DAY_MS
+            winEnd += DAY_MS
+        }
+        return winStart
+    }
+
+    /**
+     * 按**每个角色自己**的时间段**随机**排下一次（v0.56.8 第二批）。
+     *
+     * 开了开关的角色各排一颗；关掉的（表里值为 0）把它的闹钟摘掉。
+     * 三个调用点（App 启动 / 开机重排 / 到点自排）都用它，省得各自读配置。
+     */
+    suspend fun scheduleNext(settings: SettingsRepository, context: Context) {
+        // v0.56.7 及更早那条**全局**闹钟（不带人设 id）先摘掉，免得和按角色的闹钟重复触发
+        runCatching { com.menghuan.app.notify.AlarmScheduler.cancelProactive(context) }
+        settings.personaProactive.first().forEach { (id, on) ->
+            runCatching {
+                if (on) {
+                    val (start, end) = settings.proactiveWindow(id).first()
+                    com.menghuan.app.notify.AlarmScheduler
+                        .scheduleProactiveForPersona(context, id, start, end)
+                } else {
+                    com.menghuan.app.notify.AlarmScheduler.cancelProactiveForPersona(context, id)
+                }
+            }
+        }
+    }
+
+    /**
+     * 只重排**这一个角色**的闹钟（设置页里开关一拨、时间段/条数一改就调它）：
+     * 开着就按它自己的窗口重新随机排一次，关着就把闹钟摘掉。
+     */
+    suspend fun schedulePersona(settings: SettingsRepository, context: Context, personaId: Long) {
+        runCatching { com.menghuan.app.notify.AlarmScheduler.cancelProactive(context) }
+        runCatching {
+            val on = settings.personaProactive.first()[personaId] == true
+            if (on) {
+                val (start, end) = settings.proactiveWindow(personaId).first()
+                com.menghuan.app.notify.AlarmScheduler
+                    .scheduleProactiveForPersona(context, personaId, start, end)
+            } else {
+                com.menghuan.app.notify.AlarmScheduler.cancelProactiveForPersona(context, personaId)
+            }
+        }
+    }
+
     /**
      * 执行一次主动关心流程。全程静默：任何前置不满足都直接返回，不报错不打扰。
+     *
+     * @param onlyPersonaId 这一枪打给谁（闹钟上带的人设 id）；-1 = 老版本那条全局闹钟，
+     *                      退回"所有开了开关的角色里挑一个"。
      * @return true = 本次真的生成并落库了一条消息
      */
-    suspend fun maybeGreet(db: AppDatabase, settingsRepository: SettingsRepository, context: Context): Boolean {
-        // v0.54.4：改为**按角色**——逐个检查开了「主动关心」的人设，每人每天最多一条
-        val enabled = settingsRepository.personaProactive.first().filterValues { it }.keys
+    suspend fun maybeGreet(
+        db: AppDatabase,
+        settingsRepository: SettingsRepository,
+        context: Context,
+        onlyPersonaId: Long = -1L,
+    ): Boolean {
+        val enabled = if (onlyPersonaId >= 0L) {
+            setOf(onlyPersonaId)
+        } else {
+            settingsRepository.personaProactive.first().filterValues { it }.keys
+        }
         if (enabled.isEmpty()) return false
 
         val api = settingsRepository.apiConfig.first()
@@ -55,15 +155,43 @@ object ProactiveChat {
             .filter { it.id != MENTOR_PERSONA_ID && it.id in enabled }
         if (personas.isEmpty()) return false
 
-        // 上下文：档案（长期画像）+ 近 7 天任务完成情况（所有角色共读一份）
+        // ① 各自的额度：每个角色自己的"今天已发 / 今天计划"（计划条数 = 在 1..上限 里随机摇的）
+        val counts = HashMap<Long, Int>()
+        val plans = HashMap<Long, Int>()
+        personas.forEach { p ->
+            counts[p.id] = settingsRepository.proactiveSentTodayOf(p.id, today)
+            plans[p.id] = settingsRepository.proactivePlannedToday(
+                p.id, today, settingsRepository.proactiveDailyLimit(p.id).first(),
+            )
+        }
+        val pending = personas.filter { (counts[it.id] ?: 0) < (plans[it.id] ?: 1) }
+        if (pending.isEmpty()) return false // 今天的计划条数已经发完 → 明天的窗口再见
+
+        // ② 这一轮挑谁（多角色时也适用）：今天发得最少、其次最久没发过的（并列时随机）
+        val lastDays = pending.associate { it.id to settingsRepository.proactiveLastDayOf(it.id) }
+        val target = pending.shuffled()
+            .minWithOrNull(compareBy({ counts[it.id] ?: 0 }, { lastDays[it.id] ?: 0L }))
+            ?: return false
+
+        // 上下文：**当前时间**（v0.56.8 加，让它说贴合时间的话）+ 档案 + 近 7 天未完成任务
         val facts = db.profileFactDao().observeAll().first()
         val zone = java.time.ZoneId.systemDefault()
+        val clock = java.time.LocalTime.now(zone)
+        val hhmm = String.format(java.util.Locale.US, "%02d:%02d", clock.hour, clock.minute)
+        val period = when (clock.hour) {
+            in 5..10 -> "早上"
+            in 11..13 -> "中午"
+            in 14..17 -> "下午"
+            in 18..22 -> "晚上"
+            else -> "深夜"
+        }
         val weekAgo = java.time.LocalDate.now(zone).minusDays(7)
             .atStartOfDay(zone).toInstant().toEpochMilli()
         val tasks = db.taskDao().observeAll().first()
             .filter { !it.isDone && (it.dueAt == 0L || it.dueAt >= weekAgo) }
             .take(8)
         val userContext = buildString {
+            append("【现在的时间】").append(hhmm).append("（").append(period).append("）\n\n")
             append("【用户档案】")
             if (facts.isEmpty()) append("暂无")
             else facts.take(10).forEach { append("\n- ").append(it.key).append("：").append(it.value) }
@@ -73,27 +201,23 @@ object ProactiveChat {
             append("\n\n请直接输出这条主动消息：")
         }
 
-        var sent = false
-        for (persona in personas) {
-            if (settingsRepository.proactiveLastDayOf(persona.id) == today) continue
-            val reply = runCatching {
-                OpenAiClient(api.baseUrl, api.apiKey, api.model)
-                    .collectReply(
-                        persona.systemPrompt,
-                        listOf(ChatMessage(conversationId = 0, isFromUser = true, content = userContext)),
-                    )
-            }.getOrNull() ?: continue
-            val text = reply.text.trim()
-            if (text.isEmpty()) continue
+        val reply = runCatching {
+            OpenAiClient(api.baseUrl, api.apiKey, api.model)
+                .collectReply(
+                    target.systemPrompt,
+                    listOf(ChatMessage(conversationId = 0, isFromUser = true, content = userContext)),
+                )
+        }.getOrNull() ?: return false
+        val text = reply.text.trim()
+        if (text.isEmpty()) return false
 
-            db.messageDao().insert(
-                ChatMessage(conversationId = persona.id, isFromUser = false, content = text)
-            )
-            settingsRepository.setProactiveLastDayOf(persona.id, today)
-            notify(context, persona.id, persona.name, text)
-            sent = true
-        }
-        return sent
+        db.messageDao().insert(
+            ChatMessage(conversationId = target.id, isFromUser = false, content = text)
+        )
+        val sent = (counts[target.id] ?: 0) + 1
+        settingsRepository.setProactiveToday(target.id, today, sent, plans[target.id] ?: 1)
+        notify(context, target.id, target.name, text)
+        return true
     }
 
     private fun notify(context: Context, personaId: Long, personaName: String, preview: String) {
@@ -103,14 +227,14 @@ object ProactiveChat {
         ) return
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "人设主动关心", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "人设每天最多一条的主动问候（可在通知设置关闭）"
+                description = "人设在随机时间发来的主动问候（每天条数可在角色的「主动关心」里设）"
             }
         )
         val home = Intent(Intent.ACTION_VIEW, Uri.parse("menghuan://open/chatList"), context, MainActivity::class.java)
         val chat = Intent(Intent.ACTION_VIEW, Uri.parse("menghuan://chat/$personaId"), context, MainActivity::class.java)
         val contentIntent = PendingIntent.getActivities(
             context,
-            NOTIFICATION_ID,
+            NOTIFICATION_ID + (personaId % 1000L).toInt(),
             arrayOf(home, chat),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -122,6 +246,6 @@ object ProactiveChat {
             .setContentIntent(contentIntent)
             .setAutoCancel(true)
             .build()
-        runCatching { manager.notify(NOTIFICATION_ID, notification) }
+        runCatching { manager.notify(NOTIFICATION_ID + (personaId % 1000L).toInt(), notification) }
     }
 }

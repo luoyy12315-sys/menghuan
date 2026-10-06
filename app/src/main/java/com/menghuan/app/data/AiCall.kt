@@ -57,12 +57,15 @@ object AiCall {
     /**
      * 发起一次来电（v0.53.6：**按人设**）。返回 true = 真的响了（开场白也生成好了）。
      *
-     * 这里只做"最后一道兜底校验"：这个人的规则、静默时段、每人设每天一次的频率。
-     * 时机判定（到点 + 好久没聊）在 [com.menghuan.app.notify.AiCallReceiver] 里已经做过。
-     *
      * ⚠️ v0.54.5：**总开关已删掉** —— 设置里不再有「AI 主动打电话」这一页，改成
      * **每个角色自己的开关**（会话设置页的卡片）。所以这里只看**该角色的 rule.enabled**，
      * 不再有"全局关着就全体不打"这道门槛。
+     *
+     * v0.56.6 新增两路参数，服务「**定时电话**」：
+     * - [instructionOverride]：这一通要说的内容（定时电话那一条里写的），优先于规则里的 instruction；
+     * - [byExplicitSchedule]：**用户按时间点自己配的那一通** —— 时间是他定的，
+     *   所以只受两个开关管（`允许主动打电话` + `定时电话`），
+     *   **不看静默时段、也不占"每天一次"的名额**（他可能一天配两条）。
      */
     suspend fun ring(
         context: Context,
@@ -70,6 +73,8 @@ object AiCall {
         settings: SettingsRepository,
         personaId: Long,
         reason: AiCallReason,
+        instructionOverride: String? = null,
+        byExplicitSchedule: Boolean = false,
     ): Boolean {
         if (personaId <= 0L) return false
 
@@ -83,7 +88,10 @@ object AiCall {
         val rule = runCatching { settings.aiCallRules.first() }
             .getOrDefault(emptyList())
             .firstOrNull { it.personaId == personaId }
-        if (!requested) {
+        if (byExplicitSchedule) {
+            // 定时电话：两个开关都得开着（允许主动打电话 + 定时电话），其余一律放行
+            if (rule == null || !rule.enabled || !rule.scheduledEnabled) return false
+        } else if (!requested) {
             if (rule == null || !rule.enabled) return false
             val now = System.currentTimeMillis()
             if (AiCallLogic.inQuietHours(AiCallLogic.minuteOfDayAt(now))) return false
@@ -94,14 +102,15 @@ object AiCall {
         val api = runCatching { settings.apiConfig.first() }.getOrNull() ?: return false
         if (!api.isComplete) return false
 
+        val instruction = instructionOverride?.takeIf { it.isNotBlank() } ?: rule?.instruction.orEmpty()
         val persona = runCatching { db.personaDao().getById(personaId) }.getOrNull() ?: return false
         val greeting = runCatching {
-            generateGreeting(db, api, persona, rule?.instruction.orEmpty())
+            generateGreeting(db, api, persona, instruction)
         }.getOrNull() ?: return false
         if (greeting.isBlank()) return false
 
-        // 只有"AI 自己决定打的"才占每天一次的名额；用户点名的不占
-        if (!requested) {
+        // 只有"AI 自己决定打的"才占每天一次的名额；用户点名的、用户自己排的定时电话都不占
+        if (!requested && !byExplicitSchedule) {
             runCatching { settings.markAiCallDone(personaId, java.time.LocalDate.now().toEpochDay()) }
         }
         postIncomingCall(context, persona.id, persona.name, greeting)
@@ -109,18 +118,34 @@ object AiCall {
     }
 
     /**
-     * App 启动 / 开机 / 覆盖安装后重排闹钟：**逐个启用了的人设**各排一个。
+     * App 启动 / 开机 / 覆盖安装后重排闹钟。
      * **只排闹钟、不发任何请求** —— 与"进程启动不主动打 LLM"的既有约定一致。
      *
-     * v0.54.5：总开关删掉后，这里不再有"全局关着就全不排"的分支 —— 开关就在各个角色的
-     * 规则里（[AiCallRule.enabled]），只要那个角色自己开着就排。
+     * v0.54.5：总开关删掉后，这里不再有"全局关着就全不排"的分支 —— 开关就在各个角色的规则里。
+     *
+     * v0.56.6：加排「**定时电话**」那一条条（每人设几条就排几个，与定时消息同一套闹钟机制）。
+     * v0.56.7：「**主动电话**」的"每天检查一次"闹钟也回来 ——
+     * 触发条件是**用户自定义的「X 天未聊天则主动拨打」**（`AiCallRule.idleDays`）。
      */
     suspend fun rearm(settings: SettingsRepository, context: Context) {
-        settings.aiCallRules.first()
-            .filter { it.enabled }
-            .forEach {
-                com.menghuan.app.notify.AlarmScheduler
-                    .scheduleAiCallForPersona(context, it.personaId, it.time)
+        val rules = runCatching { settings.aiCallRules.first() }.getOrDefault(emptyList())
+
+        // ① 主动电话：每天几点检查一次（到点再看 X 天未聊天这条）
+        rules.filter { it.enabled }.forEach { rule ->
+            com.menghuan.app.notify.AlarmScheduler
+                .scheduleAiCallForPersona(context, rule.personaId, rule.time)
+        }
+
+        // ② 定时电话：每条一个闹钟
+        val scheduled = runCatching { settings.scheduledMessages.first() }.getOrDefault(emptyList())
+        scheduled
+            .filter { it.kind == KIND_SCHEDULED_CALL && it.enabled }
+            .forEach { call ->
+                val rule = rules.firstOrNull { it.personaId == call.personaId }
+                if (rule?.enabled == true && rule.scheduledEnabled) {
+                    com.menghuan.app.notify.AlarmScheduler
+                        .scheduleScheduledMessage(context, call.id, call.time)
+                }
             }
     }
 

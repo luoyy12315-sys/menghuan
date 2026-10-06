@@ -6,12 +6,14 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,6 +54,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -77,6 +80,7 @@ import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.common.NeuPressSpec
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
@@ -207,7 +211,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                         NeuSectionTitle("每日任务", modifier = Modifier.padding(top = 10.dp))
                     }
                     itemsIndexed(dailyTasks, key = { _, t -> t.id }) { index, task ->
-                        Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                        Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                             TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                         }
                     }
@@ -222,7 +226,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                         NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(start = 4.dp))
                     }
                     itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
-                        Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                        Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                             TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                         }
                     }
@@ -232,7 +236,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                         NeuSectionTitle("明天", modifier = Modifier.padding(start = 4.dp))
                     }
                     itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
-                        Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                        Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                             TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                         }
                     }
@@ -242,7 +246,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                         NeuSectionTitle("以后", modifier = Modifier.padding(start = 4.dp))
                     }
                     itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
-                        Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                        Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                             TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                         }
                     }
@@ -253,7 +257,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                         NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp))
                     }
                     itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
-                        Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                        Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                             TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                         }
                     }
@@ -271,7 +275,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (dailyTasks.isNotEmpty()) {
                 item { NeuSectionTitle("每日任务", modifier = Modifier.padding(top = 10.dp)) }
                 itemsIndexed(dailyTasks, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -283,7 +287,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (todayTasks.isNotEmpty()) {
                 item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -291,7 +295,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (tomorrowTasks.isNotEmpty()) {
                 item { NeuSectionTitle("明天", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -299,7 +303,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (laterTasks.isNotEmpty()) {
                 item { NeuSectionTitle("以后", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -308,7 +312,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
             if (overdue.isNotEmpty()) {
                 item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
-                    Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 45).coerceAtMost(320)), placementSpec = TaskPlacementSpring)) {
+                    Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
                         TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
                     }
                 }
@@ -691,13 +695,24 @@ private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Uni
                 },
             ),
     ) {
+        // v0.55.0：任务行补**按压缩放**。注释里写着"反馈靠卡片按压与勾选动画"，
+        // 但按压那半个从来没做 —— 点一下只有勾选圈动，整行是"死"的。
+        // 现在整行跟着按下缩到 0.975（与会话列表行同一手感），点哪都算数。
+        val rowPress = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+        val rowScale by animateFloatAsState(
+            targetValue = if (rowPress.collectIsPressedAsState().value) 0.975f else 1f,
+            animationSpec = NeuPressSpec,
+            label = "taskRowPress",
+        )
         Row(
-            Modifier.combinedClickable(
-                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                indication = null, // 无涟漪：长按/点击反馈靠卡片按压与勾选动画
-                onClick = toggleWithHaptic,
-                onLongClick = onLongPress,
-            ),
+            Modifier
+                .scale(rowScale)
+                .combinedClickable(
+                    interactionSource = rowPress,
+                    indication = null, // 无涟漪：长按/点击反馈靠卡片按压与勾选动画
+                    onClick = toggleWithHaptic,
+                    onLongClick = onLongPress,
+                ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             NeuCheckCircle(checked = done, onToggle = toggleWithHaptic)

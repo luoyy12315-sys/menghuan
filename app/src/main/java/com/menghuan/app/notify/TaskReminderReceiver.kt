@@ -349,8 +349,8 @@ class BootReceiver : BroadcastReceiver() {
                 }
                 // 每日总结（21:30）重排；开关在 Receiver 内复查
                 AlarmScheduler.scheduleDailySummary(context)
-                // 人设主动关心（20:30）重排；开关在 Receiver 内复查（v0.38.0）
-                AlarmScheduler.scheduleProactive(context)
+                // 人设主动关心重排（v0.56.8：在用户设的时间段里随机取时刻）；开关在 Receiver 内复查
+                com.menghuan.app.data.ProactiveChat.scheduleNext(app.settingsRepository, context)
                 // AI 周报闹钟重排 + 上周缺报补生成（如周末没开机）
                 AlarmScheduler.scheduleWeeklyReport(context)
                 val monday = java.time.LocalDate.now().with(java.time.DayOfWeek.MONDAY)
@@ -373,20 +373,28 @@ class BootReceiver : BroadcastReceiver() {
 }
 
 /**
- * 人设主动关心（v0.38.0）：每晚 20:30 触发一次。
- * 开关在 data/ProactiveChat.maybeGreet 内复查（默认关：关了就静默，明天照排不丢调度），
- * 当天已发过（proactive_last_day）同样静默。
+ * 人设主动关心（v0.38.0；v0.56.8 改成随机时刻，**第二批起每个角色一颗闹钟**）。
+ *
+ * 闹钟上带着人设 id（[AlarmScheduler.EXTRA_PROACTIVE_PERSONA]）→ 只服务这一个角色；
+ * 老版本那条全局闹钟没有 id（-1）→ 退回"所有开了开关的角色里挑一个"的兼容分支。
+ * 开关在 data/ProactiveChat.maybeGreet 内复查（默认关：关了就静默，闹钟照排不丢调度），
+ * 当天计划条数发完了同样静默。
  */
 class ProactiveReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val pending = goAsync()
+        val personaId = intent.getLongExtra(AlarmScheduler.EXTRA_PROACTIVE_PERSONA, -1L)
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                // 明天的先排上（三重自愈：App 启动 / BootReceiver / 到点自排）
-                AlarmScheduler.scheduleProactive(context)
                 val app = context.applicationContext as MenghuanApp
-                runCatching { ProactiveChat.maybeGreet(app.db, app.settingsRepository, context) }
+                // 下一次先排上（三重自愈：App 启动 / BootReceiver / 到点自排）；
+                // v0.56.8：下一次同样是**随机时刻**（今天窗口没用完就还在今天）
+                runCatching {
+                    if (personaId >= 0L) ProactiveChat.schedulePersona(app.settingsRepository, context, personaId)
+                    else ProactiveChat.scheduleNext(app.settingsRepository, context)
+                }
+                runCatching { ProactiveChat.maybeGreet(app.db, app.settingsRepository, context, personaId) }
             } finally {
                 pending.finish()
             }

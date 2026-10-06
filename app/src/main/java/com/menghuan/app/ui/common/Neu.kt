@@ -28,12 +28,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,12 +51,16 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import com.menghuan.app.ui.theme.AccentBrush
 import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.theme.FaintText
@@ -85,6 +93,49 @@ val NeuSnappySpring = spring<Float>(
     dampingRatio = Spring.DampingRatioLowBouncy,
     stiffness = Spring.StiffnessMedium,
 )
+
+// ===== 错峰入场（v0.55.0）=====
+
+/**
+ * 整页 / 整组内容的**错峰入场进度**：0 → 1，按 [index] 依次延后 [stepMs] 起步。
+ *
+ * 为什么需要它：设置页、会话设置页这类"一屏十几行"的页面，整块内容在同一帧出现，
+ * 与 push 页面的 420ms 横向滑入叠在一起就是"内容啪地糊上来"。按行错峰抬起后，
+ * 页面是"铺开"的，而不是"弹出"的。
+ *
+ * 只在**首次组合**跑一次（`LaunchedEffect(Unit)`）：后续因状态变化重组不会重播，
+ * 否则每次开关一抖整页都要再飘一遍。
+ *
+ * 进度值走 [animateFloatAsState]，每帧只更新 `graphicsLayer`，**不触发条目重组**。
+ */
+@Composable
+fun staggerProgress(index: Int, stepMs: Int = 24, durationMs: Int = 260): Float {
+    var started by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (index > 0) delay((index * stepMs).toLong())
+        started = true
+    }
+    return animateFloatAsState(
+        targetValue = if (started) 1f else 0f,
+        animationSpec = tween(durationMs, easing = EaseOutQuart),
+        label = "stagger$index",
+    ).value
+}
+
+/**
+ * 把 [staggerProgress] 接到渲染层：淡入 + 上滑 [slideDp]。
+ * 用 `graphicsLayer` 而不是 `Modifier.offset/alpha` —— 前者在渲染期生效，
+ * 动画期间不产生任何重组。
+ */
+@Composable
+fun Modifier.staggerEnter(index: Int, stepMs: Int = 24, slideDp: Dp = 10.dp): Modifier {
+    val progress = staggerProgress(index, stepMs)
+    val slide = with(LocalDensity.current) { slideDp.toPx() }
+    return this.graphicsLayer {
+        alpha = progress
+        translationY = (1f - progress) * slide
+    }
+}
 
 /**
  * 按压态参数：按下整体微缩（0.96）+ 弹簧回弹，Figma 式"按下去会弹回来"。
@@ -327,6 +378,8 @@ fun NeuTextField(
     singleLine: Boolean = true,
     minLines: Int = 1,
     maxLines: Int = if (singleLine) 1 else 5,
+    /** 软键盘类型（v0.56.6）：纯数字字段传 [KeyboardType.Number]，默认文本键盘 */
+    keyboardType: KeyboardType = KeyboardType.Text,
 ) {
     Column(modifier) {
         if (label != null) {
@@ -355,6 +408,7 @@ fun NeuTextField(
                 singleLine = singleLine,
                 maxLines = maxLines,
                 minLines = minLines,
+                keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
                 cursorBrush = SolidColor(NeuAccent),
                 decorationBox = { inner ->
                     Box(contentAlignment = Alignment.CenterStart) {
@@ -460,11 +514,17 @@ fun NeuSwitch(
     modifier: Modifier = Modifier,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val knobOffset by animateDpAsState(
-        targetValue = if (checked) 20.dp else 3.dp,
+    // v0.55.0：滑块位移从 `animateDpAsState` + `offset` 改成 **animateFloat + graphicsLayer**。
+    // `animateDpAsState` 每帧产生新的 Dp，`offset` 又是个布局修饰符 —— 于是拨一次开关
+    // 要重新布局 220ms（约 13 帧）。开关遍布设置链，拨起来就是在白烧布局帧。
+    // `graphicsLayer` 的 translationX 走渲染层，同一个 220ms 里**一次布局都不做**。
+    // 终点位移仍是 17dp（46dp 轨 − 3dp 左内边距 − 21dp 钮 − 5dp 右内边距 与原实现一致）。
+    val knobShiftDp by animateFloatAsState(
+        targetValue = if (checked) 17f else 0f,
         animationSpec = tween(220, easing = EaseOutQuart),
-        label = "knobOffset",
+        label = "knobShift",
     )
+    val knobShiftPx = with(LocalDensity.current) { knobShiftDp.dp.toPx() }
     val trackColor by animateColorAsStateFast(checked)
     val knobFill = NeuSurface
     val knobHairline = NeuHairline
@@ -480,7 +540,8 @@ fun NeuSwitch(
     ) {
         Box(
             Modifier
-                .offset(x = knobOffset, y = 3.dp)
+                .offset(x = 3.dp, y = 3.dp)
+                .graphicsLayer { translationX = knobShiftPx }
                 .size(21.dp)
                 .background(knobFill, CircleShape)
                 .drawBehind {
@@ -647,6 +708,9 @@ fun NeuSheetScaffold(
     ) {
         Column(
             Modifier
+                // v0.55.0：弹层内容跟着"抬起"一档（淡入 + 上滑 10dp），
+                // 与底栏滑入的弹簧叠在一起，不再是"框先到、内容后到"的两段观感
+                .staggerEnter(0, slideDp = 12.dp)
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 34.dp)
                 .fillMaxWidth()

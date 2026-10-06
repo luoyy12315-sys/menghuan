@@ -8,6 +8,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -37,6 +38,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -67,8 +69,10 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
@@ -76,6 +80,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -85,17 +90,23 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.menghuan.app.ui.theme.AccentInk
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -114,6 +125,7 @@ import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuCircleButton
 import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuSheetScaffold
+import com.menghuan.app.ui.common.NeuSnappySpring
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuRowPress
@@ -200,10 +212,22 @@ fun ChatScreen(
         .collectAsState(initial = emptyMap())
     val myBackground = chatBackgrounds[personaId] ?: ""
 
+    /**
+     * v0.55.0：气泡在屏幕中的位置改用**普通容器**记录，不再用 state。
+     *
+     * 原实现是「每个条目各自 `remember { mutableStateOf<Rect?>() }` + `onGloballyPositioned` 里写它」——
+     * 而 `onGloballyPositioned` 在滚动时**每一帧**都会回调（条目在窗口中的位置一直在变），
+     * 于是每个可见条目每帧写一次 state → 每帧重组一次。消息一多，滚动就是这么被拖垮的。
+     *
+     * 这份坐标只在**长按那一刻**读一次（菜单要贴着气泡弹），压根不需要可观测，
+     * 用普通 HashMap 就够：滚动期间零 state 写入、零重组。
+     */
+    val bubbleBounds = remember { HashMap<Any, Rect>() }
+
     /** v0.54.7：长按弹消息菜单统一补一次震动（与全局"长按补一次震动反馈"的约定一致） */
-    val openMessageMenu: (ChatMessage, Rect?) -> Unit = { msg, bounds ->
+    val openMessageMenu: (ChatMessage, Any) -> Unit = { msg, rowKey ->
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-        messageMenuAnchor = bounds
+        messageMenuAnchor = bubbleBounds[rowKey]
         messageMenu = msg
     }
     // 自定义表情（v0.43.0）：库表 → 面板真实数据源
@@ -240,7 +264,12 @@ fun ChatScreen(
             playingVoiceId = null
         }
     }
-    // 发图给 AI 看（v0.38.0）：选图 → 拷进应用私有目录 → 以当前输入为字幕发出
+    // 发图 / 发文件（v0.56.6 改成**先挂到输入框上方**）：
+    // 选中后不再立刻发出去，而是把它们停在输入栏上方（可继续写文字一起发，也可以直接点发送），
+    // 右侧 ✕ 丢掉。问过的口径：用户明确要"先停留、等输入文字后再发送，或支持直接发送"。
+    var pendingAttachment by remember { mutableStateOf<PendingAttachment?>(null) }
+
+    // 相册（v0.38.0）：选图 → 拷进应用私有目录 → 挂成待发送（不再立刻发）
     val imagePicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetContent(),
     ) { uri ->
@@ -248,7 +277,14 @@ fun ChatScreen(
             val app = context.applicationContext as com.menghuan.app.MenghuanApp
             val path = com.menghuan.app.data.VisionImage.copyToChatImages(context, uri, app.filesDir)
             if (path != null) {
-                vm.sendImage(path, uiState.input)
+                val file = java.io.File(path)
+                pendingAttachment = PendingAttachment(
+                    isImage = true,
+                    path = path,
+                    name = "图片",
+                    size = file.length(),
+                    extractedText = "",
+                )
             } else {
                 Toast.makeText(context, "图片读取失败", Toast.LENGTH_SHORT).show()
             }
@@ -280,7 +316,8 @@ fun ChatScreen(
         }
     }
 
-    // 选文件发给 AI（v0.43.0）：任意类型 → 拷进私有目录 → 本地抽正文 → 发消息
+    // 选文件（v0.43.0）：任意类型 → 拷进私有目录 → 本地抽正文；
+    // v0.56.6：同样**不再立刻发**，挂成待发送等用户确认/补文字
     val filePicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -292,10 +329,28 @@ fun ChatScreen(
                     Toast.makeText(context, "文件读取失败", Toast.LENGTH_SHORT).show()
                 } else {
                     val text = com.menghuan.app.data.FileTextExtractor.extract(saved, name)
-                    vm.sendFile(saved.absolutePath, name, saved.length(), text.text)
+                    pendingAttachment = PendingAttachment(
+                        isImage = false,
+                        path = saved.absolutePath,
+                        name = name,
+                        size = saved.length(),
+                        extractedText = text.text,
+                    )
                 }
             }
         }
+    }
+
+    /** 把待发送附件真的发出去（带当前输入框里的文字当说明；没有文字也能直接发） */
+    fun sendPendingAttachment() {
+        val pending = pendingAttachment ?: return
+        val caption = uiState.input.trim()
+        if (pending.isImage) {
+            vm.sendImage(pending.path, caption)
+        } else {
+            vm.sendFile(pending.path, pending.name, pending.size, pending.extractedText, caption)
+        }
+        pendingAttachment = null
     }
 
     // 录音（v0.43.0）：按住说话。v0.43.1 起改成"点语音键切到语音态 → 按住说话区录音"。
@@ -358,8 +413,8 @@ fun ChatScreen(
     // 用 recorder.lastAmplitude（抽水线程写的 @Volatile 值），不额外开线程。
     LaunchedEffect(recording) {
         if (!recording) {
-            recordMs = 0L
-            waveBars = emptyList()
+            // v0.55.0：**这里不再清空波形** —— 蒙层收起还有 140ms 动画，
+            // 此刻清空会让它画出一个"空气泡"。清空的活改到下一次 onStart 里做。
             return@LaunchedEffect
         }
         val startedAt = System.currentTimeMillis()
@@ -375,10 +430,8 @@ fun ChatScreen(
 
     // 当前会话生效的 AI 接口（长按头像可切换，只影响本会话）
     val apiProfiles by vm.apiProfiles.collectAsState()
-    val activeProfileId by vm.activeProfileId.collectAsState()
     val apiOverrideId by vm.apiOverrideId.collectAsState()
     val globalProfileId by vm.globalProfileId.collectAsState()
-    val globalLabel = apiProfiles.firstOrNull { it.id == globalProfileId }?.name ?: "未配置"
 
     // 查看即已读：会话可见期间每条新消息到达都刷新阅读时刻，列表未读点立即消除
     LaunchedEffect(uiState.messages.lastOrNull()?.id) { vm.markRead() }
@@ -428,6 +481,25 @@ fun ChatScreen(
         },
     )
 
+    val listState = rememberLazyListState()
+    // v0.55.0：列表往上一翻，顶栏下沿浮出一条发丝线 —— 顶栏与消息区之间有了明确分界，
+    // 也顺带告诉用户"上面还有内容"。
+    // ⚠️ 用**阈值布尔**而不是逐帧偏移量：`firstVisibleItemScrollOffset` 滚动时每帧都变，
+    // 要是把它当普通 State 读进 composable，整页会跟着每帧重组；套一层 derivedStateOf
+    // 之后只在跨过 8dp 那一帧翻转一次，动画期间零重组。
+    val listScrolled by remember {
+        derivedStateOf {
+            listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 8
+        }
+    }
+    val topBarLineAlpha by animateFloatAsState(
+        targetValue = if (listScrolled) 1f else 0f,
+        animationSpec = tween(180),
+        label = "topBarLine",
+    )
+    // ⚠️ 令牌是 `@Composable get()`，不能在 drawBehind 的 lambda 里读（见 Theme.kt 说明），先取成局部值
+    val topBarLineInk = NeuHairline
+
     // 外层容器：让搜索态覆盖层（第二个 fillMaxSize 子级）真正叠在聊天内容之上，
     // 而不是作为 AdaptiveScreen Column 的兄弟被挤成 0 高度
     Box(Modifier.fillMaxSize()) {
@@ -435,6 +507,17 @@ fun ChatScreen(
             Column(Modifier.fillMaxSize()) {
                 // 顶部导航：返回键（退出；双栏嵌入时隐藏）+ 居中头像区（长按换风格）
                 NeuTopBar(
+                modifier = Modifier.drawBehind {
+                    if (topBarLineAlpha > 0f) {
+                        drawLine(
+                            color = topBarLineInk,
+                            start = Offset(0f, size.height - 0.5f),
+                            end = Offset(size.width, size.height - 0.5f),
+                            strokeWidth = 1.dp.toPx(),
+                            alpha = topBarLineAlpha,
+                        )
+                    }
+                },
                 navigationIcon = if (showBack) {
                     {
                         NeuCircleButton(
@@ -516,7 +599,6 @@ fun ChatScreen(
             )
 
             // 消息列表（按天分组）
-            val listState = rememberLazyListState()
             val chatItems = remember(uiState.messages) { buildChatItems(uiState.messages) }
             // 是否贴底：控制回底按钮显隐 + 新消息是否跟随滚动
             // key = chatItems：derivedStateOf 闭包在首帧捕获 chatItems 引用，
@@ -600,7 +682,9 @@ fun ChatScreen(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    // v0.56.0：微信式间距——同一人连发小间距（6dp），换人时靠条目自身的
+                    // gapBefore 顶部再拉开（见下），日期头自带 8dp 垂直内边距也吃这份间距。
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     // 稳定 key：已落库消息用 DB id（滚动往返、新消息插入时旧条目状态/位图缓存不重建，
                     // 这是长会话滚动流畅的关键）；流式占位/乐观插入尚未拿到 id，用索引兑底。
@@ -615,6 +699,8 @@ fun ChatScreen(
                             }
                         },
                     ) { idx ->
+                        // 条目稳定 key：既给 LazyColumn 复用，也当长按菜单取气泡位置的索引
+                        val rowKey = chatKeyOf(chatItems, idx)
                         when (val item = chatItems[idx]) {
                             is ChatListItem.DayHeader -> Box(
                                 // 只保留重排弹簧：进页时整屏条目作为"新条目"插入，
@@ -634,13 +720,15 @@ fun ChatScreen(
 
                             is ChatListItem.Msg -> {
                                 val msg = item.message
-                                // v0.54.3：记录本条在屏幕中的位置，长按菜单要贴着气泡弹出
-                                var rowBounds by remember { mutableStateOf<Rect?>(null) }
                                 Box(
                                     Modifier
                                         .fillMaxWidth()
                                         .animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null)
-                                        .onGloballyPositioned { rowBounds = it.boundsInRoot() },
+                                        // v0.56.0：换人时顶部再拉开 12dp（叠加 6dp 基础间距 ≈ 18dp），
+                                        // 微信式"换说话人就空一口气"；同一人连发只吃基础间距。
+                                        .padding(top = if (item.gapBefore) 12.dp else 0.dp)
+                                        // v0.55.0：写进普通容器而不是 state（见 bubbleBounds 注释）
+                                        .onGloballyPositioned { bubbleBounds[rowKey] = it.boundsInRoot() },
                                 ) {
                                 // 多选态：左侧留出勾选圈的空档（v0.54.3）
                                 // ⚠️ v0.54.7：这里**必须是 Column**（原来是 Box）——里面现在有两个兄弟节点
@@ -708,7 +796,7 @@ fun ChatScreen(
                                                         playingVoiceId = msg.id
                                                     }
                                                 },
-                                                onLongPress = { openMessageMenu(msg, rowBounds) },
+                                                onLongPress = { openMessageMenu(msg, rowKey) },
                                             )
                                             // 转文字结果：显示在语音条下方，左右跟随气泡对齐。
                                             // content 就是识别出的文字（同时也是喂给模型的那份），
@@ -738,50 +826,42 @@ fun ChatScreen(
                                                 size = msg.attachmentSize,
                                                 hasExtractedText = msg.content.isNotBlank(),
                                                 maxWidth = bubbleMaxWidth,
-                                                onLongPress = { openMessageMenu(msg, rowBounds) },
+                                                onLongPress = { openMessageMenu(msg, rowKey) },
                                             )
                                         }
 
                                     // 语音通话记录卡（v0.49.0）：挂断后落进聊天流，点开看文字转写；
                                     // v0.54.6：**长按也弹消息菜单**（以前只有 clickable，
                                     // 长按完全没反应——用户反馈"长按语音通话条唤起不了菜单"）
-                                    MediaKind.CALL ->
+                                    MediaKind.CALL -> {
+                                        // v0.55.0：整卡重绘（图标 + 方向 + 时长 + 未接通），见 CallRecordCard
+                                        val duration = msg.content
+                                            .substringAfter("· ", msg.content)
+                                            .trim()
+                                            .ifBlank { msg.content }
                                         Box(
                                             Modifier.fillMaxWidth(),
                                             contentAlignment = if (msg.isFromUser) Alignment.CenterEnd
                                             else Alignment.CenterStart,
                                         ) {
-                                            Row(
-                                                Modifier
-                                                    .neuSurface(999.dp, color = NeuSurface)
-                                                    .combinedClickable(
-                                                        interactionSource = remember { MutableInteractionSource() },
-                                                        indication = null,
-                                                        onClick = {
-                                                            callLogSession = msg.attachmentPath.toLongOrNull() ?: 0L
-                                                            callLogTitle = msg.content
-                                                        },
-                                                        onLongClick = { openMessageMenu(msg, rowBounds) },
-                                                    )
-                                                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                            ) {
-                                                Icon(
-                                                    MIcons.Phone,
-                                                    contentDescription = null,
-                                                    tint = TextPrimary,
-                                                    modifier = Modifier.size(15.dp),
-                                                )
-                                                Spacer(Modifier.width(8.dp))
-                                                Text(msg.content, fontSize = 13.sp, color = TextPrimary)
-                                            }
+                                            CallRecordCard(
+                                                duration = duration,
+                                                outgoing = msg.isFromUser,
+                                                maxWidth = bubbleMaxWidth,
+                                                onClick = {
+                                                    callLogSession = msg.attachmentPath.toLongOrNull() ?: 0L
+                                                    callLogTitle = msg.content
+                                                },
+                                                onLongPress = { openMessageMenu(msg, rowKey) },
+                                            )
                                         }
+                                    }
 
                                     MediaKind.TEXT -> MessageBubble(
                                         msg,
                                         bubbleMaxWidth,
                                         item.gapBefore,
-                                        onLongPress = { openMessageMenu(msg, rowBounds) },
+                                        onLongPress = { openMessageMenu(msg, rowKey) },
                                     )
                                 }   // 关闭 when(kind)
 
@@ -853,7 +933,14 @@ fun ChatScreen(
                     // 期间只挂一个只含三点动效的空 AI 气泡（不再逐字吐字）
                     if (uiState.generating) {
                         item(key = "typingTail") {
-                            Box(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                            // v0.55.0：这颗气泡进出会挤动整列，补上重排弹簧（同样不带淡入淡出，
+                            // 免得跟页面滑入动画叠在一起）
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 6.dp)
+                                    .animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null),
+                            ) {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                                     AiBubble(content = "", maxWidth = bubbleMaxWidth, onLongPress = {})
                                 }
@@ -982,6 +1069,70 @@ fun ChatScreen(
                 followKeyboard = panel == 0 && !voiceMode,
             )
 
+            // 待发送附件条（v0.56.6）：挂在**输入栏上方** ——
+            // 相册 / 文件选中后先停在这里，用户写完文字一起发，或直接点发送键。
+            androidx.compose.animation.AnimatedVisibility(
+                visible = pendingAttachment != null,
+                enter = fadeIn(tween(160)),
+                exit = fadeOut(tween(120)),
+            ) {
+                val pending = pendingAttachment
+                if (pending != null) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 12.dp, bottom = 6.dp)
+                            .neuSurface(14.dp, color = NeuTrack, inset = true)
+                            .padding(start = 10.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (pending.isImage) {
+                            val thumb = rememberLocalBitmap(pending.path)
+                            if (thumb != null) {
+                                Image(
+                                    bitmap = thumb,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            } else {
+                                Icon(
+                                    MIcons.ImageIcon,
+                                    contentDescription = null,
+                                    tint = MutedText,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        } else {
+                            Icon(
+                                MIcons.FileDoc,
+                                contentDescription = null,
+                                tint = TextPrimary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (pending.isImage) "图片" else pending.name,
+                                fontSize = 13.sp,
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        NeuFlatIconButton(onClick = { pendingAttachment = null }) {
+                            Icon(
+                                MIcons.Close,
+                                contentDescription = "移除待发送内容",
+                                tint = MutedText,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+                }
+            }
+
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -1029,6 +1180,7 @@ fun ChatScreen(
                         VoiceHoldBar(
                             recording = recording,
                             enabled = !uiState.isStreaming,
+                            bars = waveBars,
                             onStart = {
                                 val hasMic = androidx.core.content.ContextCompat.checkSelfPermission(
                                     context, android.Manifest.permission.RECORD_AUDIO,
@@ -1036,6 +1188,11 @@ fun ChatScreen(
                                 if (!hasMic) {
                                     micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
                                 } else if (recorder.start()) {
+                                    // 这一段是全新的一次录音：先把上一段的波形/计时清干净
+                                    // （清在**开始时**而不是结束时 —— 结束时清会让蒙层的收起
+                                    // 动画那 140ms 里画出一个空气泡，观感是"闪一下"）
+                                    waveBars = emptyList()
+                                    recordMs = 0L
                                     recording = true
                                 } else {
                                     // 带上真实原因（v0.43.1）：静默的"启动失败"无从定位，
@@ -1111,12 +1268,13 @@ fun ChatScreen(
                     }
                 }
 
-                // 右：有内容时给发送键；否则表情 + 加号（无外圈，颜色淡）
-                if (uiState.input.isNotBlank() && !voiceMode) {
+                // 右：有内容（文字或待发送附件）时给发送键；否则表情 + 加号（无外圈，颜色淡）
+                if ((uiState.input.isNotBlank() || pendingAttachment != null) && !voiceMode) {
                     Spacer(Modifier.width(6.dp))
                     NeuFlatIconButton(
                         onClick = {
-                            vm.send()
+                            // 有待发送附件就先把它发出去（当前文字当说明），否则发文字
+                            if (pendingAttachment != null) sendPendingAttachment() else vm.send()
                             keyboardController?.hide()
                         },
                         enabled = !uiState.isStreaming,
@@ -1208,8 +1366,14 @@ fun ChatScreen(
         }
     }
 
-    // 录音蒙层（v0.53.4）：按住说话期间盖一层，形态照微信「按住说话」
-    if (recording) {
+    // 录音蒙层（v0.53.4）：按住说话期间盖一层，形态照微信「按住说话」。
+    // v0.55.0：进出场走淡入淡出（原来"啪"地出现/消失）—— 蒙层是盖在聊天内容上的一层，
+    // 有渐变才知道它是"浮上来"的，而不是把下面的内容换掉了。
+    AnimatedVisibility(
+        visible = recording,
+        enter = fadeIn(tween(160)),
+        exit = fadeOut(tween(140)),
+    ) {
         VoiceRecordingOverlay(
             durationMs = recordMs,
             bars = waveBars,
@@ -1235,18 +1399,13 @@ fun ChatScreen(
     }
 
     // 长按头像 = 切换"本会话"的 AI 接口（v0.36.4 按会话独立；不影响其他会话和全局）
+    // v0.56.6：弹层里不再有「跟随全局」—— 点哪条就用哪条，当前生效的那条直接打勾
     if (showApiSwitch) {
         ApiSwitchSheet(
             profiles = apiProfiles,
-            activeId = activeProfileId,
-            isFollowingGlobal = apiOverrideId == null,
-            globalLabel = globalLabel,
+            activeId = apiOverrideId ?: globalProfileId,
             onSelect = { id ->
                 vm.switchApiProfile(id)
-                showApiSwitch = false
-            },
-            onFollowGlobal = {
-                vm.followGlobalApi()
                 showApiSwitch = false
             },
             onDismiss = { showApiSwitch = false },
@@ -1447,6 +1606,12 @@ private fun ChatErrorBar(
  *
  * 条目按需出现：转文字（仅识别成功的语音条）/ 思考过程（仅推理模型的消息）/
  * 复制 / 多选 / 删除（已落库消息才可删）。
+ *
+ * **v0.55.0（手势反馈 / 弹出动画 / 视觉层级）**：
+ * - **弹出**：整块从 0.88 弹簧放大 + 120ms 淡入（原来没有任何动画，凭空出现）；
+ * - **分组**：「查看类开关」｜「复制 / 多选」｜「删除」，组间一条 1dp 竖发丝线；
+ * - **层级**：删除走危险色，开关处于展开态时整格铺凹陷灰底 + 图标上强调色（再点即收起）；
+ * - **反馈**：菜单项 36dp 方形热区 + 按压缩放，点中补一记轻震动。
  */
 @Composable
 private fun MessageActionMenu(
@@ -1463,17 +1628,59 @@ private fun MessageActionMenu(
     onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
-    val actions = buildList {
+    val haptic = LocalHapticFeedback.current
+    // v0.55.0：菜单项分三组 —— 「查看类开关」｜「复制 / 多选」｜「删除」，
+    // 组间用一条 1dp 竖发丝线分隔（全应用唯一的分区手段），删除单独走危险色。
+    // 开关类（转文字 / 思考过程）当前处于展开态时整格上强调色：一眼看出"再点是收起"。
+    val entries = buildList<MessageMenuEntry> {
         if (onToggleTranscript != null) {
-            add(Triple(MIcons.FileText, if (transcriptShown) "收起文字" else "转文字", onToggleTranscript))
+            add(
+                MessageMenuEntry.Action(
+                    MIcons.FileText,
+                    if (transcriptShown) "收起文字" else "转文字",
+                    onToggleTranscript,
+                    active = transcriptShown,
+                ),
+            )
         }
         if (onToggleReasoning != null) {
-            add(Triple(MIcons.Brain, if (reasoningShown) "收起思考" else "思考过程", onToggleReasoning))
+            add(
+                MessageMenuEntry.Action(
+                    MIcons.Brain,
+                    if (reasoningShown) "收起思考" else "思考过程",
+                    onToggleReasoning,
+                    active = reasoningShown,
+                ),
+            )
         }
-        add(Triple(MIcons.Copy, "复制", onCopy))
-        add(Triple(MIcons.SelectAll, "多选", onMultiSelect))
-        if (canDelete) add(Triple(MIcons.Delete, "删除", onDelete))
+        if (size > 0) add(MessageMenuEntry.Split)
+        add(MessageMenuEntry.Action(MIcons.Copy, "复制", onCopy))
+        add(MessageMenuEntry.Action(MIcons.SelectAll, "多选", onMultiSelect))
+        if (canDelete) {
+            add(MessageMenuEntry.Split)
+            add(MessageMenuEntry.Action(MIcons.Delete, "删除", onDelete, danger = true))
+        }
     }
+    // 弹出动画：整块从 0.88 弹到 1（弹簧带一点回弹）+ 120ms 淡入。
+    //
+    // ⚠️ 刻意**不用 AnimatedVisibility**：它是"可见才参与布局"，首帧内容尺寸为 0，
+    // PopupPositionProvider 拿到的 popupContentSize 就是 0，菜单会先闪在错的位置再跳回来。
+    // 用 graphicsLayer 做缩放/淡入则**布局尺寸恒定**，定位从第一帧就是准的，动画纯视觉。
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { entered = true }
+    val popScale by animateFloatAsState(
+        targetValue = if (entered) 1f else 0.88f,
+        animationSpec = NeuSnappySpring,
+        label = "menuPop",
+    )
+    val popAlpha by animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = tween(120),
+        label = "menuAlpha",
+    )
+    // 位置策略（v0.56.17，用户点名）：**始终贴在气泡正上方**，不再按气泡位置翻到下方。
+    // 气泡贴着屏幕顶部时靠 coerceIn 兜住（宁可压住气泡，也不翻面——翻面会让菜单位置
+    // 随消息位置忽上忽下，用户要的是"固定在上方"）。
     Popup(
         popupPositionProvider = remember(anchor, message.isFromUser) {
             object : PopupPositionProvider {
@@ -1483,7 +1690,7 @@ private fun MessageActionMenu(
                     layoutDirection: LayoutDirection,
                     popupContentSize: IntSize,
                 ): IntOffset {
-                    val gap = with(density) { 8.dp.roundToPx() }
+                    val gap = with(density) { 6.dp.roundToPx() }
                     val maxX = (windowSize.width - popupContentSize.width - gap).coerceAtLeast(gap)
                     val maxY = (windowSize.height - popupContentSize.height - gap).coerceAtLeast(gap)
                     val rect = anchor
@@ -1494,11 +1701,8 @@ private fun MessageActionMenu(
                     } else {
                         rect.left.toInt()
                     }).coerceIn(gap, maxX)
-                    // 优先放在气泡上方；上方不够就翻到气泡下方
-                    val above = rect?.let { it.top.toInt() - popupContentSize.height - gap }
-                    val y = (if (above != null && above >= gap) above
-                    else rect?.let { it.bottom.toInt() + gap }
-                        ?: (windowSize.height / 2)).coerceIn(gap, maxY)
+                    val y = ((rect?.top?.toInt() ?: windowSize.height / 2) - popupContentSize.height - gap)
+                        .coerceIn(gap, maxY)
                     return IntOffset(x, y)
                 }
             }
@@ -1506,34 +1710,152 @@ private fun MessageActionMenu(
         onDismissRequest = onDismiss,
         properties = PopupProperties(focusable = true),
     ) {
-        Row(
-            Modifier
-                .neuSurface(12.dp, color = NeuSurface)
-                .padding(horizontal = 2.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        // v0.56.17：**浅灰底气泡菜单**——固定浅灰（不随主题，深浅两模式都成立），
+        // 底下恒伸出一枚小尾巴指向这条气泡（尾巴靠气泡那一侧）。
+        Column(
+            Modifier.graphicsLayer {
+                scaleX = popScale
+                scaleY = popScale
+                alpha = popAlpha
+            },
         ) {
-            actions.forEach { (icon, label, onClick) ->
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = onClick,
+            Row(
+                Modifier
+                    .background(MessageMenuBg, RoundedCornerShape(14.dp))
+                    .border(1.dp, MessageMenuHairline, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                entries.forEach { entry ->
+                    when (entry) {
+                        MessageMenuEntry.Split -> Box(
+                            Modifier
+                                .padding(horizontal = 3.dp)
+                                .width(1.dp)
+                                .height(18.dp)
+                                .background(Color.Black.copy(alpha = 0.12f)),
                         )
-                        .padding(horizontal = 11.dp, vertical = 8.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    // v0.54.6：只留图标（文字进 contentDescription，无障碍照样读得出来）
-                    Icon(
-                        icon,
-                        contentDescription = label,
-                        tint = TextPrimary,
-                        modifier = Modifier.size(17.dp),
-                    )
+
+                        is MessageMenuEntry.Action -> MessageMenuButton(
+                            icon = entry.icon,
+                            label = entry.label,
+                            active = entry.active,
+                            danger = entry.danger,
+                            onClick = {
+                                // 点任一菜单项补一记轻震动：菜单是"浮"在内容上的层，
+                                // 给一点手感才知道这一下点中了（v0.54.7 的长按震动是呼出，这是确认）
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                entry.onClick()
+                            },
+                        )
+                    }
                 }
             }
+            // v0.57（用户点名）：箭头改到菜单**底部正中**、尖端朝下指向气泡（原来靠气泡那一侧），
+            // 并放大一圈，让"这块浮层是从下面那条消息上冒出来的"一眼可见。
+            // offset(-1dp) 让箭头顶部压住 Row 的 1dp 描边，接缝处不会留一道横线。
+            MenuTail(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .offset(y = (-1).dp),
+            )
         }
+    }
+}
+
+/** 长按菜单的固定浅灰底：不随主题翻色，深浅两模式下这个底都成立 */
+private val MessageMenuBg = Color(0xFFF2F3F5)
+
+/** 浅灰底菜单的发丝描边（固定黑 8%：浅灰底在深色模式下同样成立，不能用主题令牌） */
+private val MessageMenuHairline = Color(0x1A000000)
+
+/**
+ * 灰底气泡菜单的下指箭头：恒在菜单**底部正中**、尖端朝下指向气泡（[modifier] 由调用处给对齐）。
+ *
+ * v0.57（用户点名）：从"靠气泡那一侧"改到**底部正中**，尺寸放大一圈（16×7 → 24×12）让箭头读得出来。
+ *
+ * ⚠️ 不要在 `.width().height()` **之后**再叠 `.padding()`：旧写法那样写会把内容宽度挤成 0，
+ * 箭头退化成一条看不见的线。要留白就在外层用 Spacer，别在 Canvas 的尺寸后面加 padding。
+ */
+@Composable
+private fun MenuTail(modifier: Modifier) {
+    Canvas(
+        modifier
+            .width(24.dp)
+            .height(12.dp),
+    ) {
+        val path = Path().apply {
+            moveTo(0f, 0f); lineTo(size.width, 0f); lineTo(size.width / 2f, size.height)
+            close()
+        }
+        // 先描边再填充：顶边（与菜单相接那一条）被填充盖掉，只留两条斜边的外半像素，
+        // 与菜单的描边视觉连续。
+        drawPath(path, MessageMenuHairline, style = Stroke(width = 1.dp.toPx()))
+        drawPath(path, MessageMenuBg)
+    }
+}
+
+/** 长按菜单里的一项：要么是一条分割线，要么是一个动作 */
+private sealed interface MessageMenuEntry {
+    data class Action(
+        val icon: ImageVector,
+        val label: String,
+        val onClick: () -> Unit,
+        /** 当前处于"已展开"态（再点是收起） */
+        val active: Boolean = false,
+        /** 破坏性动作：走危险色，与其它项拉开层级 */
+        val danger: Boolean = false,
+    ) : MessageMenuEntry
+
+    /** 组间的竖发丝线（不用 object：项目 Kotlin 版本未开 data object） */
+    object Split : MessageMenuEntry
+}
+
+/**
+ * 长按菜单里的图标按钮（v0.54.6 起的"只留图标"形态保留）。
+ *
+ * v0.55.0：36dp 方形热区 + 按压缩放（[rememberNeuPressState]，与全应用一致），
+ * 激活态铺一层底 —— 不再是"全都一个颜色的一排图标"，层级看得出主次。
+ *
+ * v0.56.15：底换成固定的深灰（[MessageMenuBg]），图标色**不再用主题令牌**——
+ * 深灰底不随主题翻，字色/图标色也必须固定（强调色黑在深灰上不可见）。
+ *
+ * v0.56.17：底改**浅灰**，前景色随之从"浅色系"换成"深色系"（普通 = 近黑、激活 = 加深的品牌绿、
+ * 删除 = 危险红）——同一条规矩：固定底色上的前景色必须跟着底一起定死。
+ */
+@Composable
+private fun MessageMenuButton(
+    icon: ImageVector,
+    label: String,
+    active: Boolean,
+    danger: Boolean,
+    onClick: () -> Unit,
+) {
+    val press = rememberNeuPressState()
+    val tint = when {
+        danger -> Color(0xFFF24E1E)
+        active -> Color(0xFF00A15F)
+        else -> Color(0xFF1A1A1A)
+    }
+    Box(
+        Modifier
+            .size(36.dp)
+            .scale(press.scale)
+            .clip(RoundedCornerShape(10.dp))
+            .then(if (active) Modifier.background(Color.Black.copy(alpha = 0.08f)) else Modifier)
+            .clickable(
+                interactionSource = press.interactionSource,
+                indication = null,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(18.dp),
+        )
     }
 }
 
@@ -1707,15 +2029,32 @@ private fun NeuChatInput(value: String, onValueChange: (String) -> Unit, onFocus
 /**
  * 语音态下的「按住 说话」条（v0.43.1 起占输入框那一格；v0.53.4 改判定方式）。
  *
- * 按住开始录音；**左右滑**决定松手后干什么，和录音蒙层里那两颗圆按钮一一对应：
- * 左滑 → 取消，右滑 → 转文字，没滑 → 发语音条。
+ * 按住开始录音；**左右滑**决定松手后干什么，和录音蒙层里那两块弧一一对应：
+ * 左半区 → 取消，右半区 → 转文字，正中间那条灰带 → 录音中，松手即按当前档确认。
  * （旧版是"上滑取消"，与蒙层里的圆按钮对不上，所以改掉。）
  * 高度与 [NeuChatInput] 的 40dp 对齐，切来切去不会跳。
+ *
+ * **v0.55.0（按压反馈 + 状态提示）**：
+ * - 按住时整条**微缩 1.5% + 底色由白转灰**（150ms），手指一落下就有"按住了"的回感，
+ *   不再是静悄悄换个背景色；
+ * - 录音中条内左侧挂一段**实时迷你波形**（[RecordingWave]）—— 只靠"松开 发送"四个字
+ *   看不出到底录进去没有，波形动起来才是"在收音"的证据；
+ * - 滑到取消 / 转文字档位时文字转危险色，与蒙层里的扇形区同语言。
+ *
+ * **v0.56.7（用户点名「灵敏度」）**：判定改成**按手指在屏幕上的绝对位置划区** ——
+ * 左半区 = 取消、右半区 = 转文字、正中间与蒙层那块 5% 缺口同宽的灰带 = 录音中。
+ * 原来用"相对按下点的 ±60dp"：宽屏要滑很远才切档、手指抖一下就跳回来（就是"不灵敏/不跟手"）。
+ * 现在半个屏幕就是一个档位区，配合下面三条：
+ * ① 手指**动过 touchSlop 之后**才开始判档（否则按住偏左会一按就"取消"）；
+ * ② 换档时补一记轻震动（"到位了"的手感）；
+ * ③ 整条的缩放/底色/文字色都走 120~160ms 过渡，三态之间是滑过去的，不闪不跳。
  */
 @Composable
 private fun VoiceHoldBar(
     recording: Boolean,
     enabled: Boolean,
+    /** 录音中的实时振幅序列（0..1）：条内迷你波形的数据源 */
+    bars: List<Float>,
     onStart: () -> Unit,
     onArmChange: (RecordArm) -> Unit,
     onRelease: (RecordArm) -> Unit,
@@ -1727,16 +2066,44 @@ private fun VoiceHoldBar(
     val surfaceColor = NeuSurface
     var armed by remember { mutableStateOf(RecordArm.NONE) }
     val shape = RoundedCornerShape(20.dp)
+
+    // 档位分区：屏幕中线 ± 这条灰带半径（与蒙层里两块环带弧的中央缺口同宽）
+    val density = LocalDensity.current
+    val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
+    val gapPx = screenWidthPx * 0.05f
+    // 手指坐标是"条内坐标"，要加上条自己在窗口里的左边距才能换算成屏幕 x
+    var barLeftPx by remember { mutableStateOf(0f) }
+
+    val holdScale by animateFloatAsState(
+        targetValue = when {
+            !recording -> 1f
+            armed != RecordArm.NONE -> 0.972f
+            else -> 0.985f
+        },
+        animationSpec = tween(120),
+    )
+    val bg by animateColorAsState(if (recording) trackColor else surfaceColor, tween(150))
+    val labelColor by animateColorAsState(
+        targetValue = when {
+            recording && armed != RecordArm.NONE -> NeuDanger
+            recording -> TextPrimary
+            else -> MutedText
+        },
+        animationSpec = tween(150),
+    )
     Box(
         Modifier
             .fillMaxWidth()
             .height(40.dp)
+            .onGloballyPositioned { barLeftPx = it.boundsInRoot().left }
+            .scale(holdScale)
             .clip(shape)
-            .background(if (recording) trackColor else surfaceColor)
+            .background(bg)
             .border(1.dp, NeuHairline, shape)
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
-                val armThreshold = 60.dp.toPx()
+                val slop = viewConfiguration.touchSlop
+                val mid = screenWidthPx / 2f
                 awaitPointerEventScope {
                     while (true) {
                         val down = awaitFirstDown()
@@ -1748,11 +2115,16 @@ private fun VoiceHoldBar(
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            val dx: Float = change.position.x - down.position.x
-                            val next = when {
-                                dx <= -armThreshold -> RecordArm.CANCEL
-                                dx >= armThreshold -> RecordArm.TRANSCRIBE
-                                else -> RecordArm.NONE
+                            // 手指动过一丁点才开始判档：起点在哪儿都不算（避免"一按就取消"）
+                            val moved = kotlin.math.abs(change.position.x - down.position.x) > slop
+                            val next = if (!moved) {
+                                armed
+                            } else {
+                                when {
+                                    barLeftPx + change.position.x < mid - gapPx -> RecordArm.CANCEL
+                                    barLeftPx + change.position.x > mid + gapPx -> RecordArm.TRANSCRIBE
+                                    else -> RecordArm.NONE
+                                }
                             }
                             // 换档时补一次轻震动，让"滑到位了"这件事有手感
                             if (next != armed) {
@@ -1772,34 +2144,99 @@ private fun VoiceHoldBar(
             },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            when {
-                recording && armed == RecordArm.CANCEL -> "松开 取消"
-                recording && armed == RecordArm.TRANSCRIBE -> "松开 转文字"
-                recording -> "松开 发送"
-                else -> "按住 说话"
-            },
-            fontSize = 14.sp,
-            fontWeight = if (recording) FontWeight.Medium else FontWeight.Normal,
-            color = if (recording && armed != RecordArm.NONE) NeuDanger
-            else if (recording) TextPrimary else MutedText,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (recording) {
+                RecordingWave(
+                    bars = bars,
+                    color = labelColor,
+                    modifier = Modifier.width(56.dp).height(18.dp),
+                    maxBars = 9,
+                    barWidth = 2.5.dp,
+                    gap = 2.5.dp,
+                    minHeight = 4.dp,
+                    maxHeight = 16.dp,
+                )
+                Spacer(Modifier.width(9.dp))
+            }
+            Text(
+                when {
+                    recording && armed == RecordArm.CANCEL -> "松开 取消"
+                    recording && armed == RecordArm.TRANSCRIBE -> "松开 转文字"
+                    recording -> "松开 发送"
+                    else -> "按住 说话"
+                },
+                fontSize = 14.sp,
+                fontWeight = if (recording) FontWeight.Medium else FontWeight.Normal,
+                color = labelColor,
+            )
+        }
     }
 }
 
 /** 录音蒙层里手指落在哪一档（v0.53.4） */
 private enum class RecordArm { NONE, CANCEL, TRANSCRIBE }
 
-/** 蒙层波形条数量：约 26 根 × 60ms ≈ 1.6 秒的可见窗口 */
-private const val WAVE_BAR_COUNT = 26
+/**
+ * 录音波形（v0.53.4 建；**v0.55.0 改成 Canvas 绘制**）。
+ *
+ * 原来每格波形是一个 `Box`：26 根就是 26 个布局节点，每 60ms 采一格就要把整排
+ * 重新量一遍（布局 + 绘制两趟）。改成单个 Canvas 后只有一个节点、一次绘制，
+ * 波形再密也不掉帧；端头用 `drawRoundRect` 自己画圆角，观感与原来完全一致。
+ *
+ * 波形**居中排布**、条数不足时也不会靠一边挤着，配合 [maxBars] 取最近若干个采样，
+ * 视觉上就是"从右往左推"的实时波形。
+ */
+@Composable
+private fun RecordingWave(
+    bars: List<Float>,
+    color: Color,
+    modifier: Modifier = Modifier,
+    maxBars: Int = WAVE_BAR_COUNT,
+    barWidth: Dp = 2.dp,
+    gap: Dp = 2.dp,
+    minHeight: Dp = 3.dp,
+    maxHeight: Dp = 18.dp,
+) {
+    val ink = color
+    Canvas(modifier) {
+        val visible = bars.takeLast(maxBars)
+        if (visible.isEmpty()) return@Canvas
+        // v0.56.3：三口均值平滑——相邻三根取加权均值，消除采样抖动，
+        // 波形从"乱跳"变成"流动"（微信那种顺滑起伏感）
+        val smoothed = visible.mapIndexed { i, v ->
+            val p = visible.getOrNull(i - 1) ?: v
+            val n = visible.getOrNull(i + 1) ?: v
+            (p + v * 2f + n) / 4f
+        }
+        val w = barWidth.toPx()
+        val unit = w + gap.toPx()
+        val startX = ((size.width - (smoothed.size * unit - gap.toPx())) / 2f).coerceAtLeast(0f)
+        val lo = minHeight.toPx()
+        val span = (maxHeight - minHeight).toPx()
+        smoothed.forEachIndexed { i, amp ->
+            val h = (lo + amp.coerceIn(0f, 1f) * span).coerceAtMost(size.height)
+            drawRoundRect(
+                color = ink,
+                topLeft = Offset(startX + i * unit, (size.height - h) / 2f),
+                size = Size(w, h),
+                cornerRadius = CornerRadius(w / 2f, w / 2f),
+            )
+        }
+    }
+}
+
+/** 蒙层波形条数量：32 根 × 60ms ≈ 1.9 秒的可见窗口（气泡拉长后条数同步加） */
+private const val WAVE_BAR_COUNT = 32
 
 /**
- * 录音中的全屏蒙层（v0.53.4，形态照微信「按住说话」）：
- * 中间一颗黑底气泡，里面是**实时波形** + 秒数（气泡下沿带个小尖角），
- * 下面一行「松手发送」，再下面两颗圆按钮「取消」「转文字」——
- * 手指滑向哪一颗，哪一颗就点亮（松手即执行，见 ChatScreen 里的 onRelease）。
+ * 录音中的全屏蒙层（v0.56.1，黑白配色 + 扇形选择区，布局照用户给的微信截图）：
+ * - 上方：**强调色气泡**（黑/深色主题反相白）—— 实时波形 + 秒数，下沿带小尖角；
+ * - 中间：两块**环带弧块**「取消」「滑到这里 转文字」，顶边大弧、中央留缺口，
+ *   手指拖进哪块哪块点亮（判定仍在 [VoiceHoldBar] 的左右滑，这里只负责显示）；
+ * - 底部：贴屏幕下沿的**浅灰大弧**（半椭圆），「松开发送」字样随档位变化。
  *
- * 配色走 App 自己的黑白灰（用户明确选过"不用微信蓝"），全部跟随主题。
+ * v0.55.0 的进出场不变：蒙层在调用点淡入淡出，气泡从 0.92 弹簧长出来；
+ * 滑到「取消」档气泡先缩一点（临界操作预告）。
  */
 @Composable
 private fun VoiceRecordingOverlay(
@@ -1814,49 +2251,58 @@ private fun VoiceRecordingOverlay(
         0.55f to NeuSurface.copy(alpha = 0.92f),
         1f to NeuSurface,
     )
+
+    // v0.56.1（用户拍板）：**回黑白配色**——气泡回到强调色黑（深色主题反相白），
+    // 墨迹用 AccentInk；不用品牌绿。
     val bubble = NeuAccent
     val onBubble = AccentInk
     val idleBg = NeuTrack
     val idleFg = TextPrimary
+    val activeBg = NeuAccent
+    val activeFg = AccentInk
+    // v0.55.0 进场：气泡从 0.92 弹簧长到 1。蒙层本身由调用点的 AnimatedVisibility 淡入，
+    // 这里只管"气泡长出来"这一下 —— 两件事分开，才不会出现"整块一起糊上来"。
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { entered = true }
+    val bubbleScale by animateFloatAsState(if (entered) 1f else 0.92f, NeuSnappySpring)
+    // 滑到「取消」档时气泡先缩一点：这一段要被丢掉了，在**松手之前**就先"收"起来，
+    // 临界操作有了预告，不用等松手才知道刚才划到了哪一档。
+    val armScale by animateFloatAsState(
+        targetValue = if (armed == RecordArm.CANCEL) 0.94f else 1f,
+        animationSpec = tween(200, easing = EaseOutQuart),
+    )
 
     Box(Modifier.fillMaxSize().background(scrim)) {
         Column(
-            // v0.53.5：整块**贴着屏幕下部**——以前垂直居中，按住说话的手指根本够不到
+            // v0.56.0：整块贴屏幕底部 —— 气泡悬在中下部，下面依次是两块灰块、贴底大弧
+            //（照截图：大弧直接压在屏幕下沿，手势条浮在弧上，微信同款）。
             Modifier
                 .align(Alignment.BottomCenter)
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 84.dp),
+                .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // 气泡 + 底部小尖角
-            Box {
+            Box(Modifier.scale(bubbleScale * armScale)) {
+                // v0.56.3：气泡**拉长压扁**（用户：转文字时框太肥，要长扁）——
+                // 宽 200dp / 纵向内边距 10dp / 波形 176×20dp，秒数缩小。
                 Column(
                     Modifier
-                        .widthIn(min = 132.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                        .widthIn(min = 200.dp)
+                        .clip(RoundedCornerShape(14.dp))
                         .background(bubble)
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.5.dp),
-                    ) {
-                        bars.forEach { amp ->
-                            Box(
-                                Modifier
-                                    .width(2.5.dp)
-                                    .height((6 + amp * 22).dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(onBubble),
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
+                    RecordingWave(
+                        bars = bars,
+                        color = onBubble,
+                        modifier = Modifier.width(176.dp).height(20.dp),
+                    )
+                    Spacer(Modifier.height(4.dp))
                     Text(
                         com.menghuan.app.data.VoiceRecorder.formatDuration(durationMs),
-                        fontSize = 12.sp,
-                        color = onBubble.copy(alpha = 0.85f),
+                        fontSize = 11.sp,
+                        color = onBubble.copy(alpha = 0.75f),
                     )
                 }
                 // 小尖角：旋转 45° 的小方块，一半露在气泡外
@@ -1869,80 +2315,174 @@ private fun VoiceRecordingOverlay(
                         .background(bubble),
                 )
             }
-            Spacer(Modifier.height(18.dp))
-            Text(
-                when (armed) {
+            Spacer(Modifier.height(56.dp))
+            // v0.56.2：按用户点名改回**环带弧块**（照截图：顶边是大弧的环带段，中央留缺口，
+            // 不是两颗半圆），黑白配色：点亮 = 强调色底 + AccentInk 字。
+            RingSegments(
+                armed = armed,
+                idleBg = idleBg,
+                idleFg = idleFg,
+                activeBg = activeBg,
+                activeFg = activeFg,
+            )
+            Spacer(Modifier.height(12.dp))
+            ReleaseDome(
+                label = when (armed) {
                     RecordArm.CANCEL -> "松开 取消"
                     RecordArm.TRANSCRIBE -> "松开 转文字"
-                    RecordArm.NONE -> "松手发送"
+                    RecordArm.NONE -> "松开 发送"
                 },
-                fontSize = 13.sp,
-                color = MutedText,
             )
-            Spacer(Modifier.height(20.dp))
-            // v0.53.5：改成两块**扇形（半圆）选择区**——手指拖进哪块，哪块变深并显出对应的字。
-            // （原来是固定小圆按钮，位置高、又小，手指根本够不到也难点。）
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                SectorAction("取消", armed == RecordArm.CANCEL, idleBg, idleFg, bubble, onBubble)
-                SectorAction("转文字", armed == RecordArm.TRANSCRIBE, idleBg, idleFg, bubble, onBubble)
-            }
         }
     }
 }
 
 /**
- * 录音蒙层里的**扇形（半圆）选择区**（v0.53.5）。
- *
- * 用户点名："取消和转文字很难点，改成拖到一定扇形区域，区域颜色变深，然后再显示取消或者转文字。"
- * 所以这里只负责**显示**（拖进去就变深 + 显出字），真正的判定在 [VoiceHoldBar] 的左右滑（±60dp）。
+ * 蒙层中部的**环带弧块**（v0.56.2 照微信截图：两块顶边为大弧的环带段，中央留缺口
+ * ——**不是两颗半圆**；弧线与底部大弧同心，文字沿切线微微倾斜）。
+ * 判定仍在 [VoiceHoldBar] 的左右滑（±60dp），这里只负责显示：拖进哪块哪块点亮。
  */
 @Composable
-private fun SectorAction(
-    label: String,
-    active: Boolean,
+private fun RingSegments(
+    armed: RecordArm,
     idleBg: Color,
     idleFg: Color,
     activeBg: Color,
     activeFg: Color,
 ) {
     val hairline = NeuHairline
-    Box(
-        Modifier
-            .width(136.dp)
-            .height(68.dp),
-        contentAlignment = Alignment.BottomCenter,
-    ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val r = size.width / 2f
-            val arcTop = Offset(0f, size.height - r)
-            val arcSize = Size(size.width, size.width)
+    val fillL by animateColorAsState(
+        targetValue = if (armed == RecordArm.CANCEL) activeBg else idleBg,
+        animationSpec = tween(160),
+        label = "ringFillL",
+    )
+    val fgL by animateColorAsState(
+        targetValue = if (armed == RecordArm.CANCEL) activeFg else idleFg,
+        animationSpec = tween(160),
+        label = "ringFgL",
+    )
+    val fillR by animateColorAsState(
+        targetValue = if (armed == RecordArm.TRANSCRIBE) activeBg else idleBg,
+        animationSpec = tween(160),
+        label = "ringFillR",
+    )
+    val fgR by animateColorAsState(
+        targetValue = if (armed == RecordArm.TRANSCRIBE) activeFg else idleFg,
+        animationSpec = tween(160),
+        label = "ringFgR",
+    )
+    val measurer = rememberTextMeasurer()
+    val labelStyle = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Medium)
+
+    Canvas(Modifier.fillMaxWidth().height(64.dp)) {
+        val w = size.width
+        val cx = w / 2f
+        val padTop = 2.dp.toPx()
+        // 顶边大弧：弦长 ≈ 全屏宽、矢高 = 7.5% 宽 → 反推圆半径
+        val sag = w * 0.075f
+        val r = (w * w) / (8f * sag) + sag / 2f
+        val cy = padTop + r
+        val t = 34.dp.toPx()
+        val rm = r - t / 2f
+        // v0.56.4：**左右严格镜像对称** —— 两块外端都收在 47% 半宽、内端都留 5% 半宽缺口。
+        val outerDx = w * 0.47f
+        val gapDx = w * 0.05f
+        fun deg(dx: Float): Double = Math.toDegrees(Math.asin((dx / rm).toDouble()))
+        val top = 270.0
+        // 圆帽端头会沿切线方向多伸出 t/2，把两端角度各往回收这么多，端点才落在预设位置
+        val capDeg = Math.toDegrees(((t / 2f) / rm).toDouble())
+        val lStart = (top - deg(outerDx) + capDeg).toFloat()
+        val lEnd = (top - deg(gapDx) - capDeg).toFloat()
+        val rStart = (top + deg(gapDx) + capDeg).toFloat()
+        val rEnd = (top + deg(outerDx) - capDeg).toFloat()
+
+        // 一段弧线 + **圆帽描边**：端头天然是半圆角，不需要手拼路径。
+        // 静息态 = 先画发丝线宽条、再叠窄 2dp 的面色条，边缘留出 1dp 描边圈。
+        fun block(start: Float, end: Float, fill: Color, outlined: Boolean) {
+            val tl = Offset(cx - rm, cy - rm)
+            val sz = Size(rm * 2f, rm * 2f)
             drawArc(
-                color = if (active) activeBg else idleBg,
-                startAngle = 180f,
-                sweepAngle = 180f,
-                useCenter = true,
-                topLeft = arcTop,
-                size = arcSize,
+                color = fill,
+                startAngle = start,
+                sweepAngle = end - start,
+                useCenter = false,
+                topLeft = tl,
+                size = sz,
+                style = Stroke(width = t, cap = StrokeCap.Round),
             )
-            if (!active) {
-                // 未选中时描一圈发丝边（浅色主题下浅灰扇形才有边界）
+            if (outlined) {
                 drawArc(
                     color = hairline,
-                    startAngle = 180f,
-                    sweepAngle = 180f,
+                    startAngle = start,
+                    sweepAngle = end - start,
                     useCenter = false,
-                    topLeft = arcTop,
-                    size = arcSize,
-                    style = Stroke(width = 1.dp.toPx()),
+                    topLeft = tl,
+                    size = sz,
+                    style = Stroke(width = t, cap = StrokeCap.Round),
+                )
+                drawArc(
+                    color = fill,
+                    startAngle = start,
+                    sweepAngle = end - start,
+                    useCenter = false,
+                    topLeft = tl,
+                    size = sz,
+                    style = Stroke(width = t - 2.dp.toPx(), cap = StrokeCap.Round),
                 )
             }
         }
+        block(lStart, lEnd, fillL, armed != RecordArm.CANCEL)
+        block(rStart, rEnd, fillR, armed != RecordArm.TRANSCRIBE)
+
+        // 文字：放在块中角的中径上，旋转 = 中角相对顶点的偏角（沿切线微倾）
+        fun drawLabel(label: String, start: Float, end: Float, color: Color) {
+            val midDeg = ((start + end) / 2f).toDouble()
+            val mid = Math.toRadians(midDeg)
+            val rm = r - t / 2f
+            val px = cx + (rm * Math.cos(mid)).toFloat()
+            val py = cy + (rm * Math.sin(mid)).toFloat()
+            val rot = (midDeg - top).toFloat()
+            val lr = measurer.measure(label, labelStyle)
+            withTransform({
+                rotate(degrees = rot, pivot = Offset(px, py))
+            }) {
+                drawText(
+                    textLayoutResult = lr,
+                    color = color,
+                    topLeft = Offset(px - lr.size.width / 2f, py - lr.size.height / 2f),
+                )
+            }
+        }
+        drawLabel("取消", lStart, lEnd, fgL)
+        drawLabel("转文字", rStart, rEnd, fgR)
+    }
+}
+
+/**
+ * 蒙层底部贴屏幕下沿的**浅灰大弧**（v0.56.0 照微信截图：半椭圆穹顶，字样随档位变化）。
+ * 弧体 = 上半椭圆（宽 = 全屏、可见高 = 92dp），颜色跟随主题凹陷面 [NeuTrack]。
+ */
+@Composable
+private fun ReleaseDome(label: String) {
+    val fill = NeuTrack
+    Box(Modifier.fillMaxWidth().height(92.dp), contentAlignment = Alignment.TopCenter) {
+        Canvas(Modifier.matchParentSize()) {
+            // 上半椭圆：外接矩形高 = 可见高 × 2，只露出上面一半 → 贴底穹顶
+            drawArc(
+                color = fill,
+                startAngle = 180f,
+                sweepAngle = 180f,
+                useCenter = true,
+                topLeft = Offset(0f, 0f),
+                size = Size(size.width, size.height * 2f),
+            )
+        }
         Text(
             label,
-            fontSize = 14.sp,
-            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
-            color = if (active) activeFg else idleFg,
-            modifier = Modifier.padding(bottom = 12.dp),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium,
+            color = TextPrimary,
+            modifier = Modifier.padding(top = 30.dp),
         )
     }
 }
@@ -2031,6 +2571,23 @@ private class VoicePlayer {
 
     fun release() = stop()
 }
+
+/**
+ * 待发送附件（v0.56.6）：相册 / 文件选完之后**先挂到输入框上方**，等用户补完文字一起发，
+ * 或者直接点发送。以前是"选完立刻发出去"，用户没有写说明的机会。
+ *
+ * [isImage] 决定发送时走 [com.menghuan.app.ui.chat.ChatViewModel.sendImage] 还是 sendFile；
+ * 两者的 [path] 都已经是应用私有目录里的落盘文件（选的时候就拷好了）。
+ */
+private data class PendingAttachment(
+    val isImage: Boolean,
+    val path: String,
+    /** 文件名（图片固定显示"图片"） */
+    val name: String,
+    val size: Long,
+    /** 文件本地抽出的正文（图片为空） */
+    val extractedText: String,
+)
 
 /** 取 content:// 的显示名（用户看到的原始文件名） */
 private fun queryDisplayName(context: android.content.Context, uri: android.net.Uri): String? =
@@ -2124,7 +2681,7 @@ private fun MessageBubble(
     }
 }
 
-/** AI 气泡：凹陷纸面；长按弹操作菜单 */
+/** AI 气泡：凹陷纸面；长按弹操作菜单（v0.56.15：震动只在 openMessageMenu 里补，不再自己震一次） */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AiBubble(
@@ -2132,7 +2689,6 @@ private fun AiBubble(
     maxWidth: androidx.compose.ui.unit.Dp,
     onLongPress: () -> Unit,
 ) {
-    val haptic = LocalHapticFeedback.current
     Box(
         Modifier
             .widthIn(max = maxWidth)
@@ -2140,10 +2696,7 @@ private fun AiBubble(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = {},
-                onLongClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongPress()
-                },
+                onLongClick = onLongPress,
             )
             .neuSurface(18.dp, color = MaterialTheme.colorScheme.surface, elevation = 2.dp)
             .padding(horizontal = 16.dp, vertical = 11.dp),
@@ -2164,7 +2717,6 @@ private fun UserBubble(
     maxWidth: androidx.compose.ui.unit.Dp,
     onLongPress: () -> Unit,
 ) {
-    val haptic = LocalHapticFeedback.current
     Box(
         Modifier
             .widthIn(max = maxWidth)
@@ -2172,10 +2724,7 @@ private fun UserBubble(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = {},
-                onLongClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongPress()
-                },
+                onLongClick = onLongPress,
             )
             .neuSurface(22.dp, color = NeuAccent, elevation = 3.dp)
             .padding(horizontal = 16.dp, vertical = 11.dp),

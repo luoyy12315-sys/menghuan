@@ -1,15 +1,18 @@
 package com.menghuan.app.ui.ledger
 
 import android.content.Context
-import android.content.Intent
-import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import com.menghuan.app.data.AsrModelManager
+import com.menghuan.app.data.SherpaAsr
+import com.menghuan.app.data.VoiceRecorder
 import com.menghuan.app.data.model.LedgerMath
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * 记账的三种录入解析（纯函数区，JVM 单测覆盖）。
@@ -71,139 +74,99 @@ object LedgerParser {
                         note = note.ifEmpty { trimmed.take(60) },
                     )
                 }
+                // JSON 里没拿到金额（或金额无效）：模型的 note 是它说明的原因
+                // （v0.56.14 起 prompt 要求兜底时写原因）——把它交给备注框，
+                // 不再把整段 JSON 串灌进表单
+                if (note.isNotEmpty()) return LedgerDraft(false, null, note)
                 // JSON 里没拿到金额（或金额无效）：整体退化为纯文本解析
             }
         }
         return fromText(trimmed)
     }
 
-    /** 识图 prompt（硬编码框架 + 可读文本金额示意） */
+    /** 识图 prompt（硬编码框架 + 可读文本金额示意）。v0.56.14：兜底时要求说明原因，用户看得到模型卡在哪 */
     const val IMAGE_FRAMEWORK: String =
         "你是一个账单识别器。看图片里的消费/收款凭证，提取出金额与收支方向，只输出 JSON，格式：\n" +
             "{\"amount\":数字（单位元，不带符号）,\"type\":\"支出\"或\"收入\",\"note\":\"一句话备注，不超过 20 字\"}\n" +
             "规则：\n" +
             "- 金额取该凭证的**合计/实付/总计**金额（若有优惠后金额取实付），不要取单项小计。\n" +
-            "- 看不出收支方向时按「支出」处理；看不出金额时 {\"amount\":null,\"type\":\"支出\",\"note\":\"\"}。\n" +
+            "- 看不出收支方向时按「支出」处理。\n" +
+            "- 看不出金额时输出 {\"amount\":null,\"type\":\"支出\",\"note\":\"说明原因，例如：图片太模糊 / 图里没有金额数字 / 不是账单截图\"}。\n" +
             "- 不要输出 JSON 以外的任何文字。"
 }
 
 /**
- * 语音识别封装（v0.42.0）：用系统 [SpeechRecognizer]，零第三方依赖。
+ * 语音识别封装。**v0.56.14 推倒重做**：原来用系统 [android.speech.SpeechRecognizer]——
+ * 那是 v0.50.0 语音栈重做时判定"国产 ROM 上永远走不通、不要复活"的链路，记账本是漏网之鱼；
+ * 用户明明授权了麦克风，系统识别服务不可用时却报"没有麦克风权限"
+ * （ERROR_INSUFFICIENT_PERMISSIONS 被国产 ROM 滥用），语音记账永远哑火。
  *
- * 为什么不用第三方 ASR：本项目自用分发、依赖精简，且只有「记一笔」这一处语音需求；
- * 系统识别在国产 ROM 上一般已内置且免登录。代价是不支持离线兜底——识别失败让用户手填即可。
+ * 现在回归**唯一识别一级**：[VoiceRecorder] 录音 + [SherpaAsr] 端侧转写，
+ * 与聊天语音条 / 通话同一条链（模型在 设置 → 模型配置 → 识别模型 下载）。
  *
- * 生命周期：每次录音前 [SpeechRecognizer.createSpeechRecognizer] 新建、结束后 destroy，
- * 避免长持实例在部分 ROM 上漏 reclaim（这是社区反复踩过的坑）。
+ * 形态：点「语音」开始录音（listening=true）→ 点「停止」结束并转写（recognizing=true）
+ * → 文本一次性回来。端侧离线识别**没有逐字 partial**（语音条/通话同款），识别完才知道全文。
  */
 class VoiceLedgerController(private val context: Context) {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val recorder = VoiceRecorder(context)
 
     private val _listening = MutableStateFlow(false)
     val listening: StateFlow<Boolean> = _listening.asStateFlow()
 
-    /** 识别中间结果（实时上屏，让用户知道"听到了"） */
-    private val _partial = MutableStateFlow("")
-    val partial: StateFlow<String> = _partial.asStateFlow()
+    /** 停止录音后的端侧转写（1~3 秒）：弹层显示成"正在识别…" */
+    private val _recognizing = MutableStateFlow(false)
+    val recognizing: StateFlow<Boolean> = _recognizing.asStateFlow()
 
-    private var recognizer: SpeechRecognizer? = null
+    private var onResult: ((String) -> Unit)? = null
+    private var onError: ((String) -> Unit)? = null
 
-    /** 系统是否提供语音识别能力（部分精简 ROM 无） */
-    fun isAvailable(): Boolean = runCatching { SpeechRecognizer.isRecognitionAvailable(context) }
-        .getOrDefault(false)
+    /** 识别模型是否就绪（没下载在开始时就亮出来，别等用户说完一句才失败） */
+    fun isModelReady(): Boolean = AsrModelManager.isReady(context)
 
-    /**
-     * 开始一次识别。[onResult] 拿到最终转写文本（可能为空串，表示没听清）；
-     * [onError] 拿到面向用户的中文提示。
-     */
+    /** 开始一次录音。回调在识别完成后触发（存字段，[stopListening] 里收尾用） */
     fun start(onResult: (String) -> Unit, onError: (String) -> Unit) {
-        if (_listening.value) return
-        if (!isAvailable()) {
-            onError("当前设备不支持语音识别，请手动输入")
+        if (_listening.value || _recognizing.value) return
+        if (!isModelReady()) {
+            onError("语音识别模型还没下载：设置 → 模型配置 → 识别模型")
             return
         }
         stop()
-        _partial.value = ""
-        val rec = runCatching { SpeechRecognizer.createSpeechRecognizer(context) }.getOrNull()
-        if (rec == null) {
-            onError("语音识别初始化失败")
-            return
-        }
-        recognizer = rec
-        rec.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                _listening.value = true
-            }
-
-            override fun onBeginningOfSpeech() = Unit
-            override fun onRmsChanged(rmsdB: Float) = Unit
-            override fun onBufferReceived(buffer: ByteArray?) = Unit
-            override fun onEndOfSpeech() {
-                _listening.value = false
-            }
-
-            override fun onError(error: Int) {
-                _listening.value = false
-                onError(errorMessage(error))
-                stop()
-            }
-
-            override fun onResults(results: Bundle?) {
-                _listening.value = false
-                val text = results
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
-                    .orEmpty()
-                if (text.isBlank()) onError("没听清，再说一次或手动输入") else onResult(text)
-                stop()
-            }
-
-            override fun onPartialResults(partialResults: Bundle?) {
-                val text = partialResults
-                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    ?.firstOrNull()
-                    .orEmpty()
-                if (text.isNotBlank()) _partial.value = text
-            }
-
-            override fun onEvent(eventType: Int, params: Bundle?) = Unit
-        })
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        }
-        runCatching { rec.startListening(intent) }.onFailure {
-            _listening.value = false
+        this.onResult = onResult
+        this.onError = onError
+        if (!runCatching { recorder.start() }.getOrDefault(false)) {
             onError("无法启动录音，请检查麦克风权限")
-            stop()
+            return
         }
         _listening.value = true
     }
 
-    /** 手动结束（用户点停止）：让识别器出最终结果 */
+    /** 手动结束（点「停止」）：停录音 → 端侧转写 → 回调结果 */
     fun stopListening() {
-        runCatching { recognizer?.stopListening() }
-    }
-
-    fun stop() {
-        val rec = recognizer ?: return
-        recognizer = null
+        if (!_listening.value) return
         _listening.value = false
-        runCatching { rec.cancel() }
-        runCatching { rec.destroy() }
+        val saved = recorder.stop(minDurationMs = 600)
+        val file = saved?.first
+        if (file == null) {
+            onError?.invoke("太短了，没录上，说完再点停止")
+            return
+        }
+        _recognizing.value = true
+        scope.launch {
+            val text = SherpaAsr.transcribeWav(context, file.absolutePath)
+            _recognizing.value = false
+            runCatching { file.delete() }
+            if (text.isNullOrBlank()) onError?.invoke("没听清，再说一次或手动输入")
+            else onResult?.invoke(text)
+        }
     }
 
-    /** 错误码 → 用户能看懂的中文（不暴露技术细节） */
-    fun errorMessage(error: Int): String = when (error) {
-        SpeechRecognizer.ERROR_AUDIO -> "录音出错，请重试"
-        SpeechRecognizer.ERROR_CLIENT -> "识别被中断，请重试"
-        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "没有麦克风权限，请在设置里允许录音"
-        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "网络不给力，识别失败"
-        SpeechRecognizer.ERROR_NO_MATCH -> "没听清，再说一次或手动输入"
-        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "识别器忙，稍后再试"
-        SpeechRecognizer.ERROR_SERVER -> "识别服务出错，请重试"
-        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "没有听到声音"
-        else -> "识别失败，请手动输入"
+    /** 彻底取消（关弹层 / 切识图）：录音与识别协程一并停掉 */
+    fun stop() {
+        scope.coroutineContext.cancelChildren()
+        _listening.value = false
+        _recognizing.value = false
+        runCatching { recorder.cancel() }
     }
 }

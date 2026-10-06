@@ -3,8 +3,12 @@ package com.menghuan.app.ui.settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,7 +17,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,7 +33,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -47,9 +56,13 @@ import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.figmaSelection
+import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
+import com.menghuan.app.ui.theme.NeuHairline
+import com.menghuan.app.ui.theme.NeuSurface
+import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
 import kotlinx.coroutines.launch
@@ -82,12 +95,17 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
 
     var cloned by remember { mutableStateOf<List<ClonedVoice>>(emptyList()) }
     var aliases by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // 自定义端点的多条手填音色库（v0.56.13，id → 显示名）；读取会顺带完成旧单值键的迁移
+    var customs by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+    // 被用户长按删掉的硅基克隆音色 uri（本机隐藏表）：名单两处（缓存 + 网络刷新）都按它过滤
+    var hidden by remember { mutableStateOf<Set<String>>(emptySet()) }
     var reloadKey by remember { mutableStateOf(0) }
     var problem by remember { mutableStateOf<String?>(null) }
     var busyVoice by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var showClone by remember { mutableStateOf(false) }
     var showManual by remember { mutableStateOf(false) }
+    var showAddCustom by remember { mutableStateOf(false) }
     var manualDraft by remember { mutableStateOf(manualId) }
     LaunchedEffect(manualId) { manualDraft = manualId }
 
@@ -98,40 +116,103 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
         }.orEmpty().map { it.name }
     }
 
-    // 克隆音色是服务商账号里的东西（硅基）/ 本机样本（MiMo），进页面直接读
-    LaunchedEffect(provider, config.isComplete, reloadKey) {
-        problem = null
+    // 克隆音色（v0.53.5）：服务商账号里的东西（硅基）/ 本机样本（MiMo）。
+    //
+    // v0.56.5（用户点名"克隆音色总是最后才加载出来，像卡了一样突然弹出来"）：
+    // 拆成**两步**，让整份名单一次性出现 ——
+    // ① 先用**本机缓存**把整页渲染齐（毫秒级，与预置音色同一帧到）；
+    // ② 再后台向服务商拉一次，拿到就覆盖，并落回缓存供下次用。
+    // 以前只有网络这一份，克隆那几条必然晚一个来回才补进来。
+    //
+    // v0.56.12：两条路径都过滤 [hidden]（用户长按删除过的不再出现）。
+    LaunchedEffect(provider) {
         aliases = runCatching { app.settingsRepository.cloneVoiceNames() }.getOrDefault(emptyMap())
-        cloned = if (provider == TtsProvider.SILICONFLOW && config.isComplete) {
-            runCatching { VoiceCloner.listVoices(config) }.getOrElse {
-                problem = it.message ?: "拉取克隆音色失败"
-                emptyList()
-            }
-        } else {
-            emptyList()
+        hidden = runCatching { app.settingsRepository.hiddenVoiceIds(provider) }.getOrDefault(emptySet())
+        customs = runCatching { app.settingsRepository.customVoices() }.getOrDefault(emptyList())
+        cloned = runCatching { app.settingsRepository.cachedClonedVoices(provider) }.getOrDefault(emptyList())
+    }
+    LaunchedEffect(provider, config.isComplete, reloadKey) {
+        // 只有硅基有"账号里的音色列表"这回事；MiMo 用本机样本、自定义端点用手填 ID
+        if (provider != TtsProvider.SILICONFLOW || !config.isComplete) return@LaunchedEffect
+        problem = null
+        val fresh = runCatching { VoiceCloner.listVoices(config) }.getOrElse {
+            problem = it.message ?: "拉取克隆音色失败"
+            null
+        }
+        if (fresh != null) {
+            cloned = fresh.filter { it.uri !in hidden }
+            aliases = runCatching { app.settingsRepository.cloneVoiceNames() }.getOrDefault(emptyMap())
+            runCatching { app.settingsRepository.setCachedClonedVoices(provider, fresh) }
         }
     }
 
-    val library = TtsVoices.library(provider, cloned, localSamples, manualId, aliases)
+    val library = TtsVoices.library(
+        provider,
+        cloned.filter { it.uri !in hidden },
+        localSamples,
+        manualId,
+        aliases,
+        customVoices = customs,
+    )
     val selectedId = defaultRef?.takeIf { it.provider == provider }?.voiceId
         ?: TtsVoices.defaultVoiceId(provider)
 
+    // 长按删除（v0.56.12，v0.56.13 加自定义端点分支）：预置音色不可删；手填 ID 真删（清键）、
+    // MiMo 本机样本删文件、自定义端点的录入行从库里移除、硅基克隆做**本机隐藏**
+    // （服务商账号里的实体不动——App 不调服务商删除接口，删了就找不回）。
+    // 删的是当前默认音色时，回落到该家第一个预置（自定义端点没有预置 = 清掉默认）。
+    suspend fun deleteVoice(item: VoiceItem) {
+        val vid = item.ref.voiceId
+        when {
+            provider == TtsProvider.CUSTOM -> {
+                runCatching { app.settingsRepository.removeCustomVoice(vid) }
+                customs = customs.filter { it.first != vid }
+            }
+            vid == manualId.trim() -> app.settingsRepository.setTtsManualVoiceId(provider, "")
+            vid.startsWith(TtsVoices.MIMO_LOCAL_PREFIX) -> {
+                val name = TtsVoices.localSamplePath(vid).orEmpty().substringAfterLast('/')
+                if (name.isNotBlank()) {
+                    runCatching { File(VoiceCloner.voiceDir(context), name).delete() }
+                    runCatching { app.settingsRepository.removeCloneVoiceName(name) }
+                }
+                reloadKey++
+            }
+            else -> {
+                hidden = hidden + vid
+                runCatching { app.settingsRepository.hideVoice(provider, vid) }
+                runCatching { app.settingsRepository.removeCloneVoiceName(vid) }
+                runCatching {
+                    val rest = app.settingsRepository.cachedClonedVoices(provider).filter { it.uri != vid }
+                    app.settingsRepository.setCachedClonedVoices(provider, rest)
+                }
+                cloned = cloned.filter { it.uri != vid }
+            }
+        }
+        if (vid == selectedId) {
+            app.settingsRepository.setTtsDefaultVoice(VoiceRef(provider, TtsVoices.defaultVoiceId(provider)))
+        }
+        status = "已删除「${item.label}」"
+    }
+
     AdaptiveScreen {
         NeuTopBar(
-            title = "音色",
+            // v0.56.13：标明当前生效的服务商——名单、克隆、试听、默认音色都只对生效那家有意义，
+            // 不标出来用户配了两家之后就分不清"这排是谁家的、克隆会进谁家"
+            title = "音色 · ${provider.label}",
             navigationIcon = {
                 NeuCircleButton(onClick = onBack, size = 38.dp) {
                     Icon(MIcons.Back, contentDescription = "返回", tint = TextPrimary, modifier = Modifier.size(19.dp))
                 }
             },
             actions = {
-                // 顶栏右侧：克隆音色 + ID（手填音色 ID 的缩写）
+                // 顶栏右侧：克隆音色 + ID（手填音色 ID 的缩写）。
+                // v0.56.13：自定义端点的「ID」撤掉——手填升级成多条音色库，入口在正文的「＋ 添加音色」。
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (provider != TtsProvider.CUSTOM) {
                         NeuTextButton("克隆音色", onClick = { showClone = true })
                         Spacer(Modifier.width(12.dp))
+                        NeuTextButton("ID", onClick = { manualDraft = manualId; showManual = true })
                     }
-                    NeuTextButton("ID", onClick = { manualDraft = manualId; showManual = true })
                 }
             },
         )
@@ -143,25 +224,51 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
                 .padding(bottom = 40.dp),
         ) {
             Spacer(Modifier.height(12.dp))
-            Text(
-                "点一行 = 设为默认音色（人设没单独配音色时用它）；行尾可试听。",
-                fontSize = 12.sp,
-                lineHeight = 18.sp,
-                color = MutedText,
-            )
-            Spacer(Modifier.height(10.dp))
+            // v0.56.13：自定义端点的添加入口从顶栏小按钮升级成**正文首行的行卡**——
+            // 那家没有预置也没有克隆，这张卡就是唯一的音色来源，值得一等公民的位置
+            if (provider == TtsProvider.CUSTOM) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .neuSurface(12.dp, color = NeuTrack, inset = true)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { showAddCustom = true },
+                        )
+                        .padding(horizontal = 12.dp, vertical = 13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        Modifier.size(26.dp).neuSurface(999.dp, color = NeuSurface),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(MIcons.Plus, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(14.dp))
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Text("添加音色", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+                }
+                Spacer(Modifier.height(12.dp))
+            }
             library.forEach { item ->
+                // v0.56.12：预置音色（一男一女）不可删；克隆与手填的都支持长按删除
+                val deletable = TtsVoices.presets(provider).none { it.id == item.ref.voiceId }
                 VoiceRow(
                     item = item,
                     selected = item.ref.voiceId == selectedId,
                     busy = busyVoice == item.ref.voiceId,
+                    onDelete = if (deletable) {
+                        {
+                            scope.launch { deleteVoice(item) }
+                        }
+                    } else null,
                     onSelect = { scope.launch { app.settingsRepository.setTtsDefaultVoice(item.ref) } },
                     onPreview = {
                         scope.launch {
                             busyVoice = item.ref.voiceId
                             status = null
                             problem = null
-                            val client = TtsClients.from(config)
+                            val client = TtsClients.from(config, context)
                             val audio = client.synthesize(VOICE_PREVIEW_TEXT, item.ref)
                             if (audio == null) {
                                 problem = "试听失败：${client.lastFailure ?: "未知原因"}"
@@ -174,9 +281,6 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
                         }
                     },
                 )
-            }
-            if (provider == TtsProvider.CUSTOM && library.isEmpty()) {
-                Text("该端点没有预置音色，用顶部「ID」手填一个。", fontSize = 12.sp, color = MutedText)
             }
             status?.let {
                 Spacer(Modifier.height(6.dp))
@@ -247,53 +351,139 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
             onDone = { reloadKey++ },
         )
     }
+
+    // 自定义端点的「添加音色」弹层（v0.56.13）：ID 必填（服务商侧的音色标识），
+    // 显示名选填（空则直接显示 ID）。已有一个默认音色时不抢默认；
+    // 第一次添加（还没有默认）自动设为默认，用户立即可用——与硅基克隆完的行为一致。
+    if (showAddCustom) {
+        var idDraft by remember { mutableStateOf("") }
+        var nameDraft by remember { mutableStateOf("") }
+        NeuSheetScaffold(title = "添加音色", onDismiss = { showAddCustom = false }) {
+            Spacer(Modifier.height(6.dp))
+            NeuTextField(
+                value = idDraft,
+                onValueChange = { idDraft = it },
+                label = "音色 ID",
+                placeholder = "服务商文档里的那串音色标识（如 alloy / FishAudio:xxx）",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(14.dp))
+            NeuTextField(
+                value = nameDraft,
+                onValueChange = { nameDraft = it },
+                label = "显示名（可选）",
+                placeholder = "例：温柔女声",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(14.dp))
+            NeuButton(
+                text = "添加",
+                kind = NeuButtonKind.Primary,
+                enabled = idDraft.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    scope.launch {
+                        val vid = idDraft.trim()
+                        app.settingsRepository.addCustomVoice(vid, nameDraft)
+                        customs = runCatching { app.settingsRepository.customVoices() }.getOrDefault(customs)
+                        if (selectedId.isBlank()) {
+                            app.settingsRepository.setTtsDefaultVoice(VoiceRef(provider, vid))
+                        }
+                        status = "已添加音色「${nameDraft.trim().ifBlank { vid }}」"
+                        showAddCustom = false
+                    }
+                },
+            )
+            Spacer(Modifier.height(16.dp))
+        }
+    }
 }
 
-/** 一行一个音色：点整行选为默认，右侧「试听」 */
+/**
+ * 一行一个音色：点整行选为默认，右侧「试听」。
+ *
+ * **v0.56.12 长按删除**：[onDelete] 非空（克隆 / 手填）时长按弹菜单，点菜单里的「删除」才真删
+ * （2026-10-02 拍板的破坏性操作惯例：长按只弹菜单、菜单那一下就是确认）+ LongPress 震动。
+ * 菜单锚定在条目右下角的小锚点 Box 上。
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun VoiceRow(
     item: VoiceItem,
     selected: Boolean,
     busy: Boolean,
+    onDelete: (() -> Unit)?,
     onSelect: () -> Unit,
     onPreview: () -> Unit,
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .figmaSelection(selected, 12.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onSelect,
-            )
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            item.label,
-            fontSize = 14.sp,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            color = TextPrimary,
-            modifier = Modifier.weight(1f),
-        )
-        if (selected) {
-            Text("默认", fontSize = 10.sp, color = TextSecondary, letterSpacing = 0.4.sp)
-            Spacer(Modifier.width(10.dp))
-        }
-        Text(
-            if (busy) "…" else "试听",
-            fontSize = 12.sp,
-            color = if (busy) MutedText else TextPrimary,
-            modifier = Modifier
-                .clickable(
+    var menuOpen by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+    Box(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .figmaSelection(selected, 12.dp)
+                .combinedClickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                    enabled = !busy,
-                    onClick = onPreview,
+                    onClick = onSelect,
+                    onLongClick = onDelete?.let { onDel -> {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        menuOpen = true
+                    } },
                 )
-                .padding(6.dp),
-        )
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                item.label,
+                fontSize = 14.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            if (selected) {
+                Text("默认", fontSize = 10.sp, color = TextSecondary, letterSpacing = 0.4.sp)
+                Spacer(Modifier.width(10.dp))
+            }
+            Text(
+                if (busy) "…" else "试听",
+                fontSize = 12.sp,
+                color = if (busy) MutedText else TextPrimary,
+                modifier = Modifier
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        enabled = !busy,
+                        onClick = onPreview,
+                    )
+                    .padding(6.dp),
+            )
+        }
+        // 长按菜单锚点：包在条目右下角的小 Box 里（DropdownMenu 锚定其直接父节点）。
+        // v0.56.15：补上发丝线描边（记账本同款，之前漏了）+ 整体改小（字 13sp、项高 36dp）。
+        if (onDelete != null) {
+            Box(Modifier.align(Alignment.BottomEnd).size(1.dp)) {
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                    modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(10.dp)),
+                    containerColor = NeuSurface,
+                    shape = RoundedCornerShape(10.dp),
+                    shadowElevation = 0.dp, // v0.42.1 全应用去阴影
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("删除", fontSize = 13.sp, color = NeuDanger) },
+                        onClick = {
+                            menuOpen = false
+                            onDelete()
+                        },
+                        modifier = Modifier.height(36.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    )
+                }
+            }
+        }
     }
 }
 

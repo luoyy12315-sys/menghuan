@@ -59,15 +59,20 @@ object TaskActions {
                 AlarmScheduler.schedule(context, task.id, updated.title, remindAt)
         }
         if (nowDone) {
-            // 打卡回执：写进主人设会话作为用户消息，进入 LLM 历史上下文
+            // 打卡回执：写进主人设会话作为用户消息，进入 LLM 历史上下文。
+            // v0.56.11（用户点名）：**内置「应用助手」不收打卡回执**——完成任务不该在使用
+            // 手册的那个会话里刷"已完成打卡"；其他人设会话维持原行为。
             runCatching {
-                db.messageDao().insert(
-                    ChatMessage(
-                        conversationId = MENTOR_PERSONA_ID,
-                        isFromUser = true,
-                        content = "✅ 已完成打卡：${task.title}",
+                val target = db.personaDao().getById(MENTOR_PERSONA_ID)
+                if (target != null && !target.isBuiltIn) {
+                    db.messageDao().insert(
+                        ChatMessage(
+                            conversationId = MENTOR_PERSONA_ID,
+                            isFromUser = true,
+                            content = "✅ 已完成打卡：${task.title}",
+                        )
                     )
-                )
+                }
             }
         }
         com.menghuan.app.widget.TodayWidgetRefresher.refresh(context)

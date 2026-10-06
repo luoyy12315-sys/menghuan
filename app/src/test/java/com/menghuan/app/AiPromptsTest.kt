@@ -151,7 +151,8 @@ class AiPromptsTest {
         assertTrue(manual.contains("设置 → 音色（独立的全屏页）"))
         assertTrue(manual.contains("顶栏右侧就是「克隆音色」与「ID」两个按钮"))
         assertTrue(manual.contains("左右滑动**来挑"))
-        assertTrue(manual.contains("两块扇形选择区"))
+        // v0.56.7：措辞改成「两块环带选择区」并补了档位说明（见 v0567）
+        assertTrue(manual.contains("两块环带选择区"))
         // 旧措辞一次不剩（replace 落空是不报错的，只能两头夹住）
         assertFalse(manual.contains("每日总结通知（每晚 21:30"))
         assertFalse(manual.contains("系统通知设置跳转"))
@@ -168,7 +169,8 @@ class AiPromptsTest {
         assertTrue(manual.contains("AI 主动打电话"))
         // v0.54.5：总开关删除，开关改在**每个角色**的整页设置卡片上（措辞见 v0545）
         assertTrue(manual.contains("**默认关、每个角色单独配**"))
-        assertTrue(manual.contains("卡片右边就是开关"))
+        // 「卡片右边就是开关」那句措辞在 v0.54.6（改「电话」行 + 底部弹层）就被改掉了，
+        // 现行形态由 v0546 / v0566 两处断言守着，这里不再重复钉一句已经不存在的话
         assertTrue(manual.contains("各人设互不影响"))
         assertTrue(manual.contains("接通后由 AI 先开口"))
         assertTrue(manual.contains("22:30–08:00 一律不打"))
@@ -195,7 +197,8 @@ class AiPromptsTest {
     @Test
     fun `v0536b 对话页菜单进手册`() {
         // v0.54.4：点三个点改成开**整页**会话设置（措辞见 v0544），这里只留仍成立的两条
-        assertTrue(manual.contains("角色立绘 / Live 2D / 聊天背景现在只存不显"))
+        // 「聊天背景只存不显」在 v0.54.7 被改成「角色立绘 / Live 2D 仍是只存不显」（见 v0547）
+        assertTrue(manual.contains("**角色立绘 / Live 2D 仍是只存不显**"))
         assertTrue(manual.contains("联网**打开后"))
         assertTrue(manual.contains("音色不在这里（改到对话页右上角菜单 → 音色里选）"))
     }
@@ -216,7 +219,8 @@ class AiPromptsTest {
     @Test
     fun `v0538 延迟接听进手册`() {
         assertTrue(manual.contains("AI 接听延迟"))
-        assertTrue(manual.contains("右边直接选**我打给 AI 时 TA 过几秒接**"))
+        // v0.56.6：固定档位改成"自己填秒数"（那条 replace 的完整断言见 v0566）
+        assertTrue(manual.contains("那一页**自己填秒数**"))
         assertTrue(manual.contains("只影响你打给 AI 的那一通"))
         assertTrue(manual.contains("正在呼叫"))
         // 旧的"手填秒数"写法一次不剩（replace 落空是静默的，只能两头夹住）
@@ -270,7 +274,7 @@ class AiPromptsTest {
     fun `v0541 设置页重构进手册`() {
         // 交互约定：主页有搜索行（点一下才输入），卡片点进去都是全屏页
         // v0.54.4：搜索框改成**搜索行**（点一下才可输入），措辞改本用例见 v0544
-        assertTrue(manual.contains("设置主页顶部是一条**搜索行**"))
+        assertFalse(manual.contains("设置主页顶部是一条**搜索行**"))  // v0.56.8：搜索框删掉，只留常驻放大镜（见 v0568b）
         assertTrue(manual.contains("每张卡点进去都是全屏页"))
         // 「AI 提示词」改名「提示词库」并搬家；「语音」这一层中转页取消
         assertTrue(manual.contains("「AI 提示词」已从这一页搬进 设置 → 提示词库"))
@@ -299,8 +303,8 @@ class AiPromptsTest {
         // 「设置页怎么用」的定稿版本号已随 v0.54.4 改成 v0.54.4（断言移去 v0544 用例，这里不再钉）
         // 主页就是九张卡，多条目卡点进去才是子卡
         assertTrue(manual.contains("主页就是这九张卡"))
-        // v0.54.5：通话行为里只剩语音通话铃声、提醒与通知里剩两个开关（措辞见 v0545）
-        assertTrue(manual.contains("模型配置点进去还有五张子卡，通话行为里是语音通话铃声"))
+        // v0.56.5 起「通话行为」里是两张卡（铃声 + 接听延迟），措辞随之更新
+        assertTrue(manual.contains("模型配置点进去还有五张子卡，通话行为里是「语音通话铃声」与「接听延迟」两张"))
         assertFalse(manual.contains("模型配置 / 通话行为 / 提醒与通知这三张点进去还有几张子卡"))
         // 模型配置的第 5 张子卡 = 联网搜索
         assertTrue(manual.contains("**模型配置**（对话模型 / 生图模型 / 识别模型 / 语音模型 / 联网搜索）"))
@@ -368,7 +372,9 @@ class AiPromptsTest {
         // ① 三个点 = 整页「会话设置」（原来那九项 + 专属铃声/定时消息/主动关心）
         assertTrue(manual.contains("右上角**三个点打开的是一个整页**"))
         // v0.54.6：整页改灰线行、三个入口改成底部弹层 —— 具体措辞见 v0546，这里只钉仍成立的
-        assertTrue(manual.contains("**人设主动关心**——最后三项只对这个角色生效。"))
+        // v0.56.8 第二批：措辞补上"每个角色各一套"（见 v0568c），这里跟着改成最终文案
+        assertTrue(manual.contains("**人设主动关心**（点开是从底部升上来的弹层：这个角色开不开、**这个角色的发送时间段**、**这个角色每天最多几条**——条数**填什么数字都行**"))
+        assertTrue(manual.contains("不超过就行）——最后三项只对这个角色生效。"))
         assertFalse(manual.contains("右上角**三个点**是一个菜单（共九项）"))
         assertFalse(manual.contains("另外还有**专属铃声**、**定时主动消息**、**人设主动关心**（这三项只对这个角色生效）。"))
         // 输入栏概述里那句"三个点 = 编辑人设"也跟着改成整页会话设置
@@ -397,8 +403,10 @@ class AiPromptsTest {
         assertTrue(manual.contains("点开是独立整页"))
         assertFalse(manual.contains("会出现「上次崩溃记录」一行"))
         // ⑤ 设置主页搜索行（点一下才输入）
-        assertTrue(manual.contains("设置页怎么用（v0.54.4 定稿）"))
-        assertTrue(manual.contains("设置主页顶部是一条**搜索行**"))
+        // v0.56.8：这一句被改写成"（v0.56.8 定稿）+ 常驻放大镜"（见 v0568b），这里跟着改成最终文案
+        assertTrue(manual.contains("设置页怎么用（v0.56.8 定稿）"))
+        assertFalse(manual.contains("设置页怎么用（v0.54.4 定稿）"))
+        assertFalse(manual.contains("设置主页顶部是一条**搜索行**"))  // v0.56.8：搜索框删掉，只留常驻放大镜（见 v0568b）
         assertFalse(manual.contains("设置主页顶部是**搜索框**"))
         // ⑤ 提示词库：标题加大 / 只留「框架」「策略」/ 改动过的段才显示「恢复 / 保存」
         assertTrue(manual.contains("每段标题字号加大、只保留「框架」「策略」四个字"))
@@ -433,15 +441,18 @@ class AiPromptsTest {
         assertTrue(manual.contains("**语音通话铃声在「通话行为」里；允许主动打电话、定时主动消息与专属铃声都在"))
         assertTrue(manual.contains("语音通话铃声在「通话行为」里、允许主动打电话与定时主动消息还有专属铃声"))
         assertTrue(manual.contains("**通话行为**（语音通话铃声）、"))
-        assertTrue(manual.contains("模型配置点进去还有五张子卡，通话行为里是语音通话铃声"))
+        // v0.56.5 起这句话里多了「接听延迟」——措辞已随该版 replace 改掉，这里对齐到新形态
+        assertTrue(manual.contains("模型配置点进去还有五张子卡，通话行为里是「语音通话铃声」与「接听延迟」两张"))
         // ③ 子卡清单里不再说「通话行为」卡里挂 AI 主动打电话子卡
         // （v0.54.6：那句话已被改成「电话」行 —— 见 v0546）
         assertFalse(manual.contains("每个角色会话右上角 ⋮ 的整页设置里有一张**「允许主动打电话」**卡片"))
         assertFalse(manual.contains("设置主页的「通话行为」卡里有一张**「AI 主动打电话」**子卡"))
         assertFalse(manual.contains("**通话行为**（AI 主动打电话 / 语音通话铃声）、"))
-        // ④ 接听延迟：卡片 + 右侧直接选
-        assertTrue(manual.contains("卡片「接听延迟」，右边直接选"))
-        assertTrue(manual.contains("（立即接 / 2 / 3 / 5 / 10 / 15 / 30 秒）"))
+        // ④ 接听延迟（v0.56.5 起**独立成项**；v0.56.6 起改成自己填秒数 —— 见 v0566）
+        assertTrue(manual.contains("AI 接听延迟"))
+        // v0.56.5 的固定档位措辞已随 v0.56.6 的 replace 改掉
+        assertFalse(manual.contains("那一页直接列出 立即 / 2 / 3 / 5 / 10 / 15 / 30 秒"))
+        assertFalse(manual.contains("卡片「接听延迟」，右边直接选"))
         assertFalse(manual.contains("——**直接填秒数，0 = 立刻接**（最多 30）。"))
         // ⑤ 手册里不该再有"设置 → 通话行为 → 「AI 主动打电话」"这类死路径
         assertFalse(manual.contains("设置 → 通话行为 → 「AI 主动打电话」"))
@@ -457,7 +468,7 @@ class AiPromptsTest {
     fun `v0546 会话设置灰线行与长按菜单瘦身进手册`() {
         // ① 会话设置整页改灰线行；三个入口（电话 / 铃声 / 定时消息）
         assertTrue(manual.contains("整页是**一条条用灰线分隔的行**（不再用卡片）"))
-        assertTrue(manual.contains("**电话**（点开是底部弹层：允许主动打电话 / 几点打过来 / 说什么 / 多久没聊才打）"))
+        assertTrue(manual.contains("**电话**（点开是底部弹层：主动电话 / 定时电话，**点标题才展开细项**）"))
         assertTrue(manual.contains("**铃声**（点开是底部弹层的铃声列表）"))
         assertTrue(manual.contains("**定时消息**（点开就是添加弹层，"))
         assertFalse(manual.contains("联网（开/关）、音色、模型，另外还有**专属铃声**、**定时主动消息**、"))
@@ -484,11 +495,9 @@ class AiPromptsTest {
      */
     @Test
     fun `v0547 电话弹层对齐定时消息与聊天背景进手册`() {
-        // ① 电话：几点打过来（手填 HH:mm，不再是时间表盘）+ 说什么 + 天数自己填
-        assertTrue(manual.contains("弹层里四样 —— ① 开关「允许主动打电话」；"))
-        assertTrue(manual.contains("② **几点打过来**（手填 HH:mm，跟「定时消息」一个填法，默认 21:00）；"))
-        assertTrue(manual.contains("③ **说什么**（这次打电话要 TA 说的内容"))
-        assertTrue(manual.contains("④ **多久没聊才打**（**天数自己填 1–30**，默认 3 天；填 1 就是到点必打）。"))
+        // ① 电话：v0.54.7 的"几点打过来 + 说什么 + 天数自填"三栏已被
+        //    **v0.56.6 的「允许主动打电话 + 定时电话」**取代（见 v0566），这里只留仍然成立的两条
+        assertFalse(manual.contains("弹层里四样 —— ① 开关「允许主动打电话」；"))
         assertFalse(manual.contains("弹层里三样 —— ① 开关「允许主动打电话」；"))
         assertFalse(manual.contains("② **什么时候打过来**（时间表盘直接拨，默认 21:00，不用自己输）"))
         assertFalse(manual.contains("（时间表盘直接拨"))
@@ -518,7 +527,7 @@ class AiPromptsTest {
     @Test
     fun `v0534 录音蒙层进手册`() {
         assertTrue(manual.contains("中间气泡显示**实时波形 + 秒数**"))
-        assertTrue(manual.contains("下面**两块扇形选择区**「取消」「转文字」"))
+        assertTrue(manual.contains("下面**两块环带选择区**「取消」「转文字」"))
         assertTrue(manual.contains("左滑到「取消」松手 = 丢掉"))
         assertTrue(manual.contains("右滑到「转文字」松手 = 只发文字"))
         assertTrue(manual.contains("识别不出来就照发语音"))
@@ -608,5 +617,151 @@ class AiPromptsTest {
         assertTrue(anchor.contains("图片只存本机"))
         assertTrue(anchor.contains("七段提示词都可编辑"))
         assertTrue(anchor.length > 2000)
+    }
+
+    /**
+     * v0.56.5：**「接听延迟」从「语音通话铃声」那一页里拎出来**，
+     * 成为「通话行为」页上与它同级的一张卡；「联网搜索」页补「测试搜索」。
+     */
+    @Test
+    fun `v0565 接听延迟独立成项与联网搜索自测进手册`() {
+        // ① 通话行为页现在是两张卡
+        assertTrue(manual.contains("通话行为里是「语音通话铃声」与「接听延迟」两张，"))
+        assertFalse(manual.contains("通话行为里是语音通话铃声，"))
+        // ② 接听延迟的入口写法：不再挂在铃声页里，而是与它同级
+        assertTrue(manual.contains("入口 设置 → 通话行为 → 「接听延迟」，与「语音通话铃声」**并排两张卡**"))
+        assertFalse(manual.contains("就在「语音通话铃声」那一页里"))
+        // ③ 联网搜索页的「测试搜索」（这条 replace 是**追加**式：目标串仍在新文案开头，
+        //    所以只钉"追加的那段在"，旧措辞无从断言）
+        assertTrue(manual.contains("那一页点一下「测试搜索」"))
+        assertTrue(manual.contains("通了会告诉你取到几条、耗时多少"))
+    }
+
+    /**
+     * v0.56.6：电话改成「允许主动打电话（总闸）+ 定时电话（按时间点添加）」/
+     * 接听延迟改自填秒数 / 相册与文件先挂到输入框上方。
+     */
+    @Test
+    fun `v0566 定时电话与接听延迟自填秒数进手册`() {
+        // ① 电话弹层：两块（总闸 + 定时电话），不再有"多久没聊才打"
+        assertTrue(manual.contains("**电话**（点开是底部弹层：主动电话 / 定时电话，**点标题才展开细项**）"))
+        assertFalse(manual.contains("允许主动打电话 / 几点打过来 / 说什么 / 多久没聊才打"))
+        assertTrue(manual.contains("弹层里两块（**点标题才展开**，页内没有小字说明）—— "))
+        assertFalse(manual.contains("弹层里两块 —— ① 开关「**允许主动打电话**」（总闸，关掉则下面一条都不会打）；"))
+        assertTrue(manual.contains("② 「**定时电话**」：展开后是一条条定时电话"))
+        assertTrue(manual.contains("填**每天几点打给你**和**接通后说什么**"))
+        // v0.56.7：这条"不再有"的话反过来 —— 用户要求把「X 天没聊就主动打」加回来（见 v0567）
+        assertFalse(manual.contains("**已经不再有「多久没聊才打」这种触发方式**。"))
+        assertFalse(manual.contains("④ **多久没聊才打**（**天数自己填 1–30**，默认 3 天；填 1 就是到点必打）。"))
+        assertFalse(manual.contains("② **几点打过来**（手填 HH:mm，跟「定时消息」一个填法，默认 21:00）；"))
+        // ② 接听延迟：自己填秒数
+        assertTrue(manual.contains("那一页**自己填秒数**（0 = 立即接，最多 600 秒），填好点「保存」。"))
+        assertFalse(manual.contains("那一页直接列出 立即 / 2 / 3 / 5 / 10 / 15 / 30 秒"))
+        // ③ 相册 / 文件：先停在输入框上方
+        assertTrue(manual.contains("**相册与文件选中后先停在输入框上方**，不再选完就发"))
+        assertFalse(manual.contains("面板四格：相册（发照片给 AI 看"))
+    }
+
+    /**
+     * v0.56.7：电话更名「主动电话」+ 点标题展开 + 「X 天没聊就主动打」回来 /
+     * 「按住说话」按屏幕半区判档 / 用量按模型分别列。
+     */
+    @Test
+    fun `v0567 主动电话与半区手势与按模型用量进手册`() {
+        // ① 电话：更名 + 点标题展开
+        assertTrue(manual.contains("弹层里两块（**点标题才展开**，页内没有小字说明）—— "))
+        // v0.56.8：措辞改成"展开后**只填**几天没聊"（「每天几点检查」已删，见 v0568）
+        assertTrue(manual.contains("① 「**主动电话**」：展开后只填**几天没聊就主动打**（自己填 1–30 天，默认 3 天）—— "))
+        assertFalse(manual.contains("与**每天几点检查**（默认 21:00）"))
+        assertTrue(manual.contains("② 「**定时电话**」：展开后是一条条定时电话"))
+        assertFalse(manual.contains("① 开关「**允许主动打电话**」"))
+        assertFalse(manual.contains("**已经不再有「多久没聊才打」这种触发方式**。"))
+        // ② 按住说话：按屏幕左右半区判档
+        assertTrue(manual.contains("**左半区 = 取消、右半区 = 转文字、正中间那条灰带 = 录音中**"))
+        assertTrue(manual.contains("两块环带选择区"))
+        assertFalse(manual.contains("两块扇形选择区"))
+        // ③ 用量：v0.56.8 起挪到模型卡片右侧（见 v0568）
+        assertFalse(manual.contains("**本月 API 用量，按模型分别列出各自的 tokens**"))
+        assertFalse(manual.contains("面板底部显示**本月 API 用量**（服务商返回用量数据时才统计）。"))
+    }
+
+    /** v0.56.8：主动电话删掉「每天几点检查」/ 用量改显示在模型卡片上。 */
+    @Test
+    fun `v0568 主动电话去检查时刻与用量进模型卡进手册`() {
+        assertTrue(manual.contains("展开后只填**几天没聊就主动打**（自己填 1–30 天，默认 3 天）—— "))
+        assertTrue(manual.contains("每天固定检查一次（时刻沿用这个角色存着的值，默认 21:00）"))
+        assertFalse(manual.contains("与**每天几点检查**（默认 21:00）"))
+        assertTrue(manual.contains("**每个模型卡片的右侧直接显示这个模型本月消耗了多少**"))
+        assertFalse(manual.contains("面板底部显示**本月 API 用量，按模型分别列出各自的 tokens**"))
+    }
+
+    /** v0.56.8 第二批：主动关心改随机时刻/可设条数、开关进弹层；两处搜索框删掉只留放大镜。 */
+    @Test
+    fun `v0568b 主动关心随机时间与搜索框改造进手册`() {
+        // ① 主动关心：开关进弹层 + 时间段 + 每天条数 + 贴合时间（最终措辞见 v0568c）
+        assertTrue(manual.contains("**人设主动关心**（点开是从底部升上来的弹层：这个角色开不开"))
+        assertTrue(manual.contains("它是**上限不是定额**：当天在这个数以内随机发几条，不超过就行"))
+        assertFalse(manual.contains("人设会在**你设的时间段里随机**发来主动问候"))
+        assertFalse(manual.contains("人设每晚最多一条主动问候"))
+        // ② 消息页：v0.56.8 第二批**连放大镜一起删掉**（见 v0568c），这里只钉旧句消失
+        assertFalse(manual.contains("顶部只有标题右侧那颗**常驻放大镜**"))
+        assertFalse(manual.contains("顶部有搜索框（拉到列表最顶部时出现"))
+        // ③ 设置页：仍然只留常驻放大镜（不受消息页这次改动影响）
+        assertTrue(manual.contains("设置页怎么用（v0.56.8 定稿）：设置主页**没有搜索框**，只有顶栏右边那颗**常驻放大镜**"))
+        assertFalse(manual.contains("设置主页顶部是一条**搜索行**"))
+    }
+
+    /**
+     * v0.56.8 第二批修正（用户点名）：
+     * ① 每天最多几条**任何数字都行**，且它是**上限不是定额**（在这个数以内随机发几条）；
+     * ② **每个角色各有一套**时间段与条数；③ 消息页**不做搜索**，放大镜一起删掉。
+     */
+    @Test
+    fun `v0568c 主动关心按角色一套上限随机与消息页去搜索进手册`() {
+        // ① 条数是上限不是定额 + 什么数字都能填
+        assertTrue(manual.contains("条数**填什么数字都行**，它是**上限不是定额**：当天在这个数以内随机发几条，不超过就行"))
+        // ② 每个角色各一套
+        assertTrue(manual.contains("主动关心是**每个角色各有一套**时间段与每天最多几条"))
+        assertTrue(manual.contains("**这个角色的发送时间段**、**这个角色每天最多几条**"))
+        assertFalse(manual.contains("**发送时间段**、**每天最多几条**）——最后三项"))
+        // ③ 消息页没有搜索框也没有放大镜、连"可搜人设名/身份"那句尾巴也没有；设置页那只放大镜仍在
+        assertTrue(manual.contains("顶部只有标题，**既没有搜索框也没有放大镜**——消息页**不做搜索**。"))
+        assertFalse(manual.contains("顶部有搜索框（拉到列表最顶部时出现"))
+        assertFalse(manual.contains("可搜人设名/身份/消息内容"))
+        assertTrue(manual.contains("设置主页**没有搜索框**，只有顶栏右边那颗**常驻放大镜**"))
+    }
+
+    /**
+     * v0.56.13（用户讨论拍板）：自定义端点的手填音色 ID 从**单条**升级成**多条音色库**——
+     * 那家没有预置也没有克隆，「＋ 添加音色」是它唯一的音色来源，可起显示名、可试听、长按可删。
+     */
+    @Test
+    fun `v05613 自定义端点多条音色库进手册`() {
+        assertTrue(manual.contains("自定义端点那家没有预置也没有克隆"))
+        assertTrue(manual.contains("在音色页点**「＋ 添加音色」**自己录入，想加几条加几条（可起显示名、可试听、长按可删）"))
+        // 旧措辞消失：不再是"一条「手填音色 ID」"
+        assertFalse(manual.contains("和一条「手填音色 ID」"))
+    }
+
+    /** v0.57：模型配置页新增「获取可用模型」（填好地址 + Key 后拉列表点选，不用手打模型名） */
+    @Test
+    fun `v057 获取可用模型进手册`() {
+        assertTrue(manual.contains("也能**获取可用模型**"))
+        assertTrue(manual.contains("点一个直接填入模型名，不用手打"))
+        // 旧措辞消失：不再是"预设一键填入，支持…"
+        assertFalse(manual.contains("预设一键填入，支持"))
+    }
+
+    /**
+     * v0.57：退出对话页后 AI 继续生成（生成改挂应用级作用域，不再绑在聊天页上）。
+     *
+     * 这条 replace 是**在锚点后面追加**、锚点本身还在（"（点它仍是打开通话转写）。"仍是新句的前缀），
+     * 所以只有"新句在"这一向能守：`replace` 一旦落空，下面第一条断言立刻红。
+     */
+    @Test
+    fun `v057 退出对话继续生成进手册`() {
+        assertTrue(manual.contains("**退出这个对话页 AI 也会继续生成**"))
+        assertTrue(manual.contains("回到对话能看到它还在生成"))
+        assertTrue(manual.contains("切回会话列表、去看别的角色都不打断"))
     }
 }

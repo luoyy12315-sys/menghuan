@@ -366,8 +366,8 @@ class UiRenderTest {
 
     /**
      * v0.54.2 设置主页「方案二」：主页只有**九张自题名入口卡**（无分组小标题、无编号），
-     * 多条目卡点进去才是那几张子卡 —— 模型配置（5 项，含联网搜索）/ 通话行为（1 项，
-     * v0.54.5 起 AI 主动打电话已从设置里删掉、改按角色）/ 提醒与通知（2 项）；
+     * 多条目卡点进去才是那几张子卡 —— 模型配置（5 项，含联网搜索）/ 通话行为（2 项，
+     * v0.56.5 起「接听延迟」从铃声页拎出、与铃声同级）/ 提醒与通知（2 项）；
      * 「语音」「通知与提醒」两个中转页已取消，外观恢复成独立页。
      */
     @Test
@@ -403,10 +403,10 @@ class UiRenderTest {
         snap("51b-settings-model-config")
         clickBack()
 
-        // 「通话行为」点进去只剩 1 张子卡：语音通话铃声
-        // （v0.54.5：AI 主动打电话已从设置里删掉，改在**每个角色会话右上角 ⋮ 的整页设置**里按角色配）
+        // 「通话行为」点进去是 2 张子卡：语音通话铃声 + 接听延迟（v0.56.5 起两项同级）
         clickText("通话行为")
         awaitText("语音通话铃声")
+        awaitText("接听延迟")
         assertFalse(compose.onAllNodesWithText("AI 主动打电话").fetchSemanticsNodes().isNotEmpty())
         snap("51d-settings-call-behavior")
         clickBack()

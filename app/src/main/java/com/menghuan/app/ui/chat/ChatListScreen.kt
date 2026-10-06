@@ -125,12 +125,6 @@ data class ConversationRowUi(
     val showDot: Boolean,
 )
 
-/** 搜索结果行：人设 + 命中的最新一条消息（null = 仅名字/身份命中） */
-data class SearchResultUi(
-    val persona: Persona,
-    val matched: ChatMessage?,
-)
-
 /**
  * 会话列表的加载态（v0.43.1 修"冷启动先闪『新建人设』"）。
  *
@@ -239,42 +233,8 @@ class ChatListViewModel(
         }
     }
 
-    // ===== 搜索：人设名/身份 + 消息内容。不做 delay 防抖：本地查询毫秒级，
-    // 且 Robolectric 的 PAUSED 主线程时钟下 delay 永不恢复（截图测试实测），
-    // 靠 cancel 旧任务保证只有最新一次输入的查询存活。 =====
-
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-
-    private val _searchResults = MutableStateFlow<List<SearchResultUi>>(emptyList())
-    val searchResults: StateFlow<List<SearchResultUi>> = _searchResults.asStateFlow()
-
-    private var searchJob: Job? = null
-
-    fun onSearchQueryChange(query: String) {
-        _searchQuery.value = query
-        searchJob?.cancel()
-        if (query.isBlank()) {
-            _searchResults.value = emptyList()
-            return
-        }
-        searchJob = viewModelScope.launch {
-            _searchResults.value = runSearch(query.trim())
-        }
-    }
-
-    private suspend fun runSearch(q: String): List<SearchResultUi> {
-        val persons = personaRepository.observePersonas().first()
-        val messages = runCatching { db.messageDao().searchMessages(q) }.getOrDefault(emptyList())
-        val latestByPersona = messages.groupBy { it.conversationId }
-            .mapValues { (_, list) -> list.maxByOrNull { it.timestamp } }
-        return persons.mapNotNull { persona ->
-            val nameMatch = persona.name.contains(q, ignoreCase = true) ||
-                persona.title.contains(q, ignoreCase = true)
-            val matched = latestByPersona[persona.id]
-            if (nameMatch || matched != null) SearchResultUi(persona, matched) else null
-        }
-    }
+    // 搜索整条链路（输入框 / 结果流 / runSearch）在 v0.56.8 第二批**整体删除** —— 用户点名：
+    // 消息页不要搜索，顶栏放大镜也不要。设置页那边的搜索不受影响。
 
     /** 会话置顶（长按会话行切换），置顶的排最前 */
     fun setPinned(personaId: Long, pinned: Boolean) = viewModelScope.launch {
@@ -288,9 +248,16 @@ class ChatListViewModel(
 
     private fun previewOf(persona: Persona, last: ChatMessage?): String {
         val msg = last ?: return "暂无消息"
-        // 表情消息 content 为空，直接取会得到"你："；这里补一个可读摘要（v0.45.0）
+        // 媒体消息的预览一律用类别标签，不摊开它的文本（v0.57）：
+        // 图片消息的 content 是图注 / AI 生图的**英文提示词**，语音条的 content 是转写文字，
+        // 文件消息的 content 是抽出来的**整篇正文**——直接把 content 打上去，用户看到的就是
+        // "一条照片预览写着英文""一条语音预览写着整段话""一条文件预览糊了一大段字"。
+        // 标签口径与聊天记录页（ChatHistoryScreen）一致：[图片] / [语音] / [表情] / [文件]。
         val content = when (MediaKind.fromLegacy(msg.mediaKind, msg.imagePath)) {
             MediaKind.STICKER -> "[表情]"
+            MediaKind.IMAGE -> "[图片]"
+            MediaKind.AUDIO -> "[语音]"
+            MediaKind.FILE -> "[文件]"
             MediaKind.CALL -> "📞 ${msg.content}" // 语音通话记录卡（v0.49.0）
             else -> msg.content.replace('\n', ' ')
         }
@@ -343,222 +310,159 @@ fun ChatListScreen(
     val screen by vm.screenState.collectAsState()
     val rows = screen.rows
     val loaded = screen.loaded
-    val searchQuery by vm.searchQuery.collectAsState()
-    val searchResults by vm.searchResults.collectAsState()
-    var searchMode by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<Persona?>(null) }
     val haptic = LocalHapticFeedback.current
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    // 列表滚动状态提前声明：顶部时搜索框常驻（标题下方），上滑离开后换成顶栏放大镜
     val listState = rememberLazyListState()
-    val atTop by remember {
-        derivedStateOf {
-            listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0
-        }
-    }
 
     Column(
         Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background),
     ) {
-        // 顶栏：标题 + 放大镜（无圆圈）。
-        // 搜索框在列表顶部时隐藏这条图标，避免与搜索框两处入口并存（用户要求）
-        NeuTopBar(
-            title = "消息",
-            actions = {
-                if (rows.isNotEmpty() && !atTop) {
-                    Icon(
-                        MIcons.Search,
-                        contentDescription = "搜索",
-                        tint = TextPrimary,
-                        modifier = Modifier
-                            .size(21.dp)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { searchMode = true },
-                    )
-                }
-            },
-        )
+        // 顶栏：只有标题（v0.56.8 第二批：消息页不做搜索，放大镜一并去掉）
+        NeuTopBar(title = "消息")
 
-        if (!searchMode) {
-            // 搜索行：只在列表拉到最顶部时出现；上滑离开顶部即收起（换成顶栏放大镜）。
-            // 展开/收起加淡入淡出，列表内容跟着平滑推移，不再硬跳
-            AnimatedVisibility(
-                visible = atTop,
-                enter = fadeIn(tween(200)) + expandVertically(tween(240, easing = EaseOutQuart)),
-                exit = fadeOut(tween(150)) + shrinkVertically(tween(200)),
-            ) {
-                Box(Modifier.padding(horizontal = 16.dp).padding(top = 8.dp, bottom = 10.dp)) {
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .neuSurface(16.dp, color = MaterialTheme.colorScheme.background, elevation = 5.dp, inset = true)
-                            .neuRowPress { searchMode = true }
-                            .padding(horizontal = 14.dp, vertical = 11.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(
-                            MIcons.Search,
-                            contentDescription = null,
-                            tint = MutedText,
-                            modifier = Modifier.size(15.dp),
-                        )
+        // v0.56.8 第二批（用户点名）：消息页**不做搜索** —— 顶栏放大镜、搜索框、
+        // 搜索态整条链路一并去掉，进来就是干净的一列会话。
+        // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画；长按弹出微信式菜单
+        //
+        // ⚠️ 三态（v0.43.1 修"冷启动先闪新建人设"）：
+        //   ① 首次数据还没到 → 骨架屏（占位行，**绝不放新建入口**）
+        //   ② 数据到了但一条都没有 → 居中的「新建人设」
+        //   ③ 有会话 → 真实列表
+        // 以前只有 ②③，冷启动时 ② 会先闪一下。
+        if (!loaded) {
+            ChatListSkeleton()
+        } else if (rows.isEmpty()) {
+            // 人设删光后的极简空状态：虚线选中框 + 新建入口
+            Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .figmaSelection(active = true, cornerRadius = 14.dp)
+                        .neuRowPress { onOpenPersonaEditor(0L) }
+                        .padding(vertical = 26.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(MIcons.Plus, contentDescription = "新增人设", tint = TextPrimary, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("搜索", fontSize = 14.sp, color = MutedText)
+                        Text("新建人设", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
                     }
                 }
             }
-
-            // 会话列表：级联淡入（每条 40ms，封顶 320ms）+ 位置重排动画；长按弹出微信式菜单
-            //
-            // ⚠️ 三态（v0.43.1 修"冷启动先闪新建人设"）：
-            //   ① 首次数据还没到 → 骨架屏（占位行，**绝不放新建入口**）
-            //   ② 数据到了但一条都没有 → 居中的「新建人设」
-            //   ③ 有会话 → 真实列表
-            // 以前只有 ②③，冷启动时 ② 会先闪一下。
-            if (!loaded) {
-                ChatListSkeleton()
-            } else if (rows.isEmpty()) {
-                // 人设删光后的极简空状态：虚线选中框 + 新建入口
-                Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .figmaSelection(active = true, cornerRadius = 14.dp)
-                            .neuRowPress { onOpenPersonaEditor(0L) }
-                            .padding(vertical = 26.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(MIcons.Plus, contentDescription = "新增人设", tint = TextPrimary, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("新建人设", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+        } else {
+            // 首次拿到列表直接落在顶部（不动画，避免长列表进页面横冲直撞）
+            LaunchedEffect(rows.size) { if (rows.isNotEmpty()) listState.scrollToItem(0) }
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                rows.forEachIndexed { index, row ->
+                    // 会话之间的**发丝灰线**（v0.53.4 加回）：之前整批清灰线时连它一起删掉了。
+                    // 从文字起始处起（16 左边距 + 46 头像 + 13 间距 = 75dp），避开头像。
+                    if (index > 0) {
+                        item(key = "divider-${row.persona.id}", contentType = "divider") {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 75.dp, end = 16.dp)
+                                    .height(1.dp)
+                                    .background(NeuHairline),
+                            )
                         }
                     }
-                }
-            } else {
-                // 首次拿到列表直接落在顶部（不动画，避免长列表进页面横冲直撞）
-                LaunchedEffect(rows.size) { if (rows.isNotEmpty()) listState.scrollToItem(0) }
-                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                    rows.forEachIndexed { index, row ->
-                        // 会话之间的**发丝灰线**（v0.53.4 加回）：之前整批清灰线时连它一起删掉了。
-                        // 从文字起始处起（16 左边距 + 46 头像 + 13 间距 = 75dp），避开头像。
-                        if (index > 0) {
-                            item(key = "divider-${row.persona.id}") {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(start = 75.dp, end = 16.dp)
-                                        .height(1.dp)
-                                        .background(NeuHairline),
-                                )
-                            }
-                        }
-                        item(key = row.persona.id) {
-                            var menuOpen by remember { mutableStateOf(false) }
-                            // 长按时手指在行内的位置（px），菜单就锚在这里（v0.53.4 微信式）
-                            var menuAnchor by remember { mutableStateOf(Offset.Zero) }
+                    item(key = row.persona.id, contentType = "conversation") {
+                        var menuOpen by remember { mutableStateOf(false) }
+                        // 长按时手指在行内的位置（px），菜单就锚在这里（v0.53.4 微信式）
+                        var menuAnchor by remember { mutableStateOf(Offset.Zero) }
+                        Box(
+                            // v0.55.0：淡入从 340ms + 最多 320ms 延迟压到 200ms + 最多 120ms。
+                            // 原值在**滚动**时同样生效 —— 新进视口的条目要等最多 320ms 才开始淡入，
+                            // 快滑时就是"一片条目陆续浮现"（对话页 v0.41.4 正是因此把淡入整个关掉）。
+                            // 留一点点错峰是给首屏用的：120ms 内铺完，快滑时基本无感。
+                            Modifier.animateItem(
+                                fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)),
+                            ),
+                        ) {
+                            ConversationRow(
+                                persona = row.persona,
+                                preview = row.preview,
+                                time = row.time,
+                                unread = row.showDot,
+                                selected = onSelect != null && row.persona.id == selectedPersonaId,
+                                onClick = {
+                                    val open = onSelect ?: onOpen
+                                    open(row.persona.id)
+                                },
+                                onLongClick = { pos ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    menuAnchor = pos
+                                    menuOpen = true
+                                },
+                            )
+                            // 微信式长按菜单：置顶 / 导出 / 标记已读 / 删除。
+                            // v0.53.4：锚点从"钉死在右下角"改成**手指按下的位置**——
+                            // 锚点 Box 用 offset 挪到手指处，DropdownMenu 就贴着手指弹出；
+                            // 靠近屏幕边缘时 M3 自带的定位器会把菜单夹回屏内，不会出屏。
                             Box(
-                                Modifier.animateItem(
-                                    fadeInSpec = tween(340, delayMillis = (index * 40).coerceAtMost(320)),
-                                ),
+                                Modifier
+                                    .align(Alignment.TopStart)
+                                    .offset {
+                                        IntOffset(menuAnchor.x.roundToInt(), menuAnchor.y.roundToInt())
+                                    },
                             ) {
-                                ConversationRow(
-                                    persona = row.persona,
-                                    preview = row.preview,
-                                    time = row.time,
-                                    unread = row.showDot,
-                                    selected = onSelect != null && row.persona.id == selectedPersonaId,
-                                    onClick = {
-                                        val open = onSelect ?: onOpen
-                                        open(row.persona.id)
-                                    },
-                                    onLongClick = { pos ->
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        menuAnchor = pos
-                                        menuOpen = true
-                                    },
-                                )
-                                // 微信式长按菜单：置顶 / 导出 / 标记已读 / 删除。
-                                // v0.53.4：锚点从"钉死在右下角"改成**手指按下的位置**——
-                                // 锚点 Box 用 offset 挪到手指处，DropdownMenu 就贴着手指弹出；
-                                // 靠近屏幕边缘时 M3 自带的定位器会把菜单夹回屏内，不会出屏。
-                                Box(
-                                    Modifier
-                                        .align(Alignment.TopStart)
-                                        .offset {
-                                            IntOffset(menuAnchor.x.roundToInt(), menuAnchor.y.roundToInt())
-                                        },
+                                DropdownMenu(
+                                    expanded = menuOpen,
+                                    onDismissRequest = { menuOpen = false },
+                                    // v0.53.4：菜单加一圈**灰线框**——全应用去阴影之后，白底菜单
+                                    // 落在白底页面上边界糊成一片，靠这条发丝线把菜单"框"出来
+                                    modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(14.dp)),
+                                    containerColor = NeuSurface,
+                                    shape = RoundedCornerShape(14.dp),
+                                    shadowElevation = 0.dp, // v0.42.1 全应用去阴影
                                 ) {
-                                    DropdownMenu(
-                                        expanded = menuOpen,
-                                        onDismissRequest = { menuOpen = false },
-                                        // v0.53.4：菜单加一圈**灰线框**——全应用去阴影之后，白底菜单
-                                        // 落在白底页面上边界糊成一片，靠这条发丝线把菜单"框"出来
-                                        modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(14.dp)),
-                                        containerColor = NeuSurface,
-                                        shape = RoundedCornerShape(14.dp),
-                                        shadowElevation = 0.dp, // v0.42.1 全应用去阴影
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    if (row.persona.pinned) "取消置顶" else "置顶该聊天",
-                                                    fontSize = 15.sp,
-                                                    color = TextPrimary,
-                                                )
-                                            },
-                                            onClick = {
-                                                menuOpen = false
-                                                vm.setPinned(row.persona.id, !row.persona.pinned)
-                                            },
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("导出记录", fontSize = 15.sp, color = TextPrimary) },
-                                            onClick = {
-                                                menuOpen = false
-                                                vm.exportConversation(context, row.persona)
-                                            },
-                                        )
-                                        if (row.showDot) {
-                                            DropdownMenuItem(
-                                                text = { Text("标记已读", fontSize = 15.sp, color = TextPrimary) },
-                                                onClick = {
-                                                    menuOpen = false
-                                                    vm.markConversationRead(row.persona.id)
-                                                },
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                if (row.persona.pinned) "取消置顶" else "置顶该聊天",
+                                                fontSize = 15.sp,
+                                                color = TextPrimary,
                                             )
-                                        }
+                                        },
+                                        onClick = {
+                                            menuOpen = false
+                                            vm.setPinned(row.persona.id, !row.persona.pinned)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("导出记录", fontSize = 15.sp, color = TextPrimary) },
+                                        onClick = {
+                                            menuOpen = false
+                                            vm.exportConversation(context, row.persona)
+                                        },
+                                    )
+                                    if (row.showDot) {
                                         DropdownMenuItem(
-                                            text = { Text("删除会话", fontSize = 15.sp, color = NeuDanger) },
+                                            text = { Text("标记已读", fontSize = 15.sp, color = TextPrimary) },
                                             onClick = {
                                                 menuOpen = false
-                                                deleteTarget = row.persona
+                                                vm.markConversationRead(row.persona.id)
                                             },
                                         )
                                     }
+                                    DropdownMenuItem(
+                                        text = { Text("删除会话", fontSize = 15.sp, color = NeuDanger) },
+                                        onClick = {
+                                            menuOpen = false
+                                            deleteTarget = row.persona
+                                        },
+                                    )
                                 }
                             }
                         }
                     }
                 }
             }
-        } else {
-            SearchOverlay(
-                query = searchQuery,
-                results = searchResults,
-                onQueryChange = vm::onSearchQueryChange,
-                onExit = { searchMode = false; vm.onSearchQueryChange("") },
-                onOpen = { id ->
-                    searchMode = false
-                    vm.onSearchQueryChange("")
-                    onOpen(id)
-                },
-            )
         }
     }
 
@@ -646,132 +550,6 @@ private fun ChatListSkeleton() {
     }
 }
 
-@Composable
-private fun SearchResultRow(result: SearchResultUi, query: String, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .neuRowPress(onClick)
-            .padding(horizontal = 16.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        NeuAvatar(result.persona.avatarEmoji, size = 46.dp, ringBrush = personaBrush(result.persona.id), imagePath = result.persona.avatarImagePath)
-        Spacer(Modifier.width(13.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                result.persona.name,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(3.dp))
-            val preview = result.matched?.content?.replace('\n', ' ') ?: result.persona.title
-            Text(
-                highlight(preview, query, TextPrimary),
-                fontSize = 13.sp,
-                color = MutedText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Icon(MIcons.ChevronRight, contentDescription = null, tint = FaintText, modifier = Modifier.size(14.dp))
-    }
-}
-
-/** 命中片段加粗提色（大小写不敏感，取第一处） */
-private fun highlight(content: String, query: String, hitColor: Color): AnnotatedString =
-    buildAnnotatedString {
-        append(content)
-        if (query.isBlank()) return@buildAnnotatedString
-        val idx = content.indexOf(query, ignoreCase = true)
-        if (idx < 0) return@buildAnnotatedString
-        addStyle(SpanStyle(fontWeight = FontWeight.Bold, color = hitColor), idx, idx + query.length)
-    }
-
-/** 搜索态：输入框自动聚焦 + 实时结果（人设名/身份 + 消息内容） */
-@Composable
-private fun SearchOverlay(
-    query: String,
-    results: List<SearchResultUi>,
-    onQueryChange: (String) -> Unit,
-    onExit: () -> Unit,
-    onOpen: (Long) -> Unit,
-) {
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
-
-    Column(Modifier.fillMaxSize().imePadding()) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                Modifier
-                    .weight(1f)
-                    .neuSurface(16.dp, color = MaterialTheme.colorScheme.background, elevation = 5.dp, inset = true)
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(MIcons.Search, contentDescription = null, tint = MutedText, modifier = Modifier.size(15.dp))
-                Spacer(Modifier.width(8.dp))
-                Box(Modifier.weight(1f)) {
-                    if (query.isEmpty()) {
-                        Text("搜索人设或消息", fontSize = 14.sp, color = MutedText)
-                    }
-                    BasicTextField(
-                        value = query,
-                        onValueChange = onQueryChange,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(focusRequester),
-                        textStyle = TextStyle(fontSize = 14.sp, color = TextPrimary),
-                        singleLine = true,
-                        cursorBrush = SolidColor(NeuAccent),
-                    )
-                }
-                if (query.isNotEmpty()) {
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "×",
-                        fontSize = 16.sp,
-                        color = MutedText,
-                        modifier = Modifier
-                            .clickable { onQueryChange("") }
-                            .padding(2.dp),
-                    )
-                }
-            }
-            Spacer(Modifier.width(4.dp))
-            NeuTextButton("取消", onClick = onExit, color = TextPrimary)
-        }
-
-        when {
-            query.isBlank() -> Spacer(Modifier.fillMaxSize())
-            results.isEmpty() -> Column(
-                Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text("没有匹配结果", fontSize = 13.sp, color = FaintText)
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "清除搜索",
-                    fontSize = 13.sp,
-                    color = NeuAccent,
-                    modifier = Modifier.clickable { onQueryChange("") },
-                )
-            }
-            else -> LazyColumn(Modifier.fillMaxSize()) {
-                itemsIndexed(results, key = { _, r -> r.persona.id }) { _, result ->
-                    SearchResultRow(result, query) { onOpen(result.persona.id) }
-                }
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationRow(
@@ -788,8 +566,13 @@ private fun ConversationRow(
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val scale by animateFloatAsState(if (pressed) 0.975f else 1f, NeuPressSpec)
-    // 只观察、不消费指针事件：与下面的 combinedClickable 并存，单纯记下手指最近的位置
-    var pressPos by remember { mutableStateOf(Offset.Zero) }
+    // 只观察、不消费指针事件：与下面的 combinedClickable 并存，单纯记下手指最近的位置。
+    //
+    // v0.55.0：位置存进**普通 FloatArray**，不再用 mutableStateOf ——
+    // 原来每个指针事件都写一次 state，而滑动时一帧就有好几个事件，
+    // 于是列表每一行的可见项都在按帧重组。这份坐标只在**长按那一刻**读一次
+    // （菜单要锚在手指处），压根不需要可观测。
+    val pressPos = remember { floatArrayOf(0f, 0f) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -798,7 +581,10 @@ private fun ConversationRow(
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
-                        event.changes.lastOrNull()?.let { pressPos = it.position }
+                        event.changes.lastOrNull()?.let {
+                            pressPos[0] = it.position.x
+                            pressPos[1] = it.position.y
+                        }
                     }
                 }
             }
@@ -806,7 +592,7 @@ private fun ConversationRow(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick,
-                onLongClick = { onLongClick(pressPos) },
+                onLongClick = { onLongClick(Offset(pressPos[0], pressPos[1])) },
             )
             // 双栏模式：当前右栏会话的列表行加凹陷灰底（选中标识）
             .then(if (selected) Modifier.background(NeuTrack) else Modifier)

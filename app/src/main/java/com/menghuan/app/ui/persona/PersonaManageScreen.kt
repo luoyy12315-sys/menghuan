@@ -119,7 +119,7 @@ fun PersonaManageScreen(
             Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            itemsIndexed(personas, key = { _, p -> p.id }) { index, persona ->
+            itemsIndexed(personas, key = { _, p -> p.id }, contentType = { _, _ -> "persona" }) { index, persona ->
                 Box(Modifier.animateItem(fadeInSpec = tween(340, delayMillis = (index * 50).coerceAtMost(300)))) {
                     PersonaCard(
                         persona = persona,

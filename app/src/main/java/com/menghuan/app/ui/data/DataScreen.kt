@@ -42,6 +42,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalContext
@@ -142,6 +143,7 @@ fun DataScreen(
     val cashCents by vm.cashCents.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+
     // 今日建议弹窗开关（v0.42.3）：提升到这里，让弹窗渲染在滚动内容之外
     var suggestionSheetOpen by remember { mutableStateOf(false) }
 
@@ -177,6 +179,10 @@ fun DataScreen(
             Spacer(Modifier.height(2.dp))
 
             // ① 本周回顾条（置顶）
+            //
+            // v0.55.0：四块内容按序号错峰入场。
+            // v0.56.11（用户点名"4 个卡片不需要弹条出场"）：**错峰入场整组撤掉**，四块
+            // 直接静态出现；本周卡只保留进度条扫出（sweep）这一个是数据动效。
             WeekReviewCard(weekReview, visible)
 
             // ② 今日建议
@@ -189,6 +195,8 @@ fun DataScreen(
             )
 
             // ③ 记账本入口（单卡：现金余额 + 整卡可点，v0.42.1）
+            // v0.56.11（用户点名"金额不需要跳动"）：金额改回静态 Text，
+            // RollingAmountText / rollKey / "切页重滚"机制整组拆除。
             LedgerEntryCard(
                 cashCents = cashCents,
                 onClick = onOpenLedger,
@@ -275,6 +283,8 @@ private fun WeekReviewCard(review: WeekReview, visible: Boolean) {
         // —— 近 7 天格子条（点击展开当日明细）——
         // v0.42.3：顶部的 `done / total` 大数字已删（用户认为无用）——
         // 7 天格子条本身就逐日呈现了完成情况，进度条则给出本周合计，无需再挂一个总数。
+        // v0.56.14：格子的逐个浮现**恢复**（v0.56.11 删多了——用户点名去掉的是卡片级
+        // "弹条出场"，格子浮现是卡内动效，不在其列）。
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -499,9 +509,6 @@ private fun DailySuggestionSection(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
-    var revealed by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { revealed = true }
-    val appear by animateFloatAsState(if (revealed) 1f else 0f, tween(360, easing = EaseOutExpo), label = "suggestAppear")
 
     SectionHeader(title = "今日建议")
     if (message != null) {
@@ -517,7 +524,6 @@ private fun DailySuggestionSection(
         Box(
             Modifier
                 .fillMaxWidth()
-                .graphicsLayer { alpha = appear }
                 .neuSurface(20.dp, color = NeuTrack, inset = true)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
@@ -544,9 +550,7 @@ private fun DailySuggestionSection(
     } else {
         Box(Modifier.fillMaxWidth()) {
             NeuCard(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .graphicsLayer { alpha = appear; translationY = (1f - appear) * 10.dp.toPx() },
+                modifier = Modifier.fillMaxWidth(),
                 contentPadding = 18.dp,
                 elevation = 3.dp,
             ) {
@@ -742,6 +746,9 @@ private fun DailySuggestionDialog(
  * 原来是「现金余额卡（含最近 3 笔流水）+ 独立入口行」两块，现在合并成**一张卡**：
  * 左边钱包图标 + 卡名，右边现金余额大数字 + 右箭头。整张卡可点，直接进记账本全屏页。
  * 流水明细只在记账本页看——数据页不重复展示，免得两处各删一次还容易不一致。
+ *
+ * v0.56.11（用户点名"金额不需要跳动"）：金额从 [RollingAmountText]（里程表滚动，
+ * 曾带 rollKey 切页重滚）改回**静态 Text**，与"4 张卡不要弹条出场"同一批拍板。
  */
 @Composable
 private fun LedgerEntryCard(cashCents: Long, onClick: () -> Unit) {
@@ -766,8 +773,8 @@ private fun LedgerEntryCard(cashCents: Long, onClick: () -> Unit) {
         Text("记账本", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
         Spacer(Modifier.weight(1f))
         Text(
-            "¥${com.menghuan.app.data.model.LedgerMath.formatCents(cashCents)}",
-            fontSize = 19.sp,
+            com.menghuan.app.data.model.LedgerMath.formatCents(cashCents),
+            fontSize = 18.sp,
             fontWeight = FontWeight.Medium,
             letterSpacing = (-0.4).sp,
             color = TextPrimary,

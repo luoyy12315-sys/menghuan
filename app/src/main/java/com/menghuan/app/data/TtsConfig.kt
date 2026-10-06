@@ -17,7 +17,7 @@ import android.util.Base64
  */
 enum class TtsProvider(val label: String, val defaultBaseUrl: String, val defaultModel: String) {
     SILICONFLOW("硅基流动", "https://api.siliconflow.cn/v1", "FunAudioLLM/CosyVoice2-0.5B"),
-    XIAOMI_MIMO("小米 MiMo", "https://api.xiaomimimo.com/v1", "mimo-v2.5-tts"),
+    XIAOMI_MIMO("小米 MiMo", "https://api.xiaomimimo.com/v1", TtsVoices.MIMO_PRESET_MODEL),
     CUSTOM("自定义端点", "", ""),
     ;
 
@@ -156,6 +156,17 @@ object TtsVoices {
     const val MIMO_LOCAL_PREFIX = "local:"
 
     /**
+     * MiMo 官方把 TTS 能力拆成**三个互斥的模型**（speech-synthesis-v2.5 文档）：
+     * [MIMO_PRESET_MODEL]（预置音色）/ [MIMO_VOICEDESIGN_MODEL]（文本描述设计）/
+     * [MIMO_VOICECLONE_MODEL]（音频样本复刻），彼此不收对方的音色形式。
+     * 所以 XiaomiMimoTts 按音色类型切模型：克隆强制 voiceclone；预置遇到用户把模型
+     * 填成 voiceclone/voicedesign 时自动回落 preset（否则 400 Param Incorrect）。
+     */
+    const val MIMO_PRESET_MODEL = "mimo-v2.5-tts"
+    const val MIMO_VOICEDESIGN_MODEL = "mimo-v2.5-tts-voicedesign"
+    const val MIMO_VOICECLONE_MODEL = "mimo-v2.5-tts-voiceclone"
+
+    /**
      * 预置音色**每家只留两个，一男一女**（2026-10-05 用户拍板："其他都不要"）。
      * 官方那 8 / 9 个的长列表在设置页里纯属噪音——想听别的声音走「克隆音色」。
      * ID 是官方逐字值（`docs/RESEARCH-v0.50.0-TTS协议查证.md` §音色）；
@@ -239,9 +250,12 @@ object TtsVoices {
      *
      * @param cloned 硅基那边从 `/audio/voice/list` 拉回来的克隆音色（账号级，谁都能用）
      * @param localSamples 本机 `filesDir/voices/` 里的样本文件名（MiMo 没有上传接口，样本随请求内联）
-     * @param manualId 该家手填的音色 ID（空串 = 不给这一行）
+     * @param manualId 该家手填的音色 ID（空串 = 不给这一行；**自定义端点不走这条**，见下）
      * @param aliases 克隆音色的**中文显示名**（uri → 名字）。硅基的 customName 只收 ASCII，
      *   用户起的中文名存在本机（`SettingsRepository.cloneVoiceNames`）；不传就退回显示 ASCII 名
+     * @param customVoices 自定义端点的**多条手填音色库**（v0.56.13，id → 显示名）。
+     *   那家没有预置也没有克隆，手填是唯一来源，v0.56.13 起从单条升级成多条；
+     *   传了它之后 [manualId] 对自定义端点不再生效（避免同一条出现两行）
      */
     fun library(
         provider: TtsProvider,
@@ -249,6 +263,7 @@ object TtsVoices {
         localSamples: List<String> = emptyList(),
         manualId: String = "",
         aliases: Map<String, String> = emptyMap(),
+        customVoices: List<Pair<String, String>> = emptyList(),
     ): List<VoiceItem> {
         val out = ArrayList<VoiceItem>()
         presets(provider).forEach { out += VoiceItem(VoiceRef(provider, it.id), it.label) }
@@ -270,7 +285,11 @@ object TtsVoices {
                 )
             }
         }
-        if (manualId.isNotBlank()) {
+        if (provider == TtsProvider.CUSTOM) {
+            customVoices.forEach { (id, name) ->
+                out += VoiceItem(VoiceRef(provider, id), name.ifBlank { id }, local = true)
+            }
+        } else if (manualId.isNotBlank()) {
             out += VoiceItem(VoiceRef(provider, manualId.trim()), "手动 · ${manualId.trim()}", local = true)
         }
         return out

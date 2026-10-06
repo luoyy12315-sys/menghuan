@@ -14,19 +14,27 @@ import java.util.concurrent.TimeUnit
  *
  * 生图端点只有 POST `/images/generations`，没有 OpenAI 那种 `/models` 可查，
  * 所以这里发一个**故意极简但结构合法**的请求：prompt 短到几乎不耗算力，
- * 但 model / size 都得填对，否则会被服务商当成非法请求 400 掉，探不到真鉴权状态。
+ * 但 model 必须填对，否则会被服务商当成非法请求 400 掉，探不到真鉴权状态。
  *
  * **v0.36.2 修复的三大 400 陷阱**：
  * 1. 之前请求体没带 `model`——SiliconFlow / 智谱 CogView / 豆包 Seedream / gpt-image-1
  *    全都强制要求 model，缺了直接 400 `{"error":"model is required"}`。
  * 2. 之前 `size = "256x256"` 是老 DALL-E 2 尺寸，主流服务商基本不支持
  *    （gpt-image-1 只吃 1024x1024/1536x1024/1024x1536/auto；cogview-3 只吃 1024x1024 等几种）。
- *    改为 **1024x1024**——业内支持最广的尺寸。
  * 3. 之前 HTTP 400 时 `else -> "HTTP 400"` 直接扔掉响应体，服务商明明说了具体原因
  *    （"model is required" / "size not supported"）全被吞。现在 4xx 一律尝试解析 body
  *    里的 `error.message`，拼进返回值给用户看。
  *
- * **注意**：现在 probe 会传 model 且 size=1024x1024，理论上如果一切合法服务商可能真跑一次生图
+ * **v0.56.17 起 `size` 一个都不传**（用户真机踩的坑）：原来折中填了 1024x1024，
+ * 但豆包 Seedream 5.0 要求**总像素 ≥ 2560x1440=3686400**（官方默认 2048x2048），
+ * 1024x1024 直接被 400 拒；反过来改成 2048x2048 又会被 gpt-image-1 / cogview-3 拒
+ * ——**没有任何一个尺寸能同时满足各家**，所以这个字段干脆不发，让各家用自己的默认值。
+ * 正式生图链路（`ImageGenerationClient`）同一个处理，两边必须一致，
+ * 否则会出现"测试连接通过、真生图失败"。
+ *
+ * 报错提取统一走 [NetworkStack.apiErrorText]（v0.56.17 从本文件提出来共用）。
+ *
+ * **注意**：现在 probe 会传 model 且不传 size，理论上如果一切合法服务商可能真跑一次生图
  * 消耗额度。但绝大多数服务商在鉴权通过前会先做参数校验，实际不会真跑；且我们只在用户主动
  * 点「测试连接」时触发，不是后台常驻探测。
  */
@@ -47,7 +55,6 @@ class ImageProbe(
             .put("model", model.trim())
             .put("prompt", "a dot")
             .put("n", 1)
-            .put("size", "1024x1024")
             .toString()
             .toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
@@ -61,10 +68,21 @@ class ImageProbe(
                 when {
                     resp.isSuccessful -> null
                     resp.code == 401 || resp.code == 403 -> "API Key 无效或无权限"
-                    resp.code == 404 -> "接口路径不存在（检查地址是否填到版本段，如 /v1）"
-                    // 4xx：读响应体里的 error.message，服务商通常会说清楚哪个字段不对
+                    // 404 不一定是地址错——模型不存在/未开通很多服务商也回 404（真机踩过：
+                    // 豆包 ark v3 地址是对的，模型 ID 填错被报成"接口路径不存在"误导用户去查地址）。
+                    // 所以先读响应体原文，有原文带原文，没有才回落到"检查地址"的固定提示。
+                    resp.code == 404 -> {
+                        val detail = NetworkStack.apiErrorText(resp.body?.string())
+                        if (detail != null) {
+                            "HTTP 404：$detail（模型 ID / 接口地址都确认无误时，再检查地址是否填到版本段，如 /v1）"
+                        } else {
+                            "接口路径不存在（检查地址是否填到版本段，如 /v1）"
+                        }
+                    }
+                    // 4xx：读响应体里的原因，服务商通常会说清楚哪个字段不对
+                    // （豆包那句 "size … must be at least 3686400 pixels" 就是这么来的）
                     resp.code in 400..499 -> {
-                        val detail = extractErrorMessage(resp.body?.string())
+                        val detail = NetworkStack.apiErrorText(resp.body?.string())
                         if (detail != null) "HTTP ${resp.code}：$detail" else "HTTP ${resp.code}"
                     }
                     else -> "HTTP ${resp.code}"
@@ -81,28 +99,6 @@ class ImageProbe(
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .build()
-        }
-
-        /**
-         * 从错误响应体里挖一句可读原因。兼容三种常见形态：
-         * - OpenAI 风格：`{"error":{"message":"...","type":"..."}}`
-         * - 扁平：`{"message":"..."}` 或 `{"error":"..."}`
-         * - 纯文本：直接取前 200 字
-         */
-        fun extractErrorMessage(body: String?): String? {
-            if (body.isNullOrBlank()) return null
-            val trimmed = body.trim()
-            if (!trimmed.startsWith("{")) return trimmed.take(200).ifBlank { null }
-            return runCatching {
-                val root = JSONObject(trimmed)
-                val err = root.opt("error")
-                val msg = when {
-                    err is JSONObject -> err.optString("message").ifBlank { err.optString("code") }
-                    err is String -> err
-                    else -> root.optString("message").ifBlank { root.optString("detail") }
-                }
-                msg.trim().take(200).ifBlank { null }
-            }.getOrNull() ?: trimmed.take(200)
         }
     }
 }

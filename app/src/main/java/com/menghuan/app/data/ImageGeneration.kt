@@ -14,6 +14,16 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 /**
+ * 一次生图尝试的结果（v0.56.17）。
+ *
+ * 以前 `generate()` 失败只 `return null`，服务端原话（例如豆包那句
+ * "The parameter `size` specified in the request is not valid: image size must be at least
+ * 3686400 pixels"）被整个吞掉，用户只看到"生图失败：模型未配置或调用失败"，无从下手。
+ * 本项目在 ImageProbe 的 404、记账识图上已经因为同一毛病踩过三次，这次一并收口。
+ */
+data class ImageGenResult(val path: String? = null, val error: String? = null)
+
+/**
  * AI 生图（v0.35.0）。
  *
  * 走 OpenAI 兼容的 `POST {baseUrl}/images/generations`，各家路径不同，
@@ -52,15 +62,25 @@ class ImageGenerationClient(
     }
 
     /**
-     * 调生图接口并把图片落盘，返回本机绝对路径；任何失败返回 null（调用方给用户一句提示，不崩）。
+     * 调生图接口并把图片落盘，返回 [ImageGenResult]：成功带路径，失败带**给用户看的**原因
+     * （服务端原话优先，见 [NetworkStack.apiErrorText]）。
+     *
+     * ## 为什么不再传 `size`（v0.56.17）
+     * 这里原来写死 `"size": "1024x1024"`，真机上豆包 Seedream 5.0 直接 400：
+     * 官方要求**总像素 ≥ 2560x1440=3686400**（默认 2048x2048），1024x1024 只有 1/3.5；
+     * 而改成 2048x2048 又会被 OpenAI gpt-image-1（只吃 1024/1536 那几档）、
+     * 智谱 cogview-3（只吃 1024x1024 等）拒 —— **没有任何一个尺寸能满足所有家**。
+     * 所以这个字段干脆不发，让各家用自己的默认值（豆包 2048x2048、OpenAI auto、…）。
+     * ⚠️ 「测试连接」的 [ImageProbe] 必须与这里保持一致，否则会出现"测试通过、真生图失败"。
      */
-    suspend fun generate(prompt: String, dir: File): String? = withContext(Dispatchers.IO) {
-        if (!isConfigured() || prompt.isBlank()) return@withContext null
+    suspend fun generate(prompt: String, dir: File): ImageGenResult = withContext(Dispatchers.IO) {
+        if (!isConfigured() || prompt.isBlank()) {
+            return@withContext ImageGenResult(error = "配置不完整（缺接口地址 / Key / 模型）")
+        }
         val body = JSONObject()
             .put("model", model)
             .put("prompt", prompt)
             .put("n", 1)
-            .put("size", "1024x1024")
             .toString()
             .toRequestBody("application/json".toMediaType())
 
@@ -73,13 +93,25 @@ class ImageGenerationClient(
         runCatching {
             // v0.36.3：握手被服务端掐断时自动降级 TLS1.2+http1.1 重试（见 callWithTlsFallback）
             http.callWithTlsFallback(request) { resp ->
-                if (!resp.isSuccessful) return@callWithTlsFallback null
-                val json = JSONObject(resp.body?.string().orEmpty())
-                val url = parseImageUrl(json) ?: return@callWithTlsFallback null
-                val bytes = download(url) ?: return@callWithTlsFallback null
-                saveToDisk(bytes, dir, prompt)
+                if (!resp.isSuccessful) {
+                    // 失败一律把服务端原话带回去（豆包/智谱/OpenAI 都会说清哪个参数不对、
+                    // 模型是否开通），别再用"调用失败"四个字让用户猜
+                    val detail = NetworkStack.apiErrorText(runCatching { resp.body?.string() }.getOrNull())
+                    return@callWithTlsFallback ImageGenResult(
+                        error = "HTTP ${resp.code}" + if (detail != null) "：$detail" else "",
+                    )
+                }
+                val json = runCatching { JSONObject(resp.body?.string().orEmpty()) }.getOrNull()
+                    ?: return@callWithTlsFallback ImageGenResult(error = "响应不是合法 JSON")
+                val url = parseImageUrl(json)
+                    ?: return@callWithTlsFallback ImageGenResult(error = "响应里没有图片数据（data[0].url / b64_json）")
+                val bytes = download(url)
+                    ?: return@callWithTlsFallback ImageGenResult(error = "图片下载或 base64 解码失败")
+                val saved = saveToDisk(bytes, dir, prompt)
+                    ?: return@callWithTlsFallback ImageGenResult(error = "图片写入本机失败")
+                ImageGenResult(path = saved)
             }
-        }.getOrNull()
+        }.getOrElse { ImageGenResult(error = NetworkStack.describeNetworkFailure(it)) }
     }
 
     /** 兼容三种常见返回：data[0].url（b64_json 时用本地 base64）、data[0].b64_json */

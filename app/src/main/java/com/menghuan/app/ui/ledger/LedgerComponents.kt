@@ -95,7 +95,7 @@ fun LedgerEntrySheet(
     var hint by remember { mutableStateOf<String?>(null) }
 
     val listening by voice.listening.collectAsState()
-    val partial by voice.partial.collectAsState()
+    val recognizing by voice.recognizing.collectAsState()
 
     // 外部（识图）灌进来的草稿：同步到表单并记下来源
     LaunchedEffect(initialDraft) {
@@ -113,10 +113,8 @@ fun LedgerEntrySheet(
             onClearImageMessage()
         }
     }
-    // 语音实时转写：直接写进备注，让用户确信"听到了"
-    LaunchedEffect(partial, listening) {
-        if (listening && partial.isNotBlank()) note = partial
-    }
+    // v0.56.14：端侧离线识别**没有逐字 partial**（语音条/通话同款），
+    // 识别完一次性经 onResult 灌表单，不再有"边说边上屏"。
 
     NeuSheetScaffold(title = "记一笔", onDismiss = onDismiss) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -175,9 +173,10 @@ fun LedgerEntrySheet(
             singleLine = true,
         )
 
-        // 识别反馈条：录音中 / 识别中 / 成功失败都在这条线上说清
+        // 识别反馈条：录音中 / 转写中 / 识图中 / 成功失败都在这条线上说清
         val statusText = when {
-            listening -> "正在听你说…"
+            listening -> "正在听你说…（说完点「停止」）"
+            recognizing -> "正在识别…"
             imageParsing -> "正在识别图片…"
             else -> hint
         }
@@ -198,30 +197,38 @@ fun LedgerEntrySheet(
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             LedgerActionButton(
-                label = if (listening) "停止" else "语音",
+                label = when {
+                    listening -> "停止"
+                    recognizing -> "识别中"
+                    else -> "语音"
+                },
                 icon = MIcons.Mic,
-                active = listening,
+                active = listening || recognizing,
                 modifier = Modifier.weight(1f),
                 onClick = {
-                    if (listening) {
-                        voice.stopListening()
-                    } else if (!hasPermission()) {
-                        // 未授权：先申请（进页面时不突袭用户，点语音才弹）
-                        onNeedPermission()
-                        hint = "允许录音后即可语音记账"
-                    } else {
-                        hint = null
-                        voice.start(
-                            onResult = { text ->
-                                val draft = LedgerParser.fromText(text)
-                                isIncome = draft.isIncome
-                                draft.amountCents?.let { amountText = LedgerMath.formatCents(it) }
-                                note = draft.note
-                                source = LedgerSource.VOICE
-                                hint = if (draft.isValid) "已识别，核对后保存" else "没听出金额，请手动填写"
-                            },
-                            onError = { hint = it },
-                        )
+                    when {
+                        listening -> voice.stopListening()
+                        // 端侧转写中（1~3 秒）：不可点，等结果
+                        recognizing -> Unit
+                        !hasPermission() -> {
+                            // 未授权：先申请（进页面时不突袭用户，点语音才弹）
+                            onNeedPermission()
+                            hint = "允许录音后即可语音记账"
+                        }
+                        else -> {
+                            hint = null
+                            voice.start(
+                                onResult = { text ->
+                                    val draft = LedgerParser.fromText(text)
+                                    isIncome = draft.isIncome
+                                    draft.amountCents?.let { amountText = LedgerMath.formatCents(it) }
+                                    note = draft.note
+                                    source = LedgerSource.VOICE
+                                    hint = if (draft.isValid) "已识别，核对后保存" else "没听出金额，请手动填写"
+                                },
+                                onError = { hint = it },
+                            )
+                        }
                     }
                 },
             )
@@ -263,6 +270,7 @@ fun LedgerEntrySheet(
         ) {
             Text("现金余额", fontSize = 12.sp, color = MutedText)
             Spacer(Modifier.width(8.dp))
+            // v0.56.11（用户点名"金额不需要跳动"）：改回静态显示
             Text(
                 "¥${LedgerMath.formatCents(cashCents)}",
                 fontSize = 12.sp,

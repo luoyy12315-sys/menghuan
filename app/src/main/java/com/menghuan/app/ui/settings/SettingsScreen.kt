@@ -70,11 +70,8 @@ fun SettingsScreen(
     var query by remember { mutableStateOf("") }
     var searchMode by remember { mutableStateOf(false) }
 
-    // 滚动状态提前声明：顶部时搜索行常驻，上滑离开后换成顶栏放大镜（同消息页）
+    // v0.56.8：页面里那条搜索行已删掉（只留顶栏常驻放大镜），滚动状态只给 SettingsPage 用
     val scrollState = rememberScrollState()
-    val atTop by remember {
-        derivedStateOf { scrollState.value == 0 }
-    }
 
     val themeModeName by app.settingsRepository.themeMode.collectAsState(initial = DEFAULT_THEME_MODE)
 
@@ -97,9 +94,16 @@ fun SettingsScreen(
         }
     }
 
-    // 从放大镜进入搜索态时把页面拉回顶部，否则输入框在当前滚动位置之上、用户看不见
+    // 从放大镜进入搜索态：先把页面拉回顶部（否则输入框在当前滚动位置之上、用户看不见），
+    // 然后**立刻聚焦输入框并把键盘拉起来** —— v0.56.8 用户点名"直接打字就能搜，不用再点一次"。
+    val searchFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     LaunchedEffect(searchMode) {
-        if (searchMode) scrollState.animateScrollTo(0)
+        if (searchMode) {
+            scrollState.animateScrollTo(0)
+            searchFocus.requestFocus()
+            keyboard?.show()
+        }
     }
 
     // 搜索命中判据 = 标题或副标题（含别名）含关键词（不区分大小写）。
@@ -114,8 +118,8 @@ fun SettingsScreen(
         onBack = onBack,
         scrollState = scrollState,
         actions = {
-            // 上滑离开顶部 → 顶栏右侧放大镜（无圆圈），点它进入搜索态（同消息页）
-            if (!searchMode && !atTop) {
+            // 顶栏右侧**常驻**放大镜（无圆圈）：点它直接进搜索态并拉起键盘（v0.56.8 用户点名）
+            if (!searchMode) {
                 Icon(
                     MIcons.Search,
                     contentDescription = "搜索",
@@ -138,6 +142,7 @@ fun SettingsScreen(
                         value = query,
                         onValueChange = { query = it },
                         placeholder = "搜索设置项",
+                        focusRequester = searchFocus,
                     )
                 }
                 Spacer(Modifier.width(10.dp))
@@ -149,19 +154,6 @@ fun SettingsScreen(
                     },
                 )
             }
-            Spacer(Modifier.height(14.dp))
-        } else {
-            // 搜索行只在拉到最顶部时出现；上滑即收起（换成顶栏放大镜），淡入淡出 + 平滑推移
-            AnimatedVisibility(
-                visible = atTop,
-                enter = fadeIn(tween(200)) + expandVertically(tween(240, easing = EaseOutQuart)),
-                exit = fadeOut(tween(150)) + shrinkVertically(tween(200)),
-            ) {
-                Box(Modifier.fillMaxWidth()) {
-                    SettingsSearchRow(onClick = { searchMode = true })
-                }
-            }
-            // 搜索行与第一张卡之间留出间距（原来紧贴在一起）
             Spacer(Modifier.height(14.dp))
         }
 
@@ -189,12 +181,12 @@ fun SettingsScreen(
             subtitle = "男声 / 女声 / 我克隆的声音 · 可试听",
             onClick = { onOpen(SettingsRoutes.VOICE_LIBRARY) },
         )
-        // ④ 通话行为（点进去 = 语音通话铃声；AI 主动打电话 v0.54.5 起按角色在会话设置页里设）
+        // ④ 通话行为（点进去 = 语音通话铃声 + 接听延迟；AI 主动打电话 v0.54.5 起按角色在会话设置页里设）
         SettingsRow(
-            show = hit("通话行为", "语音通话铃声 来电 去电 铃声", "通话"),
+            show = hit("通话行为", "语音通话铃声 接听延迟 来电 去电 铃声 几秒接", "通话"),
             icon = MIcons.Phone,
             title = "通话行为",
-            subtitle = "语音通话铃声",
+            subtitle = "语音通话铃声 · 接听延迟",
             onClick = { onOpen(SettingsRoutes.CALL_BEHAVIOR) },
         )
         // ⑤ 提醒与通知（点进去 = 两个提醒开关；定时消息与主动关心已挪进每个角色的整页）
@@ -264,6 +256,8 @@ object SettingsRoutes {
     const val TTS_CONFIG = "tts_config"
     const val VOICE_LIBRARY = "voice_library"
     const val CALL_RINGTONE = "call_ringtone"
+    /** v0.56.5：接听延迟从「语音通话铃声」页里拎出，成为「通话行为」页上同级的一项 */
+    const val CALL_ANSWER_DELAY = "call_answer_delay"
     const val SCHEDULED_MESSAGE = "scheduled_message"
     const val ASR_MODEL = "asr_model"
     const val PROMPTS = "prompts"

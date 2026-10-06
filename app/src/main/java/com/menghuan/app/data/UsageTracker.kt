@@ -38,18 +38,22 @@ object VisionImage {
     /**
      * 本地图片 → 降采样 JPEG → `data:image/jpeg;base64,…`（vision 请求用）。
      * 解不出位图返回 null（调用方按纯文本消息发送兜底）。
+     *
+     * [maxDim]（v0.56.14）：聊天发图默认 1024 够用；**识图记账传 1536**——账单是文字密集图，
+     * 长截图（支付详情页高宽比 ≥2:1）压到 1024 后金额数字会糊到模型认不出
+     * （真机反馈"识图返回没识别到金额"的嫌疑之一）。
      */
-    fun encodeDataUrl(path: String): String? = runCatching {
+    fun encodeDataUrl(path: String, maxDim: Int = MAX_DIM, quality: Int = JPEG_QUALITY): String? = runCatching {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(path, opts)
         if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
         var sample = 1
-        while (maxOf(opts.outWidth, opts.outHeight) / (sample * 2) >= MAX_DIM) sample *= 2
+        while (maxOf(opts.outWidth, opts.outHeight) / (sample * 2) >= maxDim) sample *= 2
         val bitmap = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
             ?: return null
-        val scaled = scaleDown(bitmap, MAX_DIM)
+        val scaled = scaleDown(bitmap, maxDim)
         val bytes = ByteArrayOutputStream().use { out ->
-            scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+            scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
             out.toByteArray()
         }
         if (scaled !== bitmap) bitmap.recycle()
@@ -90,8 +94,12 @@ object UsageTracker {
     }
 
     /** 记一笔：跨月自动重置（月键不匹配即清零重计） */
-    suspend fun add(settingsRepository: SettingsRepository, tokens: Int) {
+    suspend fun add(settingsRepository: SettingsRepository, tokens: Int, model: String = "") {
         if (tokens <= 0) return
-        settingsRepository.addUsageTokens(monthKey(), tokens)
+        val month = monthKey()
+        settingsRepository.addUsageTokens(month, tokens)
+        // v0.56.7：同时记到**这个模型自己**的账上（用户要求"按每个模型分别算各自的用量"）。
+        // 调用点都拿得到 ApiConfig.model；拿不到时落到"（未填模型）"这一桶，不丢数。
+        settingsRepository.addUsageTokensForModel(month, model, tokens)
     }
 }

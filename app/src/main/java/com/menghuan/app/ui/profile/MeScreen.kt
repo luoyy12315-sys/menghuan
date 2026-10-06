@@ -1,6 +1,7 @@
 package com.menghuan.app.ui.profile
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -10,6 +11,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -66,10 +68,12 @@ import com.menghuan.app.data.model.TaskItem
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuSheetRow
+import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.common.staggerEnter
 import com.menghuan.app.ui.chat.ImageViewerOverlay
 import com.menghuan.app.ui.chat.rememberLocalBitmap
 import com.menghuan.app.ui.settings.SettingsPage
@@ -81,6 +85,7 @@ import com.menghuan.app.ui.theme.NeuDanger
 import com.menghuan.app.ui.theme.NeuHairline
 import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.TextPrimary
+import com.menghuan.app.ui.theme.TextSecondary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -418,16 +423,21 @@ fun MeScreen(
                     )
                 },
             )
+            // v0.55.0：整页内容错峰入场（淡入 + 上滑）。这一页原来**一个动画都没有** ——
+            // 三个 top tab 里只有它切过去是硬出现，与消息/数据两页的观感对不上。
             // 平板宽版式：行卡两列网格；手机单列
             if (com.menghuan.app.ui.common.isExpandedWindow()) {
-                rows.chunked(2).forEach { pair ->
+                rows.chunked(2).forEachIndexed { rowIndex, pair ->
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        pair.forEach { row -> Box(Modifier.weight(1f)) { row() } }
+                        pair.forEachIndexed { colIndex, row ->
+                            val order = rowIndex * 2 + colIndex
+                            Box(Modifier.weight(1f).staggerEnter(order)) { row() }
+                        }
                         if (pair.size == 1) Spacer(Modifier.weight(1f))
                     }
                 }
             } else {
-                rows.forEach { row -> row() }
+                rows.forEachIndexed { index, row -> Box(Modifier.staggerEnter(index)) { row() } }
             }
         }
     }
@@ -531,9 +541,12 @@ fun ProfileScreen(
 @Composable
 fun GalleryScreen(onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as MenghuanApp
+    val context = LocalContext.current
     var records by remember { mutableStateOf<List<com.menghuan.app.data.model.ImageGenerationRecord>>(emptyList()) }
     var viewerPath by remember { mutableStateOf<String?>(null) }
     var menuRecord by remember { mutableStateOf<com.menghuan.app.data.model.ImageGenerationRecord?>(null) }
+    // v0.56.15：提示词从卡片挪进长按菜单——点「提示词」打开这条的完整提示词（可复制）
+    var promptRecord by remember { mutableStateOf<com.menghuan.app.data.model.ImageGenerationRecord?>(null) }
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
@@ -594,13 +607,29 @@ fun GalleryScreen(onBack: () -> Unit) {
                         DropdownMenu(
                             expanded = menuRecord?.id == record.id,
                             onDismissRequest = { menuRecord = null },
-                            modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(14.dp)),
+                            // v0.56.15：整体改小（字 13sp、项高 36dp、圆角收到 10dp），描线保留
+                            modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(10.dp)),
                             containerColor = NeuSurface,
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(10.dp),
                             shadowElevation = 0.dp, // v0.42.1 全应用去阴影
                         ) {
                             DropdownMenuItem(
-                                text = { Text("删除", fontSize = 14.sp, color = NeuDanger) },
+                                text = { Text("提示词", fontSize = 13.sp, color = TextPrimary) },
+                                onClick = {
+                                    menuRecord = null
+                                    promptRecord = record
+                                },
+                                modifier = Modifier.height(36.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                            )
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(NeuHairline),
+                            )
+                            DropdownMenuItem(
+                                text = { Text("删除", fontSize = 13.sp, color = NeuDanger) },
                                 onClick = {
                                     menuRecord = null
                                     // 删记录 + 删本机文件；成功后重新拉取列表
@@ -612,6 +641,8 @@ fun GalleryScreen(onBack: () -> Unit) {
                                         }
                                     }
                                 },
+                                modifier = Modifier.height(36.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
                             )
                         }
                     }
@@ -622,6 +653,32 @@ fun GalleryScreen(onBack: () -> Unit) {
     }
     viewerPath?.let { path ->
         ImageViewerOverlay(path = path, onDismiss = { viewerPath = null })
+    }
+    // v0.56.15：提示词查看弹层（从长按菜单进来）——完整提示词 + 一键复制
+    promptRecord?.let { record ->
+        NeuSheetScaffold(title = "提示词", onDismiss = { promptRecord = null }) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                record.prompt.ifBlank { "（这条记录没有提示词）" },
+                fontSize = 13.sp,
+                lineHeight = 20.sp,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(18.dp))
+            NeuButton(
+                text = "复制提示词",
+                kind = NeuButtonKind.Primary,
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as? android.content.ClipboardManager
+                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("menghuan", record.prompt))
+                    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                    promptRecord = null
+                },
+            )
+            Spacer(Modifier.height(6.dp))
+        }
     }
 }
 
@@ -679,28 +736,30 @@ private fun GenerationRecordRow(
             }
         }
         Spacer(Modifier.width(10.dp))
+        // v0.56.15：提示词不再上卡片（挪进长按菜单查看）；剩下的信息分层加强——
+        // 模型提为主行、人设次行、时间垫底，三级灰阶一眼分清主次
         Column(Modifier.weight(1f)) {
             Text(
-                record.prompt.ifBlank { "（无提示词）" },
+                record.model.ifBlank { "未知模型" },
                 fontSize = 13.sp,
-                lineHeight = 18.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = TextPrimary,
-                maxLines = 2,
+                maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                galleryTime(record.timestamp),
-                fontSize = 10.sp,
-                color = MutedText,
+                record.personaName.ifBlank { "未关联人设" },
+                fontSize = 11.5.sp,
+                color = TextSecondary,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                "${record.model.ifBlank { "未知模型" }} · ${record.personaName}",
-                fontSize = 10.sp,
+                galleryTime(record.timestamp),
+                fontSize = 10.5.sp,
                 color = MutedText,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
         }
         Spacer(Modifier.width(8.dp))

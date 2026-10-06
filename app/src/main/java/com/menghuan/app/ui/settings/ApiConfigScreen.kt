@@ -6,7 +6,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,10 +19,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.MenghuanApp
@@ -54,18 +59,26 @@ private fun displayUrl(url: String): String =
 /** 常用服务商预设（OpenAI 兼容端点 + 推荐模型；模型名随各家更新，可手改） */
 private data class ApiPreset(val name: String, val url: String, val model: String)
 
+/**
+ * ⚠️ 预设里的 Model ID 必须与**官方当前**的写法逐字一致（全小写 + 连字符 + 日期后缀）。
+ * v0.56.17 补「豆包」并刷新生图 ID：用户真机两次手打都打错——`Doubao-Seedream-5.0-lite`
+ * （方舟实际是 `doubao-seedream-5-0-lite-260128`，且官方标注 lite 别名即将下线）
+ * 和 `Doubao-Seed-2.1-lite`（实际 `doubao-seed-2-1-lite-260915`）都 404。
+ * 出处：方舟模型列表 https://docs.volcengine.com/docs/82379/1536429
+ */
 private val apiPresets = listOf(
     ApiPreset("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+    ApiPreset("豆包", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seed-2-1-lite-260915"),
     ApiPreset("智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4.5"),
     ApiPreset("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
     ApiPreset("Moonshot", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
     ApiPreset("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini"),
 )
 
-/** 生图服务商预设（各家 `/images/generations` 端点） */
+/** 生图服务商预设（各家 `/images/generations` 端点；豆包见上方注释，5.0 lite 别名即将下线所以不用它） */
 private val imagePresets = listOf(
     ApiPreset("OpenAI", "https://api.openai.com/v1", "gpt-image-1"),
-    ApiPreset("豆包", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedream-3-0-t2i-250415"),
+    ApiPreset("豆包", "https://ark.cn-beijing.volces.com/api/v3", "doubao-seedream-5-0-260128"),
     ApiPreset("通义万相", "https://dashscope.aliyuncs.com/compatible-mode/v1", "wanx-v1"),
     ApiPreset("智谱 CogView", "https://open.bigmodel.cn/api/paas/v4", "cogview-3-flash"),
     ApiPreset("SiliconFlow", "https://api.siliconflow.cn/v1", "Kwai-Kolors/Kolors"),
@@ -140,12 +153,20 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
     ) {
         Spacer(Modifier.height(14.dp))
 
+        // 本月用量按模型查表（v0.56.8 用户点名：**直接显示在模型卡片上、模型名的右边**，
+        // 文字是「共消耗 X tokens」，字体沿用行内原来的小字）。
+        // 服务商在响应里回了 usage 才计（对话/提炼/周报/Agent/识图都算）。
+        val usageByModel by app.settingsRepository.monthlyUsageByModel
+            .collectAsState(initial = "" to emptyList())
+        val usageOf = usageByModel.second.toMap()
+
         if (kind == ApiModelKind.CHAT) {
             profiles.forEach { profile ->
                 ModelRow(
                     icon = MIcons.Code,
                     profile = profile,
                     isDefault = profile.id == activeId,
+                    usageTokens = usageOf[profile.model] ?: 0,
                     onSwitch = {
                         scope.launch {
                             app.settingsRepository.setActiveProfile(profile.id)
@@ -174,6 +195,7 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
                     icon = MIcons.ImageIcon,
                     profile = profile,
                     isDefault = profile.id == imageActiveId,
+                    usageTokens = usageOf[profile.model] ?: 0,
                     onSwitch = {
                         scope.launch {
                             app.settingsRepository.setActiveImageProfile(profile.id)
@@ -203,17 +225,6 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
             Text(it, fontSize = 13.sp, color = NeuAccent)
         }
 
-        // 本月用量（v0.38.0）：服务商在响应里回了 usage 才计（对话/提炼/周报/Agent 都算），
-        // 没拿到过数据就不显示这一行，免得用户以为没花 token
-        val usage by app.settingsRepository.monthlyUsage.collectAsState(initial = "" to 0)
-        if (usage.second > 0) {
-            Spacer(Modifier.height(18.dp))
-            Text(
-                "本月 API 用量：${com.menghuan.app.data.UsageTracker.formatTokens(usage.second)} tokens",
-                fontSize = 12.sp,
-                color = MutedText,
-            )
-        }
         Spacer(Modifier.height(6.dp))
     }
 
@@ -291,6 +302,7 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
             defaultLabel = "设为默认生图模型",
             deleteLabel = "删除生图模型",
             modelPlaceholder = "gpt-image-1",
+            modelIcon = MIcons.ImageIcon,
             onDismiss = { imageEditor = null },
             onSetDefault = {
                 initial.profileId?.let { pid ->
@@ -359,9 +371,23 @@ private fun ModelRow(
     icon: ImageVector,
     profile: ApiProfile,
     isDefault: Boolean,
+    /** 本月这个模型消耗的 tokens（v0.56.8）；0 = 不显示 */
+    usageTokens: Int,
     onSwitch: () -> Unit,
     onOpenDetail: () -> Unit,
 ) {
+    // 右侧挂一句「共消耗 X tokens」（字体与行内小字一致）；0 就不占位
+    val usageSlot: (@Composable () -> Unit)? = if (usageTokens > 0) {
+        {
+            Text(
+                "共消耗 " + com.menghuan.app.data.UsageTracker.formatTokens(usageTokens) + " tokens",
+                fontSize = 12.sp,
+                color = MutedText,
+            )
+        }
+    } else {
+        null
+    }
     NeuSheetRow(
         icon = icon,
         title = profile.name,
@@ -372,6 +398,7 @@ private fun ModelRow(
         },
         selected = isDefault,
         showCheck = false,
+        trailing = usageSlot,
         onClick = onSwitch,
         onChevronClick = onOpenDetail,
     )
@@ -396,16 +423,39 @@ private fun ModelEditorDialog(
     onSave: (EditorState) -> String?,
     onTest: suspend (EditorState) -> String,
     modelPlaceholder: String = "deepseek-chat",
+    /** 选择列表里每行左侧的图标：对话模型用代码图标、生图模型用图片图标（与外面列表行一致） */
+    modelIcon: ImageVector = MIcons.Code,
 ) {
     val scope = rememberCoroutineScope()
     var draft by remember { mutableStateOf(initial) }
     var testResult by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
+    // 「获取可用模型」（v0.57）：**点了才联网**；拿到列表后**在同一个弹层里**切成列表态让用户点选
+    // （不再叠第二个 ModalBottomSheet：两层弹层会只剩麻烦，标题与返回都在这一层里换）
+    var picking by remember { mutableStateOf(false) }
+    var listBusy by remember { mutableStateOf(false) }
+    var models by remember { mutableStateOf<List<String>>(emptyList()) }
 
     NeuSheetScaffold(
-        title = if (draft.isNew) "新模型" else "编辑模型",
+        title = when {
+            picking -> "选择模型"
+            draft.isNew -> "新模型"
+            else -> "编辑模型"
+        },
         onDismiss = onDismiss,
     ) {
+        if (picking) {
+            ModelPickerContent(
+                models = models,
+                icon = modelIcon,
+                onPick = {
+                    draft = draft.copy(model = it)
+                    picking = false
+                },
+                onBack = { picking = false },
+            )
+            return@NeuSheetScaffold
+        }
         NeuTextField(
             value = draft.name,
             onValueChange = { draft = draft.copy(name = it) },
@@ -447,6 +497,35 @@ private fun ModelEditorDialog(
             label = "API Key",
             placeholder = "sk-…",
             modifier = Modifier.fillMaxWidth(),
+        )
+        // 「获取可用模型」（v0.57）：模型 ID 是各家那套"全小写 + 连字符 + 日期后缀"写法，
+        // 手打必错（真机 404 就是这么来的）→ 填好地址 + Key 后拉一次列表，点一个直接填进「模型」。
+        Spacer(Modifier.height(4.dp))
+        NeuTextButton(
+            text = if (listBusy) "获取中…" else "获取可用模型",
+            onClick = {
+                when {
+                    draft.baseUrl.isBlank() || draft.apiKey.isBlank() ->
+                        testResult = "先填接口地址和 API Key"
+
+                    listBusy -> Unit
+                    else -> {
+                        listBusy = true
+                        testResult = null
+                        scope.launch {
+                            val r = OpenAiClient(draft.baseUrl, draft.apiKey, draft.model).listModels()
+                            if (r.error != null) {
+                                // 拉不到不阻塞保存：有的网关压根没实现 /models
+                                testResult = "获取模型失败 · ${r.error}（可直接手填模型名）"
+                            } else {
+                                models = r.ids
+                                picking = true
+                            }
+                            listBusy = false
+                        }
+                    }
+                }
+            },
         )
         Spacer(Modifier.height(12.dp))
         NeuTextField(
@@ -499,6 +578,36 @@ private fun ModelEditorDialog(
                 Spacer(Modifier.weight(1f))
                 NeuTextButton(deleteLabel, color = NeuDanger, onClick = onDelete)
             }
+        }
+    }
+}
+
+/**
+ * 「获取可用模型」的列表态（v0.57）：列表，点一行 = 把模型 ID 填进「模型」栏。
+ *
+ * ⚠️ 列表**必须给死高度**：外层弹层是 `verticalScroll` 的 Column，里面再放没有界高度的
+ * LazyColumn 会直接崩（"measured with infinity maximum height constraints"）。
+ *
+ * 列表只显示模型 ID 原文，不加说明小字（全应用语言）；接口没实现 `/models` 时压根到不了这里
+ * （上一层的按钮会把原因写出来，并提示可手填）。
+ */
+@Composable
+private fun ModelPickerContent(
+    models: List<String>,
+    icon: ImageVector,
+    onPick: (String) -> Unit,
+    onBack: () -> Unit,
+) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        NeuTextButton("← 返回", onClick = onBack)
+        Spacer(Modifier.width(12.dp))
+        Text("共 ${models.size} 个", fontSize = 12.sp, color = MutedText)
+    }
+    Spacer(Modifier.height(10.dp))
+    LazyColumn(Modifier.fillMaxWidth().height(320.dp)) {
+        items(models) { id ->
+            NeuSheetRow(icon = icon, title = id, subtitle = "", onClick = { onPick(id) })
+            Spacer(Modifier.height(8.dp))
         }
     }
 }

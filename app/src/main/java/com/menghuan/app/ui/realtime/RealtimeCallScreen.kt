@@ -18,6 +18,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.clickable
@@ -37,6 +38,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +57,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.SpanStyle
@@ -71,10 +75,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menghuan.app.realtime.RealtimeCallState
 import com.menghuan.app.data.CallRingtone
 import com.menghuan.app.ui.common.AdaptiveScreen
+import com.menghuan.app.ui.common.EaseOutQuart
 import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.common.NeuCircleButton
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
+import com.menghuan.app.ui.common.staggerEnter
 import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
@@ -89,6 +95,7 @@ import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.personaBrush
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -195,13 +202,37 @@ fun RealtimeCallScreen(
         RealtimeCallState.AI_THINKING, RealtimeCallState.AI_SPEAKING, RealtimeCallState.INTERRUPTED,
     )
     val pulsing = ui.state == RealtimeCallState.AI_SPEAKING || ui.state == RealtimeCallState.USER_SPEAKING
+    // 头像呼吸（v0.55.0 加；**v0.56.5 改成恒定跑**）：原来只有 pulsing 时才呼吸、其余状态钉在 1.0，
+    // 于是"角色思考"和"角色听我说话"两态下头像**大小就不一样**（用户点名的第二处差异）。
+    // 现在全程同一套 0.985 ↔ 1.035 呼吸 → 两态大小完全一致；"谁在说话"仍由脉冲环表达。
+    // 值只在 graphicsLayer 的 lambda 里读（延迟读），每帧只刷渲染层，**不触发重组、不重新布局**。
     val breath = rememberInfiniteTransition(label = "breath").animateFloat(
         initialValue = 0.985f,
         targetValue = 1.035f,
         animationSpec = infiniteRepeatable(tween(950, easing = LinearEasing), RepeatMode.Reverse),
         label = "breathScale",
     )
-    val avatarScale by animateFloatAsState(if (pulsing) breath.value else 1f, label = "avatarScale")
+    val ringInk = TextPrimary
+
+    // v0.55.0：通话计时。UiState 里没有 startedAt，所以页面自己从"进入活动态"起算 ——
+    // 不碰引擎、不改仓库，纯 UI 层；状态切回准备/结束就停表，再回来接着走。
+    val timingStates = remember {
+        setOf(
+            RealtimeCallState.CONNECTED, RealtimeCallState.LISTENING,
+            RealtimeCallState.USER_SPEAKING, RealtimeCallState.AI_THINKING,
+            RealtimeCallState.AI_SPEAKING, RealtimeCallState.INTERRUPTED,
+        )
+    }
+    var elapsedSec by remember { mutableStateOf(0) }
+    LaunchedEffect(ui.state) {
+        if (ui.state !in timingStates) return@LaunchedEffect
+        val base = elapsedSec
+        val from = System.currentTimeMillis()
+        while (isActive) {
+            delay(500)
+            elapsedSec = base + ((System.currentTimeMillis() - from) / 1000).toInt()
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(NeuBackground)) {
         Column(
@@ -211,25 +242,62 @@ fun RealtimeCallScreen(
             // 主视觉：大头像 + 名字 + 状态。**高度由内容决定**（不放 weight）——
             // 矮屏上「缺模型」提示按钮跟着长时不能被裁掉，剩余高度全给字幕区。
             Column(
-                Modifier.fillMaxWidth(),
+                Modifier
+                    .fillMaxWidth()
+                    // v0.55.0 进场编排：头像块 → 字幕区 → 操作钮，三块依次抬起，
+                    // 与路由的横向滑入叠成"页面铺开"，而不是整屏内容同一帧出现。
+                    .staggerEnter(0, stepMs = 60, slideDp = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Spacer(Modifier.height(40.dp))
-                NeuAvatar(
-                    emoji = persona?.avatarEmoji ?: "🙂",
-                    imagePath = persona?.avatarImagePath.orEmpty(),
-                    size = 124.dp,
-                    ringBrush = personaBrush(personaId),
-                    modifier = Modifier.scale(avatarScale),
-                )
+                // 说话时头像外扩两圈同心环（v0.55.0）：原来只有头像自己 0.985↔1.035 缩放，
+                // 在整屏留白的通话页里几乎看不出"谁在说话"。加两圈缓慢外扩、边扩边淡的环，
+                // 声源的方向感才立得住。环走 Canvas 单节点，开着整通电话也不产生重组。
+                //
+                // ⚠️ v0.56.5 修「角色思考 / 角色听我说话头像位置不一样」：
+                // 根因是这个容器原来**尺寸跟着环走**——`CallPulseRings` 在 !active 时直接 return
+                // （连节点都不占），active 时才带 `size(196.dp)` 进来；于是整块从 124dp 长到 196dp，
+                // 居中的头像被整体**往下推 36dp**（上面一行名字、下面状态胶囊也跟着挪）。
+                // 现在把尺寸钉在**画布本身**（恒定 [CallAvatarCanvas]），环只在这个画布内画或不画，
+                // 头像的位置就与状态无关了。
+                Box(Modifier.size(CallAvatarCanvas), contentAlignment = Alignment.Center) {
+                    CallPulseRings(
+                        active = pulsing,
+                        color = ringInk,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    NeuAvatar(
+                        emoji = persona?.avatarEmoji ?: "🙂",
+                        imagePath = persona?.avatarImagePath.orEmpty(),
+                        size = 124.dp,
+                        ringBrush = personaBrush(personaId),
+                        modifier = Modifier.graphicsLayer {
+                            scaleX = breath.value
+                            scaleY = breath.value
+                        },
+                    )
+                }
                 Spacer(Modifier.height(18.dp))
                 Text(name, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
                 Spacer(Modifier.height(6.dp))
+                // v0.55.0：状态收进凹陷灰胶囊 + 一颗会呼吸的状态点 ——
+                // 原来是一行孤零零的灰字，跟下面的提示块抢注意力，
+                // 「正在听你说话」这种进行时的状态也读不出来。
                 Crossfade(
                     targetState = if (!answerDelayDone && hasPermission) "正在呼叫…" else stateLabel(ui),
                     label = "stateLabel",
                 ) { label ->
-                    Text(label, fontSize = 13.sp, color = MutedText)
+                    CallStatusChip(label = label, live = active)
+                }
+                // 打通之后才走字：0 秒不显示，免得刚接通就挂个 00:00
+                if (elapsedSec > 0) {
+                    Spacer(Modifier.height(5.dp))
+                    Text(
+                        "%02d:%02d".format(elapsedSec / 60, elapsedSec % 60),
+                        fontSize = 12.sp,
+                        color = MutedText,
+                        letterSpacing = 0.8.sp,
+                    )
                 }
                 if (ui.error != null) {
                     Spacer(Modifier.height(12.dp))
@@ -274,7 +342,11 @@ fun RealtimeCallScreen(
             // 贴着底部时新句自动跟随，用户一向上翻就**不再被拽回**，
             // 右下角给一颗「回到底部」按钮，随时一键回到最新。
             Box(
-                Modifier.weight(1f).fillMaxWidth().padding(top = 10.dp),
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(top = 10.dp)
+                    .staggerEnter(1, stepMs = 60, slideDp = 16.dp),
                 contentAlignment = Alignment.BottomCenter,
             ) {
                 CallSubtitlePanel(
@@ -291,7 +363,8 @@ fun RealtimeCallScreen(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 40.dp),
+                    .padding(bottom = 40.dp)
+                    .staggerEnter(2, stepMs = 60, slideDp = 18.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -302,6 +375,8 @@ fun RealtimeCallScreen(
                     icon = if (ui.muted) MIcons.MicOff else MIcons.Mic,
                     description = if (ui.muted) "取消静音" else "静音",
                     enabled = active,
+                    // 静音是"这一刻开着"的状态，加一圈发丝环表示它正生效
+                    ringed = ui.muted,
                     onClick = { vm.toggleMute() },
                 )
                 Spacer(Modifier.width(30.dp))
@@ -326,6 +401,14 @@ fun RealtimeCallScreen(
  * 取 150dp。行数由可视高度天然封顶 —— 长句再长也只会占满这一屏。
  */
 private val SubtitleViewportHeight = 150.dp
+
+/**
+ * 通话页头像**画布**的固定边长（v0.56.5）：脉冲环与头像都在这个方框里居中排布。
+ *
+ * 钉死它是为了"角色思考"与"角色听我说话"两态下**头像位置一模一样** ——
+ * 环只在说话时画，但**画布尺寸必须恒定**（见头像块处的注释）。
+ */
+private val CallAvatarCanvas = 196.dp
 
 /**
  * 字幕面板（v0.54.0）：歌词式排版 + 可滚动完整记录。
@@ -500,7 +583,82 @@ private fun stateLabel(ui: RealtimeCallUiState): String = when (ui.state) {
     RealtimeCallState.ERROR -> "通话出错"
 }
 
-/** 大号圆形操作钮（静音/挂断）：无涟漪缩放反馈，容器色调用方指定 */
+/**
+ * 头像外的同心脉冲环（v0.55.0）：两圈环错开半周期、缓慢外扩并边扩边淡，
+ * 表示"这一侧正在出声"。
+ *
+ * 走 Canvas 单节点 + `rememberInfiniteTransition` 的线性 0→1 循环：
+ * 半径与透明度都只由这一个进度算出来，**不产生任何重组**，
+ * 所以整通电话都开着也不会拖累帧率（用两个 `Box` + `animateFloatAsState` 会每帧重组两次）。
+ */
+@Composable
+private fun CallPulseRings(active: Boolean, color: Color, modifier: Modifier = Modifier) {
+    if (!active) return
+    val phase by rememberInfiniteTransition(label = "callRings").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1900, easing = LinearEasing)),
+        label = "ringPhase",
+    )
+    val ink = color
+    Canvas(modifier) {
+        val maxR = size.minDimension / 2f
+        repeat(2) { k ->
+            val p = (phase + k * 0.5f) % 1f
+            drawCircle(
+                color = ink,
+                radius = maxR * (0.62f + p * 0.36f),
+                alpha = (1f - p) * 0.22f,
+                style = Stroke(width = 1.5.dp.toPx()),
+            )
+        }
+    }
+}
+
+/**
+ * 通话状态胶囊（v0.55.0）：凹陷灰槽 + 一颗状态点 + 状态文案。
+ *
+ * 那颗点是"进行中"的信号 —— **呼吸 = 通话真的在进行，静止 = 已结束 / 未接通**。
+ * 原来只有一行灰字，两种状态长得一模一样，看不出电话还通着没有。
+ */
+@Composable
+private fun CallStatusChip(label: String, live: Boolean) {
+    val dotAlpha by animateFloatAsState(
+        targetValue = if (live) 1f else 0.3f,
+        animationSpec = tween(220, easing = EaseOutQuart),
+        label = "statusDot",
+    )
+    val dotScale by animateFloatAsState(
+        targetValue = if (live) 1f else 0.8f,
+        animationSpec = tween(220, easing = EaseOutQuart),
+        label = "statusDotScale",
+    )
+    Row(
+        Modifier
+            .neuSurface(999.dp, color = NeuTrack, inset = true)
+            .padding(horizontal = 13.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 不用 neuSurface(inset = true)：凹陷分支固定涂 NeuTrack、不吃 color，
+        // 这颗点要的是"文字色的深浅"，所以直接用带 alpha 的强调色
+        Box(
+            Modifier
+                .size(6.dp)
+                .scale(dotScale)
+                .background(TextPrimary.copy(alpha = dotAlpha), CircleShape),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(label, fontSize = 12.5.sp, color = TextSecondary)
+    }
+}
+
+/**
+ * 大号圆形操作钮（静音/挂断）：无涟漪缩放反馈，容器色调用方指定。
+ *
+ * v0.55.0：补两处以前没有的反馈 ——
+ * - **禁用态淡出**（原来 enable=false 时按钮还是全亮，看不出"现在点不动"）；
+ * - **生效态内圈**（静音开着时加一圈发丝环，表示"这个状态正生效"）。
+ */
 @Composable
 private fun CallActionButton(
     size: Dp,
@@ -509,12 +667,20 @@ private fun CallActionButton(
     icon: ImageVector,
     description: String,
     enabled: Boolean,
+    /** 是否画一圈外环（表示"这个开关正生效"，如静音中） */
+    ringed: Boolean = false,
     onClick: () -> Unit,
 ) {
     val press = rememberNeuPressState()
+    val alpha by animateFloatAsState(
+        targetValue = if (enabled) 1f else 0.35f,
+        animationSpec = tween(200),
+        label = "callBtnAlpha",
+    )
     Box(
         Modifier
             .scale(press.scale)
+            .alpha(alpha)
             .size(size)
             .neuSurface(size / 2, color = container)
             .clickable(
@@ -525,6 +691,16 @@ private fun CallActionButton(
             ),
         contentAlignment = Alignment.Center,
     ) {
+        // 生效环画在按钮**内部**（不往外扩）：往外画会被父节点裁掉，
+        // 而且和"发丝线描边 = 界面唯一分隔手段"的语言一致 —— 不用第二套装饰。
+        if (ringed) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .padding(5.dp)
+                    .neuSurface(999.dp, color = Color.Transparent),
+            )
+        }
         Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(size * 0.44f))
     }
 }

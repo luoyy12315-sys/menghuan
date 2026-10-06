@@ -28,6 +28,7 @@ import com.menghuan.app.data.model.MediaKind
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.TaskItem
 import com.menghuan.app.llm.ApiException
+import com.menghuan.app.llm.NetworkStack
 import com.menghuan.app.llm.OpenAiClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -91,6 +92,66 @@ object AgentChatGate {
         alreadyRunning -> "上一个手机操作还在执行中，完成后再试" to ErrorBar.KIND_INFO
         !apiComplete -> "API 未配置，无法执行手机操作" to ErrorBar.KIND_API
         else -> null
+    }
+}
+
+/** 跨页面的"正在生成"快照（[ChatGenerationBus] 用） */
+data class ChatGenerationState(
+    /** 正在等模型回复的会话（同一时刻可能不止一个会话在跑） */
+    val textBusy: Set<Long> = emptySet(),
+    /** 正在生图的会话 → 画面提示词（生图动画卡要用） */
+    val imageBusy: Map<Long, String> = emptyMap(),
+)
+
+/**
+ * 「正在生成」的跨页面登记处（v0.57）。
+ *
+ * ## 为什么需要它
+ * `ChatViewModel` 绑在 `chat/{personaId}` 这条导航记录上——**退出聊天页就被销毁**、
+ * `viewModelScope` 随之取消，正在跑的流式请求连同还没落库的回复一起消失（用户反馈：
+ * "退出对话页面后 AI 生成就中断了"）。修法分两步：
+ * 1. 生成链路改挂**应用级作用域**（见 `ChatViewModel.generationScope`），退出页面不掐断；
+ * 2. 但"哪个会话正在生成"这个事实**不能只放在 VM 里**（VM 都没了）——放这里。
+ *    重新进入会话时，新 VM 一挂上就知道"它还在生成"，把三点气泡接回来。
+ *
+ * ## 为什么这里只登记状态、不跑逻辑
+ * 与 `AgentRunner`（自己跑逻辑 + 自己登记状态）不同：生成函数 `reply()` 与 VM 的
+ * `_activePersona` / `_uiState` / 一堆私有成员耦合很深，整体搬出去是纯粹的白折腾。
+ * 所以生成仍留在 VM 里跑（只是换了作用域），这个对象只当一个**不随页面走的信箱**。
+ */
+object ChatGenerationBus {
+
+    private val _state = MutableStateFlow(ChatGenerationState())
+    val state: StateFlow<ChatGenerationState> = _state.asStateFlow()
+
+    /** 已销毁的会话里失败过的提示：回来后补显示一次（会话 id → 文案 to 错误条类型），显示完即清 */
+    private val pendingErrors = MutableStateFlow<Map<Long, Pair<String, String>>>(emptyMap())
+
+    fun beginText(conversationId: Long) {
+        _state.update { it.copy(textBusy = it.textBusy + conversationId) }
+    }
+
+    fun endText(conversationId: Long) {
+        _state.update { it.copy(textBusy = it.textBusy - conversationId) }
+    }
+
+    fun beginImage(conversationId: Long, prompt: String) {
+        _state.update { it.copy(imageBusy = it.imageBusy + (conversationId to prompt)) }
+    }
+
+    fun endImage(conversationId: Long) {
+        _state.update { it.copy(imageBusy = it.imageBusy - conversationId) }
+    }
+
+    fun postError(conversationId: Long, message: String, kind: String) {
+        pendingErrors.update { it + (conversationId to (message to kind)) }
+    }
+
+    /** 取走并清空该会话的待显示错误（没有则返回 null），保证只补显示一次 */
+    fun takeError(conversationId: Long): Pair<String, String>? {
+        val hit = pendingErrors.value[conversationId] ?: return null
+        pendingErrors.update { it - conversationId }
+        return hit
     }
 }
 
@@ -195,11 +256,31 @@ const val VOICE_NOTE_FRAMEWORK: String =
         "正文不会另外显示（用户长按语音条可以看到文字）。" +
         "标记只用于触发合成，不要在正文里解释这个标记，也不要重复它；一次回复最多一个标记。"
 
+/**
+ * 语音条**策略**（v0.50.0 建；v0.56.17 补规则）。
+ *
+ * ⚠️ v0.56.17 背景：用户报「AI 从来不发语音条，我叫它发也不发」（无报错、语音合成已配齐）。
+ * 逐环节排查（MiMo 协议实现 / 能力说明注入条件 / SSE 解析 / 标记解析 / 消息升级 / 气泡渲染）
+ * **都没找到确定性缺陷**；用户随后在**同一个旧包**上又自行恢复了——说明"由模型自行判断何时用语音"
+ * 本身带随机性，不是一条必现的 bug（别拿它当已确认结论）。
+ * 但旧文案确实有个真空：整段只写"要克制 / 不要连续发 / 不适合说的用文字"，
+ * **一句都没写"用户明确要求发语音时该怎么办"**，而 [VOICE_NOTE_FRAMEWORK] 又把决定权交给模型
+ * （"当你决定这条回复用说的"）——模型读到的净效果偏"别用"。
+ * （对照：生图 / 打电话的提示词都带"用户明确要求时"的硬规则。）
+ * 所以这次把规则写全：① 用户明确要求 → 必须带标记；② 自己挑时机 → 短情绪句放心用；
+ * ③ 长回答 / 清单一律文字。**别再把它改回"只讲克制"**。
+ */
 const val VOICE_NOTE_DEFAULT_STRATEGY: String =
-    "语音条是你可以主动使用的能力，但要克制：适合用说的是短、口语化、带情绪的回复" +
-        "（问候、安慰、鼓励、道晚安、一句提醒），一两句话能说完的那种；" +
-        "不适合用说的是长回答、清单、步骤说明、任何用户需要照着做或反复看的内容——那些一律用文字。" +
-        "同一段对话里不要连续每条都发语音条；用户说过「打字告诉我」「发文字」之后就一直用文字。" +
+    "语音条是你可以主动使用的能力，分两种情况：\n" +
+        "① 用户明确要求你发语音时（发条语音 / 用语音说 / 说给我听 / 语音回我），" +
+        "这条回复**必须**带语音条——在回复里单独加一行 【语音条】，正文就写你要说的那句话；" +
+        "不要只在正文里用文字答应「好，我发语音给你」却不带标记（那样用户什么也收不到）。\n" +
+        "② 你自己挑时机时：短、口语化、带情绪的回复（问候、安慰、鼓励、道晚安、一句提醒）" +
+        "这类一两句话能说完的，用语音条很自然；长回答、清单、步骤说明、" +
+        "任何用户需要照着做或反复看的内容一律用文字。\n" +
+        "用语音条不会让用户看不到你写的话（长按语音条能看到正文），所以该用就用，不必顾虑。" +
+        "同一段对话里不要连续每条都发语音条（第 ① 种情况除外）；" +
+        "用户说过「打字告诉我」「发文字」之后就一直用文字，直到他再次要求语音。" +
         "正文不要写「我发条语音给你」这类旁白，直接说要说的话。"
 
 fun voiceNoteHint(strategy: String = VOICE_NOTE_DEFAULT_STRATEGY): String =
@@ -266,6 +347,45 @@ class ChatViewModel(
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private var draftWriteJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 生成链路用的作用域（v0.57）：**优先应用级作用域**——生成挂在这里，退出聊天页
+     * （VM 被销毁、viewModelScope 被取消）也不会被掐断；JVM 单测直接 new 本类、
+     * 没有应用级作用域时退回 viewModelScope，行为与旧版一致。
+     */
+    private val generationScope: CoroutineScope get() = appScope ?: viewModelScope
+
+    /**
+     * 本 VM 是否已被销毁（用户退出了聊天页）。
+     *
+     * 生成还在应用级作用域里跑，这时若报错，[setError] 写进 `_uiState` 没人看得到 ——
+     * 于是转投 [ChatGenerationBus]，等用户回到会话时补显示一次（项目铁律：失败不许静默）。
+     */
+    @Volatile
+    private var viewModelCleared = false
+
+    override fun onCleared() {
+        viewModelCleared = true
+        super.onCleared()
+    }
+
+    /**
+     * 统一的失败出口：复位流式标记 + 上屏错误条；**若本 VM 已销毁**，同时把这条错误
+     * 投到 [ChatGenerationBus]，让重新进入会话时能补看到（否则异步失败就等于没发生）。
+     */
+    private fun setError(message: String, kind: String) {
+        _uiState.update {
+            it.copy(isStreaming = false, generating = false, error = message, errorKind = kind)
+        }
+        if (viewModelCleared) ChatGenerationBus.postError(personaId, message, kind)
+    }
+
+    /** 回读落库消息并上屏，**不动流式标记**（重进会话接上别人的生成时用，见 init） */
+    private suspend fun reloadMessages() {
+        val persisted = runCatching { db.messageDao().observeConversation(personaId).first() }
+            .getOrDefault(emptyList())
+        if (persisted.isNotEmpty()) _uiState.update { it.copy(messages = persisted) }
+    }
 
     init {
         // 草稿落盘恢复：进程被杀后重新进入会话，未发送输入仍在
@@ -345,9 +465,18 @@ class ChatViewModel(
             runCatching {
                 // 重新打开即恢复：微信式删除的会话，从搜索/任意入口再进入时取消隐藏
                 personaRepository.setHidden(personaId, false)
-                val persona = personaRepository.getPersona(personaId)
-                    ?: personaRepository.observePersonas().first().firstOrNull()
-                _activePersona.value = persona
+            }
+        }
+        // 人设**持续观察**（v0.56.14 修"编辑人设保存后回到对话页不生效"）：
+        // 原来只在 init 里 getPersona 读一次，之后三点菜单 → 编辑人设 → 保存回到对话页，
+        // 名字/头像/设定词全是旧的，要退到消息页重进（ViewModel 重建）才刷新。
+        // 改成 Room observe 驱动即改即生效；指定 id 找不到时回落列表第一个
+        // （保持原一次性读的兜底语义：deep link/旧入口可能传已不存在的 id）。
+        viewModelScope.launch {
+            runCatching {
+                personaRepository.observePersonas().collect { list ->
+                    _activePersona.value = list.firstOrNull { it.id == personaId } ?: list.firstOrNull()
+                }
             }
         }
         // 一次性修复历史 bug 落库的 "null" 乱码（v0.12.1 前 OpenAiClient 把推理模型的
@@ -423,6 +552,46 @@ class ChatViewModel(
                         } ?: state
                     }
                     AgentRunner.State.Idle -> _uiState.update { it.copy(agentRun = null) }
+                }
+            }
+        }
+        // v0.57：接上"跨页面还在跑的那一轮生成"。生成挂在应用级作用域，退出聊天页不停；
+        // 重新进来时这里做两件事：① 把三点气泡/生图卡接回来；② 补显示离开期间那次失败。
+        viewModelScope.launch {
+            // 上一次生成在别处（页面已销毁）失败时留下的错误：补显示一次
+            ChatGenerationBus.takeError(personaId)?.let { (message, kind) ->
+                _uiState.update { it.copy(error = message, errorKind = kind) }
+            }
+            // 本会话是否曾由总线接上过生成：只有"接过又结束"才需要收尾，
+            // 否则别人的生成状态一变就会误伤本会话刚发出去的那条消息
+            var wasBusy = false
+            ChatGenerationBus.state.collect { bus ->
+                val textMine = personaId in bus.textBusy
+                if (textMine) {
+                    if (!_uiState.value.isStreaming) {
+                        _uiState.update { it.copy(isStreaming = true, generating = true, error = null) }
+                        // 流式期间 DB 观察会被跳过（见本类 init 顶部的说明），而重进的 VM
+                        // 手里没有"乐观上屏"的那条用户消息 —— 先回读一次，别让会话看着是空的
+                        reloadMessages()
+                    }
+                } else if (wasBusy && _uiState.value.isStreaming) {
+                    // 本会话这一轮生成刚结束（可能是在别的页面跑完的）：回读结果并复位。
+                    // ⚠️ 必须同时看 wasBusy：只看 isStreaming 的话，**别的会话**的生成一结束
+                    // 就会把本会话刚乐观上屏、还没落库的那条消息冲掉（多会话并发时真会撞上）。
+                    finishStream()
+                    _uiState.update { it.copy(isGeneratingImage = false, imagePrompt = "") }
+                    ChatGenerationBus.takeError(personaId)?.let { (message, kind) ->
+                        _uiState.update { it.copy(error = message, errorKind = kind) }
+                    }
+                }
+                wasBusy = textMine
+                val prompt = bus.imageBusy[personaId]
+                if (prompt != null) {
+                    _uiState.update {
+                        if (it.isGeneratingImage) it else it.copy(isGeneratingImage = true, imagePrompt = prompt)
+                    }
+                } else if (_uiState.value.isGeneratingImage) {
+                    _uiState.update { it.copy(isGeneratingImage = false, imagePrompt = "") }
                 }
             }
         }
@@ -555,20 +724,32 @@ class ChatViewModel(
     /**
      * 发文件（v0.43.0）：[extractedText] 是本地抽取的正文（可为空）。
      * 非空时拼进 `content` 让模型能读到内容；为空则只留文件名，模型只能知道"用户发了个文件"。
+     *
+     * v0.56.6：新增 [caption] —— 附件现在**先挂在输入框上方**，用户写在输入框里的那句说明
+     * 就是它，发送时一并带上（并清掉输入框）。顺序是"用户的话在前、抽出的正文在后"。
      */
-    fun sendFile(path: String, name: String, size: Long, extractedText: String) {
+    fun sendFile(
+        path: String,
+        name: String,
+        size: Long,
+        extractedText: String,
+        caption: String = "",
+    ) {
         if (path.isBlank() || _uiState.value.isStreaming) return
+        val content = listOf(caption.trim(), extractedText.trim())
+            .filter { it.isNotEmpty() }
+            .joinToString("\n\n")
         send(
             ChatMessage(
                 conversationId = personaId,
                 isFromUser = true,
-                content = extractedText.trim(),
+                content = content,
                 attachmentPath = path,
                 attachmentName = name,
                 attachmentSize = size,
                 mediaKind = MediaKind.FILE.name,
             ),
-            clearInput = false,
+            clearInput = true,
         )
     }
 
@@ -585,20 +766,17 @@ class ChatViewModel(
         }
         ChatDrafts.clear(personaId)
         persistDraft("")
-        viewModelScope.launch {
+        // v0.57：整轮生成挂应用级作用域（[generationScope]），退出聊天页不掐断
+        generationScope.launch {
             val saved = runCatching { db.messageDao().insert(userMsg) }
             if (saved.isFailure) {
-                _uiState.update {
-                    it.copy(
-                        isStreaming = false,
-                        generating = false,
-                        error = "消息保存失败：${saved.exceptionOrNull()?.message ?: "存储异常"}",
-                        errorKind = ErrorBar.KIND_INFO,
-                    )
-                }
+                setError(
+                    "消息保存失败：${saved.exceptionOrNull()?.message ?: "存储异常"}",
+                    ErrorBar.KIND_INFO,
+                )
                 return@launch
             }
-            reply()
+            runGeneration()
         }
     }
 
@@ -636,7 +814,31 @@ class ChatViewModel(
     fun retry() {
         if (_uiState.value.isStreaming) return
         _uiState.update { it.copy(isStreaming = true, generating = true, error = null) }
-        viewModelScope.launch { reply() }
+        // v0.57：同样挂应用级作用域，退出聊天页不掐断
+        generationScope.launch { runGeneration() }
+    }
+
+    /**
+     * 跑一轮生成（v0.57 起挂 [generationScope]）：
+     * 在 [ChatGenerationBus] 上登记"本会话正在生成文字回复"，跑完（或异常）必定解登记——
+     * 重新进入会话的 VM 靠这份登记把三点气泡接回来，登记不清就会永远显示"正在生成"。
+     */
+    private suspend fun runGeneration() {
+        ChatGenerationBus.beginText(personaId)
+        try {
+            reply()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            // ⚠️ 这条协程跑在 applicationScope 上：异常不接住会直接冒到默认处理器 → 进程死掉
+            // （同 `CrashLog` / `PipelineVoiceCallEngine` 里反复强调的那条）。这里兜底成错误条，
+            // 宁可显示"生成失败"，也不能因为一次生成把整个 App 崩了。
+            setError("生成失败：${e.message ?: "未知异常"}", ErrorBar.KIND_RETRY)
+        } finally {
+            // 正常路径在 finishStream() 之后就已解登记，这里再解一次（集合去重，幂等），
+            // 保证任何提前 return / 异常都不会把会话钉死在"生成中"
+            ChatGenerationBus.endText(personaId)
+        }
     }
 
     /** 组装 system prompt 并流式获取回复 */
@@ -648,7 +850,7 @@ class ChatViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _uiState.update { it.copy(isStreaming = false, generating = false, error = "配置读取失败：${e.message ?: "存储异常"}", errorKind = ErrorBar.KIND_API) }
+            setError("配置读取失败：${e.message ?: "存储异常"}", ErrorBar.KIND_API)
             return
         }
 
@@ -726,7 +928,13 @@ class ChatViewModel(
                 append(agentChatHint(strategy))
             }
             // 会话联网（v0.53.6）：这个对话开着联网时，拿用户这一句当查询先搜一遍，再把结果给它。
-            // 复用「定时主动消息」里配好的搜索服务（博查 / Tavily），不另配一套。
+            // 复用「联网搜索」里配好的搜索服务（博查 / Tavily），不另配一套。
+            //
+            // ⚠️ v0.56.5 修「配好 Key、打开联网，角色仍然不联网」：
+            // 原来查询串取的是 `_uiState.value.input`，而 `send()` 在调用本函数**之前**
+            // 已经把输入框清空了（`input = ""`）→ `query` 恒为空 → 整段联网注入**从来没执行过**。
+            // 现在改成读**最后一条用户消息**（就是刚发出去那句，落库与上屏都已完成），
+            // 重试时也仍然拿得到同一句。
             val webSearchOn = try {
                 settingsRepository.chatWebSearch.first()[personaId] == true
             } catch (e: CancellationException) {
@@ -735,7 +943,7 @@ class ChatViewModel(
                 false
             }
             if (webSearchOn) {
-                val query = _uiState.value.input.trim()
+                val query = _uiState.value.messages.lastOrNull { it.isFromUser }?.content?.trim().orEmpty()
                 if (query.isNotEmpty()) {
                     val provider = try {
                         settingsRepository.searchProvider.first()
@@ -751,7 +959,7 @@ class ChatViewModel(
                     append("## 联网\n")
                     if (searchKey.isBlank()) {
                         append("用户打开了本会话的联网开关，但还没配搜索服务的 Key")
-                        append("（设置 → 通知与提醒 → 定时主动消息 → 联网搜索）。")
+                        append("（设置 → 模型配置 → 联网搜索）。")
                         append("被问到最新信息时请**如实说明暂时查不了**，不要凭记忆编。")
                     } else {
                         val hits = runCatching {
@@ -859,7 +1067,7 @@ class ChatViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _uiState.update { it.copy(isStreaming = false, generating = false, error = "历史读取失败：${e.message ?: "存储异常"}", errorKind = ErrorBar.KIND_RETRY) }
+            setError("历史读取失败：${e.message ?: "存储异常"}", ErrorBar.KIND_RETRY)
             return
         }
         // 本次请求里是否带了用户图片（模型不支持 vision 时 400，提示语要能对上）
@@ -873,7 +1081,8 @@ class ChatViewModel(
         // v0.41.4 后台生成一次性发送：不再有打字机追赶循环——正文在后台收完为止，
         // 期间 UI 只挂三点气泡（isStreaming/generating），收到 [DONE] 后整段落库上屏。
         // 这样用户看到的是"思考 → 完整回复弹出"，而不是逐字吐字（用户明确要求）。
-        val collectJob = viewModelScope.launch {
+        // v0.57：改挂 [generationScope]（不再是 viewModelScope）——退出聊天页也会把这一轮收完
+        val collectJob = generationScope.launch {
             try {
                 OpenAiClient(config.baseUrl, config.apiKey, config.model)
                     .streamEvents(systemPrompt, history) { path ->
@@ -895,32 +1104,18 @@ class ChatViewModel(
         }
         collectJob.join()
         val reasoning = thinking.toString().trim()
-        recordUsage(usageTokens)
+        recordUsage(usageTokens, config.model)
         val failure = streamError
         if (failure is ApiException) {
             // HTTP 失败：一个 token 都没收到 → 错误条 + 按状态码分级，不落库
             if (sb.isEmpty()) {
-                _uiState.update {
-                    it.copy(
-                        isStreaming = false,
-                        generating = false,
-                        error = friendlyApiError(failure, hadImage),
-                        errorKind = apiErrorKind(failure.code),
-                    )
-                }
+                setError(friendlyApiError(failure, hadImage), apiErrorKind(failure.code))
                 return
             }
             // 已收到部分回复：保留已收内容并正常落库
         } else if (failure != null) {
             if (sb.isEmpty()) {
-                _uiState.update {
-                    it.copy(
-                        isStreaming = false,
-                        generating = false,
-                        error = "回复失败：${failure.message ?: "网络异常"}",
-                        errorKind = ErrorBar.KIND_RETRY,
-                    )
-                }
+                setError("回复失败：${failure.message ?: "网络异常"}", ErrorBar.KIND_RETRY)
                 return
             }
             // 已收到部分回复：保留已收内容并正常落库
@@ -928,20 +1123,16 @@ class ChatViewModel(
         if (sb.isEmpty()) {
             // 服务端 200 但没有任何流式内容（网关错误页 / 非 SSE 响应）：
             // 明确报错而不是静默复位，否则用户不知道发生了什么
-            _uiState.update {
-                it.copy(
-                    isStreaming = false,
-                    generating = false,
-                    error = "回复为空：请检查模型名是否正确，或稍后重试",
-                    errorKind = ErrorBar.KIND_RETRY,
-                )
-            }
+            setError("回复为空：请检查模型名是否正确，或稍后重试", ErrorBar.KIND_RETRY)
             return
         }
         // 落库并返回原始回复（含 [生图:…] 标记）：文字已剥标记落库，
         // 这里把原串带回去供生图解析
         val (rawReply, replyId) = persistReply(sb, reasoning)
         finishStream()
+        // 文字这一段落库完成 = "生成中"这一刻结束。**先解登记**，好让重新进入会话的 VM
+        // 立刻看到完整回复；后面的语音条/生图有自己的登记（imageBusy），各管各的。
+        ChatGenerationBus.endText(personaId)
         // AI 语音条（v0.50.0）：回复里带 【语音条】 标记 → 合成语音，把刚落库那条文字原地升级成语音条
         maybeGenerateVoiceNote(rawReply, replyId)
         // 生图（v0.35.0）：模型按 system prompt 约定输出 [生图:提示词] 标记时，
@@ -972,7 +1163,7 @@ class ChatViewModel(
             apiComplete = api?.isComplete == true,
         )
         if (blocked != null) {
-            _uiState.update { it.copy(error = blocked.first, errorKind = blocked.second) }
+            setError(blocked.first, blocked.second)
             return
         }
         _uiState.update { it.copy(agentRun = AgentRunUiState(goal = goal)) }
@@ -1034,23 +1225,13 @@ class ChatViewModel(
 
         val config = ttsConfig()
         if (!config.isComplete) {
-            _uiState.update {
-                it.copy(
-                    error = "AI 想发语音，但语音合成未配置（设置 · 语音）",
-                    errorKind = ErrorBar.KIND_API,
-                )
-            }
+            setError("AI 想发语音，但语音合成未配置（设置 · 语音）", ErrorBar.KIND_API)
             return
         }
-        val client = TtsClients.from(config)
+        val client = TtsClients.from(config, appContext)
         val audio = client.synthesize(text, voiceRefFor(config))
         if (audio == null) {
-            _uiState.update {
-                it.copy(
-                    error = "语音合成失败，已保留文字：${client.lastFailure ?: "未知原因"}",
-                    errorKind = ErrorBar.KIND_RETRY,
-                )
-            }
+            setError("语音合成失败，已保留文字：${client.lastFailure ?: "未知原因"}", ErrorBar.KIND_RETRY)
             return
         }
         withContext(NonCancellable) {
@@ -1067,9 +1248,7 @@ class ChatViewModel(
                 true
             }.getOrDefault(false)
             if (!written) {
-                _uiState.update {
-                    it.copy(error = "语音已合成但写入失败，已保留文字", errorKind = ErrorBar.KIND_RETRY)
-                }
+                setError("语音已合成但写入失败，已保留文字", ErrorBar.KIND_RETRY)
             }
         }
     }
@@ -1091,21 +1270,28 @@ class ChatViewModel(
         // 默认生图模型排最前；它调不通就按列表顺序自动换下一个，全部试完才算失败（v0.53.4 用户要求）
         val clients = imageClients()
         if (clients.isEmpty()) {
-            _uiState.update { it.copy(error = "回复里带了生图请求，但生图模型未配置（设置 · API 配置）", errorKind = ErrorBar.KIND_API) }
+            setError("回复里带了生图请求，但生图模型未配置（设置 · API 配置）", ErrorBar.KIND_API)
             return
         }
         _uiState.update { it.copy(isGeneratingImage = true, imagePrompt = prompt) }
+        // v0.57：生图也登记到总线上——退出聊天页时这一张还在生成，回来能看到生图卡
+        ChatGenerationBus.beginImage(personaId, prompt)
         var path: String? = null
         var usedClient: ImageGenerationClient? = null
+        // 每个模型失败的原因都收集起来（v0.56.17）：以前全部失败只回一句"模型未配置或调用失败"，
+        // 服务端明明说了原因（如豆包"size 至少 3686400 像素"、模型未开通…）却看不到
+        val failures = mutableListOf<String>()
         for (c in clients) {
-            val p = c.generate(prompt, ImageGenerationClient.imagesDir(imagesDir))
-            if (p != null) {
-                path = p
+            val r = c.generate(prompt, ImageGenerationClient.imagesDir(imagesDir))
+            if (r.path != null) {
+                path = r.path
                 usedClient = c
                 break
             }
+            failures += "${c.model}：${r.error ?: "未知原因"}"
         }
         _uiState.update { it.copy(isGeneratingImage = false, imagePrompt = "") }
+        ChatGenerationBus.endImage(personaId)
         // 生图记录（v0.40.0）：成功失败都留痕——何时、哪个会话发起、用的哪个模型、什么提示词。
         // 失败不留图片文件，但记录必须有，图库里可追溯。
         // 模型名（v0.53.4）：成功记**实际成功那个**；全失败时记尝试过的清单（默认在前），
@@ -1125,7 +1311,11 @@ class ChatViewModel(
             )
         }
         if (path == null) {
-            _uiState.update { it.copy(error = "生图失败：模型未配置或调用失败", errorKind = ErrorBar.KIND_RETRY) }
+            // 把服务端原话带出来（多模型时逐条列），而不是笼统的"调用失败"
+            setError(
+                "生图失败：" + failures.joinToString("；").ifBlank { "模型未配置或调用失败" },
+                ErrorBar.KIND_RETRY,
+            )
             // 刚才那句「（正在为你生成图片）」占位别永远停在"正在生成"：改写成失败事实
             runCatching {
                 db.messageDao().observeConversation(personaId).first().lastOrNull { m ->
@@ -1231,7 +1421,15 @@ class ChatViewModel(
         return ordered.map { ImageGenerationClient(it.baseUrl, it.apiKey, it.model) }
     }
 
-    /** API 错误 → 用户能看懂、知道下一步做什么的文案；带图时 400 顺带提示 vision 可能不支持 */
+    /**
+     * API 错误 → 用户能看懂、知道下一步做什么的文案；带图时 400 顺带提示 vision 可能不支持。
+     *
+     * **v0.56.17：把服务端原话带在括号里**。以前只回我们自己的固定话术，真机踩过：
+     * 豆包方舟 404 的原话是 `The model or endpoint … does not exist **or you do not have access to it**`
+     * ——它同时能表达"模型名错"和"模型没开通/无权限"两种含义，而我们的固定话术
+     * "接口地址或模型名不存在，请检查配置"把用户引去查本来正确的地址。
+     * 本项目的铁律（已踩过四次）：**报错不许吞服务端原话**，自己的猜测只能垫底。
+     */
     private fun friendlyApiError(e: ApiException, hadImage: Boolean = false): String {
         val base = when (e.code) {
             401, 403 -> "API Key 无效或无权限，请在「设置 · API 配置」检查"
@@ -1240,18 +1438,30 @@ class ChatViewModel(
             in 500..599 -> "服务端暂时不可用（${e.code}），稍后再试"
             else -> "请求失败（${e.code}）"
         }
-        return if (hadImage && e.code == 400) "$base · 也可能当前模型不支持看图，试试纯文字或换个模型" else base
+        // 原话截断到 120 字：错误条只显示 2 行，太长的服务端文案会把关键信息挤出屏幕
+        val detail = NetworkStack.apiErrorText(e.body)?.take(120)
+        val withDetail = if (detail != null && !base.contains(detail)) "$base（$detail）" else base
+        return if (hadImage && e.code == 400) {
+            "$withDetail · 也可能当前模型不支持看图，试试纯文字或换个模型"
+        } else {
+            withDetail
+        }
     }
 
     /** 按状态码定错误条动作：Key/配置问题给"去配置"，其余给"重试" */
     private fun apiErrorKind(code: Int): String =
         if (code == 401 || code == 403 || code == 404) ErrorBar.KIND_API else ErrorBar.KIND_RETRY
 
-    /** 用量记账：服务商回了 usage 才记，拿不到不猜 */
-    private fun recordUsage(tokens: Int?) {
+    /**
+     * 用量记账：服务商回了 usage 才记，拿不到不猜。
+     * v0.56.7：[model] 一并带上 —— 用户在设置里要看到**每个模型各自**的用量。
+     * v0.57：挂 [generationScope] —— 这轮生成可能是在聊天页已经退出（VM 已销毁）之后才收到
+     * usage 的，用 viewModelScope 会连记账一起被取消掉。
+     */
+    private fun recordUsage(tokens: Int?, model: String) {
         if (tokens == null) return
-        viewModelScope.launch {
-            runCatching { com.menghuan.app.data.UsageTracker.add(settingsRepository, tokens) }
+        generationScope.launch {
+            runCatching { com.menghuan.app.data.UsageTracker.add(settingsRepository, tokens, model) }
         }
     }
 

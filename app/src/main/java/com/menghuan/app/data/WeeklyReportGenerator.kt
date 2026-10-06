@@ -278,7 +278,7 @@ class WeeklyReportGenerator(
         val reply = OpenAiClient(config.baseUrl, config.apiKey, config.model)
             .collectReply(WeeklyReportMath.systemPrompt(strategy), listOf(ChatMessage(conversationId = 0, isFromUser = true, content = prompt)))
         sb.append(reply.text)
-        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0) }
+        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model) }
         val content = WeeklyReportMath.parseReport(sb.toString())
         if (content.isBlank()) return null
 

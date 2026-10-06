@@ -9,15 +9,17 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -36,7 +39,15 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -77,13 +88,27 @@ import kotlin.math.abs
 /**
  * 头像 emoji 快选：**只用人的形象**（v0.53.4 用户点名"全部换成人的形象"）。
  * v0.53.5：**点它不再选头像**（点出来的黑色选中底用户不要），只保留"左右滑动即选"。
+ *
+ * **v0.56.8 第三批（用户点名"加多点头像，比如外星人之类的"）**：
+ * 在原来那一组人物形象后面补了一组**角色 / 幻想形象**（外星人、机器人、幽灵、妖怪、
+ * 巫师、精灵、超级英雄、宇航员、动物…），滑起来更有的挑。
  */
 private val avatarPresets = listOf(
     "🙂", "😊", "😄", "😎", "🤗", "😌",
     "👦", "👧", "🧑", "👨", "👩", "🧓", "👴", "👵",
     "🧑‍🎓", "👨‍🏫", "👩‍🏫", "👨‍⚕️", "👩‍⚕️", "👨‍🍳", "👩‍🍳",
     "🧑‍💻", "👮", "👷", "🧘", "🏃",
+    // ↓ v0.56.8 第三批：角色 / 幻想 / 生物
+    "👽", "👾", "🤖", "👻", "👹", "👺", "💀", "🤡", "👼", "🧙",
+    "🧚", "🧜", "🧞", "🧟", "🥷", "🦸", "🦹", "🕵️", "🧝", "🧛",
+    "👨‍🚀", "👩‍🚀", "🧑‍🎤", "🧑‍🎨", "🤴", "👸", "🦊", "🐱", "🐼", "🦄",
 )
+
+/**
+ * 循环滚动的起点（v0.56.8 第三批）：取 `Int.MAX_VALUE / 2` 附近、且是 [avatarPresets] 长度整数倍
+ * 的那一格 —— 这样 `index % size == 0`，往前滑再远也不会滑出界（两个方向都能一直滑）。
+ */
+private val avatarLoopStart: Int = (Int.MAX_VALUE / 2 / avatarPresets.size) * avatarPresets.size
 
 /** 表单态的纯数据（保存时转成 [Persona]） */
 private data class PersonaDraft(
@@ -194,18 +219,77 @@ private fun PersonaEditorContent(
         }
     }
 
-    // emoji 那排：**只认滚动**——滑到哪、头像框里就是谁；点它不改头像（也不再画黑色选中底）
+    // emoji 那排：**滚到框位 = 选中**（v0.56.10 拍板："滚到头像框里面的就代表选择"）。
+    // v0.56.11 按用户四条反馈重做细节：
+    // ① 不再模糊——原来 graphicsLayer 把 22sp 的 emoji **放大**到 1.22 倍（emoji 是位图字形，
+    //   放大必糊）；现在按最大态字号 27sp 渲染、layer 只缩小（0.64→1.0），框位上那个以 1.0 清晰落定。
+    // ② 框左边不再冒 emoji——emoji 排原来从头像框底下穿过、圆框盖不住四角；现在整条排
+    //   **裁剪到框右缘以外**才绘制，滑进框后就被"吃掉"（裁剪只管画，选中锚点不受影响）。
+    // ③ 支持点选——点哪个 emoji 就把哪个弹回框位（contentPadding 让它正好停进锚点）。
+    // ④ 保存必中——选中同步原来只在"滚动进行中"发，停稳的最后一帧可能漏；现在定位完成后
+    //   布局一变就同步，保存时再按框位兜底重算一次（见保存按钮）。
     val avatarListState = rememberLazyListState()
+    // 焦点锚点（root 坐标）= 头像框中心 x；emoji 排的左沿 x（把框心换算成排内坐标用）
+    var focusAnchorX by remember { mutableFloatStateOf(Float.NaN) }
+    var rowLeftRootX by remember { mutableFloatStateOf(Float.NaN) }
+    val density = LocalDensity.current
+    // 从"最小"到"最大"的距离（≈1.2 个格子），越小则变化越陡
+    val lensSpanPx = with(density) { 52.dp.toPx() }
+    // 初始定位完成前不同步选中（否则首帧布局会把"框位上的 emoji"盖到 draft 上，丢掉原头像）
+    var anchorReady by remember { mutableStateOf(false) }
+    // 滚轮棘轮震动的去重标记：上一次 tick 过的格子 raw index（null = 还没滚过，初始定位不震）
+    var lastTickedIndex by remember { mutableStateOf<Int?>(null) }
+    val haptic = LocalHapticFeedback.current
+    LaunchedEffect(Unit) {
+        // 起点落在循环列表正中，并且对齐到当前正在用的那个 emoji
+        val initial = draft.emoji.trim()
+        val offset = avatarPresets.indexOf(initial).takeIf { it >= 0 } ?: 0
+        avatarListState.scrollToItem(avatarLoopStart + offset)
+        draft = draft.copy(emoji = initial)
+        anchorReady = true
+    }
+    // "此刻框位上是谁"：与选中判定同一套算法（离框心最近的可见格子），保存时兜底用它
+    fun emojiAtAnchor(): String? {
+        val info = avatarListState.layoutInfo
+        if (focusAnchorX.isNaN() || rowLeftRootX.isNaN()) return null
+        val anchor = focusAnchorX - rowLeftRootX
+        val index = info.visibleItemsInfo.minByOrNull { abs(it.offset + it.size / 2f - anchor) }?.index
+            ?: return null
+        return avatarPresets.getOrNull(index % avatarPresets.size)
+    }
     LaunchedEffect(avatarListState) {
         snapshotFlow {
-            if (!avatarListState.isScrollInProgress) return@snapshotFlow null
+            if (!anchorReady) return@snapshotFlow null
             val info = avatarListState.layoutInfo
-            if (info.visibleItemsInfo.isEmpty()) return@snapshotFlow null
-            val center = (info.viewportStartOffset + info.viewportEndOffset) / 2f
-            info.visibleItemsInfo.minByOrNull { abs(it.offset + it.size / 2f - center) }?.index
+            if (focusAnchorX.isNaN() || rowLeftRootX.isNaN()) return@snapshotFlow null
+            // 选中的锚点跟焦点**同一个**：头像框中心（换算成排内坐标）。
+            // 谁的中心贴到框心，谁就被换上 —— "滚进框里 = 选中"。
+            val anchor = focusAnchorX - rowLeftRootX
+            info.visibleItemsInfo.minByOrNull { abs(it.offset + it.size / 2f - anchor) }?.index
         }.filterNotNull().collect { index ->
-            avatarPresets.getOrNull(index)?.let { draft = draft.copy(emoji = it) }
+            // v0.56.15 滚轮棘轮感：锚点上的格子**每变一格**就轻微震一下（TextHandleMove
+            // 是最轻的一档，用户点名"轻微的震动就行"）——像真的在拨一个滚轮。
+            // 首次发射（初始定位）只记录不震；点选自动滚过去时也会逐格 tick，一样自然。
+            if (lastTickedIndex != null && index != lastTickedIndex) {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            }
+            lastTickedIndex = index
+            avatarPresets.getOrNull(index % avatarPresets.size)?.let { draft = draft.copy(emoji = it) }
         }
+    }
+
+    // 左边头像框 = **放大镜**（v0.56.9 用户拍板）：滑到的那一个不是"啪"地换掉，
+    // 而是从放大态被**压回**框里（横向压得比纵向多，就是"挤进去"那一下），弹簧带过冲。
+    val squeeze = remember { androidx.compose.animation.core.Animatable(1f) }
+    LaunchedEffect(draft.emoji) {
+        squeeze.snapTo(0f)
+        squeeze.animateTo(
+            1f,
+            androidx.compose.animation.core.spring(
+                dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
+                stiffness = androidx.compose.animation.core.Spring.StiffnessMedium,
+            ),
+        )
     }
 
     // v0.53.6：音色的候选/弹层整块搬去「对话页右上角菜单 → 音色」（PersonaVoiceSheet）
@@ -216,34 +300,80 @@ private fun PersonaEditorContent(
     ) {
         Spacer(Modifier.height(16.dp))
 
-        // 头像与 emoji 同一排（框里比这一排大）
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // 头像与 emoji 同一排（v0.56.10 起emoji 排**从头像框底下穿过**，框画在上层）：
+        // 滑动时越靠近头像框越大，滑到框位的那一个 = 被选中的（框里挤压动画换上它）。
+        Box(Modifier.fillMaxWidth().height(56.dp)) {
+            LazyRow(
+                state = avatarListState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { rowLeftRootX = it.boundsInRoot().left }
+                    // v0.56.11：只画**头像框（56dp）右缘以外**——emoji 滑到框后就被裁掉，
+                    // 框左边（圆框盖不住的四角）再也不会露出 emoji。裁剪只管画，锚点/选中照旧。
+                    .drawWithContent {
+                        clipRect(left = 56.dp.toPx()) { this@drawWithContent.drawContent() }
+                    },
+                // 起始 contentPadding 让第一个格子的**中心**正好落在框心上（框 56dp 中心在 28dp，
+                // 格子 44dp 半格 22dp → 28 - 22 = 6dp），静止时选中的那个恰好 focus=1
+                contentPadding = PaddingValues(start = 6.dp, end = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                items(Int.MAX_VALUE) { i ->
+                    val e = avatarPresets[i % avatarPresets.size]
+                    // focus：1 = 正好滑进头像框位，0 = 已经滑到右边远处
+                    var focus by remember { mutableFloatStateOf(0f) }
+                    Box(
+                        Modifier
+                            .size(44.dp)
+                            .onGloballyPositioned { c ->
+                                if (focusAnchorX.isNaN()) return@onGloballyPositioned
+                                val itemCenter = c.boundsInRoot().center.x
+                                focus = (1f - abs(itemCenter - focusAnchorX) / lensSpanPx).coerceIn(0f, 1f)
+                            }
+                            // v0.56.11：基准字号就是最大态（27sp ≈ 原 22sp×1.22），layer 只缩小不放大
+                            // ——框位上那个以 scale=1.0 清晰落定，emoji 位图字形不再被放大拉糊
+                            .graphicsLayer {
+                                val s = 0.64f + 0.36f * focus
+                                scaleX = s
+                                scaleY = s
+                                alpha = 0.45f + (1f - 0.45f) * focus
+                            }
+                            // v0.56.11 点选：点哪个就把哪个弹回框位——contentPadding(6dp) + 半格 22dp
+                            // 正好让它的中心停进锚点（框心 28dp）。无 ripple（v0.45.0 输入区约定）。
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) {
+                                scope.launch { avatarListState.animateScrollToItem(i, 0) }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(e, fontSize = 27.sp)
+                    }
+                }
+            }
             NeuAvatar(
                 emoji = draft.emoji.trim().ifBlank { "🙂" },
                 size = 56.dp,
                 ringBrush = com.menghuan.app.ui.theme.personaBrush(persona?.id ?: 0L),
                 imagePath = draft.avatarImagePath,
+                // 挤压：0 = 刚被塞进来（放大、横向更宽），1 = 落定（原大小）。
+                // v0.56.11：emojiMaxScale=1.42 让框内 emoji 按**放大态**字号渲染、layer 只做
+                // ≤1 的缩小——"挤进去"的动效不变，但位图字形不再被 graphicsLayer 放大拉糊。
+                emojiMaxScale = 1.42f,
+                emojiScaleX = 1.42f - 0.42f * squeeze.value,
+                emojiScaleY = 1.16f - 0.16f * squeeze.value,
                 modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    // 焦点锚点 = **头像框自己的中心**（"焦点就是头像框里面的头像"）
+                    .onGloballyPositioned { focusAnchorX = it.boundsInRoot().center.x }
                     .clip(CircleShape)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                     ) { avatarPicker.launch("image/*") },
             )
-            Spacer(Modifier.width(12.dp))
-            LazyRow(
-                state = avatarListState,
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                itemsIndexed(avatarPresets) { _, e ->
-                    // 纯文字、无底色：滚动到它就选中它（点它不做事，所以不会出现黑色选中底）
-                    Box(Modifier.size(38.dp), contentAlignment = Alignment.Center) {
-                        Text(e, fontSize = 22.sp)
-                    }
-                }
-            }
         }
         if (draft.avatarImagePath.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
@@ -305,12 +435,15 @@ private fun PersonaEditorContent(
             NeuButton(
                 text = "保存",
                 onClick = {
+                    // v0.56.11：头像以**此刻框位上的 emoji** 为准（兜底重算一次），
+                    // 不再单纯依赖滚动过程中的同步——"滚到框上就点保存"也不会丢
+                    val savedEmoji = (emojiAtAnchor() ?: draft.emoji).trim().ifBlank { "🙂" }
                     onSave(
                         Persona(
                             id = persona?.id ?: 0,
                             name = draft.name.trim(),
                             title = draft.title.trim().ifBlank { draft.name.trim() },
-                            avatarEmoji = draft.emoji.trim().ifBlank { "🙂" },
+                            avatarEmoji = savedEmoji,
                             avatarImagePath = draft.avatarImagePath,
                             systemPrompt = draft.prompt.trim(),
                             isBuiltIn = persona?.isBuiltIn ?: false,

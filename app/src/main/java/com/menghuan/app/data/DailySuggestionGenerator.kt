@@ -149,7 +149,7 @@ class DailySuggestionGenerator(
             ),
         )
         sb.append(reply.text)
-        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0) }
+        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model) }
         val parsed = DailySuggestionMath.parse(sb.toString()) ?: return null
 
         db.dailySuggestionDao().upsert(

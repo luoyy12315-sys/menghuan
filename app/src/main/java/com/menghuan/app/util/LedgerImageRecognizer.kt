@@ -55,11 +55,16 @@ object LedgerImageRecognizer {
         }.getOrNull()
         if (copied == null) return@withContext Result(error = "读取图片失败，请重试")
 
-        // 2) 降采样成 data URL（只在内存里压，落盘永远是原图）
-        val dataUrl = VisionImage.encodeDataUrl(copied.absolutePath)
+        // 2) 降采样成 data URL（只在内存里压，落盘永远是原图）。
+        //    v0.56.14：识图用 **1536** 而不是聊天发图的 1024——账单是文字密集图，
+        //    长截图压到 1024 金额数字会糊到模型认不出，模型只能按兜底回"看不出金额"。
+        val dataUrl = VisionImage.encodeDataUrl(copied.absolutePath, maxDim = 1536, quality = 85)
             ?: return@withContext Result(error = "图片无法解码，换一张试试")
 
-        // 3) vision 请求：system prompt 硬编码框架 + 用户消息带图
+        // 3) vision 请求：system prompt 硬编码框架 + 用户消息带图。
+        // v0.56.14：不再 runCatching{getOrNull()} 把真实失败吞成一句笼统提示——
+        // 模型不支持图片（400）/ Key 错（401）/ 超时，用户看到的都是同一句"请检查网络或接口配置"，
+        // 没法排查。现在带上异常原文（服务端一般会说清"does not support image"这类真话）。
         val reply = runCatching {
             OpenAiClient(config.baseUrl, config.apiKey, config.model).collectReply(
                 systemPrompt = LedgerParser.IMAGE_FRAMEWORK,
@@ -72,11 +77,11 @@ object LedgerImageRecognizer {
                 ),
                 imageDataUrl = { dataUrl },
             )
-        }.getOrNull()
-
-        if (reply == null) return@withContext Result(error = "识别失败，请检查网络或接口配置")
+        }.getOrElse { e ->
+            return@withContext Result(error = "识别失败：${e.message?.take(160) ?: e.javaClass.simpleName}")
+        }
         usageTracker(reply.usageTokens ?: 0)
-        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0) }
+        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model) }
         val text = reply.text.trim()
         if (text.isEmpty()) return@withContext Result(error = "没能识别出内容，换张清晰的图")
         Result(reply = text)

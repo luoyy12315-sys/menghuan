@@ -16,9 +16,20 @@ import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-/** 业务级失败（非 2xx 响应）。与网络异常分开，便于按状态码给提示。 */
-class ApiException(val code: Int, body: String?) :
+/**
+ * 业务级失败（非 2xx 响应）。与网络异常分开，便于按状态码给提示。
+ *
+ * [body] 是服务端返回的**原始错误体**（v0.56.17 起公开为属性）：调用方要能把服务端原话
+ * 带给用户看——方舟的 404 会明确区分"模型不存在"和"你没有权限/未开通"，只回我们自己
+ * 的固定话术会把用户引去查本来正确的地址。
+ */
+class ApiException(val code: Int, val body: String?) :
     IOException("HTTP $code" + (body?.take(200)?.let { "：$it" } ?: ""))
+
+/**
+ * 「获取可用模型」的结果（v0.57）：成功给 [ids]（保持服务端顺序、已去重），失败给 [error]。
+ */
+data class ModelListResult(val ids: List<String> = emptyList(), val error: String? = null)
 
 /**
  * 流式事件：正文增量 / 思考链增量 / 用量统计
@@ -144,18 +155,110 @@ class OpenAiClient(
         }
     }.flowOn(Dispatchers.IO)
 
-    /** 测试连接：GET {base}/models，返回 null 表示成功，否则为错误信息 */
+    /**
+     * 测试连接：**真的发一条最小对话请求**，成功返回 null，否则返回一句可读原因。
+     *
+     * ## 为什么不用 `GET {base}/models`（v0.56.17 改掉）
+     * 那个端点只证明"Key + 地址能通"，**完全不校验用户填的模型名**。真机踩过：
+     * 豆包方舟地址与 Key 都对、`/models` 返回 200 → 测试显示"连接成功"，
+     * 但真发消息时因为**该模型没在控制台开通**直接 404
+     * （`The model or endpoint … does not exist or you do not have access to it`），
+     * 用户被这个"假绿"误导，跑去查本来正确的地址。
+     * 生图那边的 [com.menghuan.app.llm.ImageProbe] 一直是"发一条最小真请求"的设计，这里对齐它。
+     *
+     * **刻意不发 `max_tokens` / `max_completion_tokens`**：各家对新旧字段支持不一致
+     * （o 系 / gpt-5 拒 `max_tokens`，部分兼容端点不认 `max_completion_tokens`），
+     * 而一条 "hi" 的回复本身就极短，没必要为省这点 token 冒"测试被自己发错字段搞挂"的风险。
+     */
     suspend fun testConnection(): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val body = JSONObject()
+                .put("model", model.trim())
+                .put(
+                    "messages",
+                    JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
+                )
+                .put("stream", false)
+                .toString()
+                .toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("${baseUrl.trim().trimEnd('/')}/chat/completions")
+                .addHeader("Authorization", "Bearer $apiKey")
+                .post(body)
+                .build()
+            http.newBuilder().readTimeout(20, TimeUnit.SECONDS).build()
+                .newCall(request).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        null
+                    } else {
+                        // 失败一律把服务端原话带出来：模型不存在/没开通、Key 无权限、
+                        // 参数不支持……用户能直接照着这句话去处理
+                        val detail = NetworkStack.apiErrorText(runCatching { resp.body?.string() }.getOrNull())
+                        "HTTP ${resp.code}" + if (detail != null) "：$detail" else ""
+                    }
+                }
+        }.getOrElse { NetworkStack.describeNetworkFailure(it) }
+    }
+
+    /**
+     * 拉取该接口的可用模型列表（OpenAI 兼容 `GET {base}/models`），设置页「获取可用模型」用。
+     *
+     * 为什么值得做：各家的模型 ID 是"全小写 + 连字符 + 日期后缀"那套写法（方舟尤其，
+     * 如 `doubao-seed-2-1-lite-260915`），手打必错 —— 真机就是因为手打错模型名，
+     * 出现"测试连接成功、聊天 404"。列出官方原文点一下，比让人抄准得多。
+     *
+     * ⚠️ 各家实现并不统一：有的只回 `data[].id`，有的把数组塞在 `models` / `results` 下，
+     * 也有直接回数组的；还有中转网关**根本没实现这个端点**（404）。所以失败一律当作
+     * "这个接口不支持列模型"，由 UI 提示手填，**绝不阻塞保存**。
+     */
+    suspend fun listModels(): ModelListResult = withContext(Dispatchers.IO) {
         runCatching {
             val request = Request.Builder()
                 .url("${baseUrl.trim().trimEnd('/')}/models")
                 .addHeader("Authorization", "Bearer $apiKey")
+                .get()
                 .build()
-            http.newBuilder().readTimeout(10, TimeUnit.SECONDS).build()
+            http.newBuilder().readTimeout(20, TimeUnit.SECONDS).build()
                 .newCall(request).execute().use { resp ->
-                    if (resp.isSuccessful) null else "HTTP ${resp.code}"
+                    val text = runCatching { resp.body?.string() }.getOrNull()
+                    if (!resp.isSuccessful) {
+                        val detail = NetworkStack.apiErrorText(text)
+                        ModelListResult(error = "HTTP ${resp.code}" + if (detail != null) "：$detail" else "")
+                    } else {
+                        val ids = parseModelIds(text)
+                        if (ids.isEmpty()) ModelListResult(error = "接口没返回任何模型") else ModelListResult(ids = ids)
+                    }
                 }
-        }.getOrElse { NetworkStack.describeNetworkFailure(it) }
+        }.getOrElse { ModelListResult(error = NetworkStack.describeNetworkFailure(it)) }
+    }
+
+    /**
+     * 从 `/models` 响应里抠出模型 ID 列表（纯函数，JVM 可测）。兼容四种形状：
+     * 顶层数组、`data[]`、`models[]`、`results[]` / `list[]`；元素取 `id`（后备 `model`）。
+     * 返回保持服务端顺序、已去重。
+     */
+    internal fun parseModelIds(body: String?): List<String> {
+        val text = body?.trim().orEmpty()
+        if (text.isEmpty()) return emptyList()
+        val array = runCatching {
+            if (text.startsWith("[")) {
+                JSONArray(text)
+            } else {
+                val json = JSONObject(text)
+                listOf("data", "models", "results", "list")
+                    .firstNotNullOfOrNull { key -> json.optJSONArray(key) }
+            }
+        }.getOrNull() ?: return emptyList()
+        val out = LinkedHashSet<String>()
+        for (i in 0 until array.length()) {
+            val id = when (val item = array.opt(i)) {
+                is JSONObject -> item.optString("id").ifBlank { item.optString("model") }
+                is String -> item
+                else -> ""
+            }
+            if (id.isNotBlank()) out += id.trim()
+        }
+        return out.toList()
     }
 
     companion object {

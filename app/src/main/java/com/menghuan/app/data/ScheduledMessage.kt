@@ -3,6 +3,10 @@ package com.menghuan.app.data
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** 这条定时项是「发消息」还是「打电话」（v0.56.6）—— 两种共用一套存储、闹钟与「几点 + 说什么」表单 */
+const val KIND_SCHEDULED_MESSAGE = "message"
+const val KIND_SCHEDULED_CALL = "call"
+
 /**
  * 一条「定时主动消息」（v0.53.5）：到点让**某个人设**按你写的指令说点什么。
  *
@@ -12,20 +16,26 @@ import org.json.JSONObject
  *
  * [withSearch] = true 时先联网搜一遍（服务商与 Key 在设置里配），把结果喂给模型再写，
  * 这样"今天的新闻"才是真的今天的。
+ *
+ * **v0.56.6**：新增 [kind] —— `call` 时同一条记录表示「**定时电话**」：到点由 TA **打过来**，
+ * [instruction] 就是"接通后说什么"。与定时消息同构（每天几点 + 说什么 + 启用），
+ * 于是闹钟、存储、"编辑/删除"表单全部复用同一套，不另起一份。
  */
 data class ScheduledMessage(
     val id: String,
-    /** 发消息的人设；0 = 主人设 */
+    /** 发消息 / 打电话的人设；0 = 主人设 */
     val personaId: Long = 0L,
     /** `HH:mm` */
     val time: String = "08:00",
-    /** 你给它的指令，例如「给我发今天的重要新闻，5 条以内」 */
+    /** 你给它的指令：发消息时是"发什么"，打电话时是"接通后说什么" */
     val instruction: String = "",
-    /** 是否先联网搜索再写（不联网时模型只能凭旧知识，新闻类会不准） */
+    /** 是否先联网搜索再写（不联网时模型只能凭旧知识，新闻类会不准）。仅发消息有意义 */
     val withSearch: Boolean = false,
     val enabled: Boolean = true,
     /** 上次发送日（epochDay；当天发过就不再发） */
     val lastSentDay: Long = 0L,
+    /** [KIND_SCHEDULED_MESSAGE] 或 [KIND_SCHEDULED_CALL]；老数据没有这个字段 → 一律按发消息 */
+    val kind: String = KIND_SCHEDULED_MESSAGE,
 )
 
 /** 定时主动消息的编解码（纯函数，脏数据一律跳过而不是崩） */
@@ -42,7 +52,8 @@ object ScheduledMessageCodec {
                     .put("instruction", m.instruction)
                     .put("withSearch", m.withSearch)
                     .put("enabled", m.enabled)
-                    .put("lastSentDay", m.lastSentDay),
+                    .put("lastSentDay", m.lastSentDay)
+                    .put("kind", m.kind),
             )
         }
         return array.toString()
@@ -66,12 +77,15 @@ object ScheduledMessageCodec {
                         withSearch = o.optBoolean("withSearch", false),
                         enabled = o.optBoolean("enabled", true),
                         lastSentDay = o.optLong("lastSentDay", 0L),
+                        // 老记录没有 kind → 按"发消息"读（v0.56.6 之前的都只有发消息）
+                        kind = o.optString("kind").trim().ifEmpty { KIND_SCHEDULED_MESSAGE },
                     ),
                 )
             }
         }
     }
 }
+
 
 /** 定时主动消息的纯逻辑（到点判断） */
 object ScheduledMessageLogic {

@@ -41,7 +41,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -60,7 +63,9 @@ import com.menghuan.app.data.ImageGenerationClient
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.common.rememberNeuPressState
 import com.menghuan.app.ui.theme.AccentInk
+import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
@@ -411,38 +416,29 @@ private fun ParticleField(modifier: Modifier = Modifier) {
  * 长按头像弹出的「切换 AI 接口」弹层（v0.35.0 多接口；v0.36.4 改为按会话独立）。
  *
  * 选择只作用于**当前会话**：给该会话设一个接口覆盖，不影响其他会话和全局默认。
- * 顶部多一行「跟随全局」用于清除覆盖、回落到设置页里的全局默认接口。
- * 只列已配置的接口 + 当前生效项打勾；未配置时给一句去设置的话（不弹空的列表）。
+ *
+ * **v0.56.6（用户点名）**：去掉顶部的「跟随全局」那一行 ——
+ * "选中哪个模型就使用哪个"：列表里当前生效的那条直接打勾（没单独选过时是全局默认那条），
+ * 点任意一条即把这个会话钉在那条上，不再有"回落全局"这个中间态。
  */
 @Composable
 fun ApiSwitchSheet(
     profiles: List<ApiProfile>,
     activeId: String,
-    isFollowingGlobal: Boolean,
-    globalLabel: String,
     onSelect: (String) -> Unit,
-    onFollowGlobal: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     NeuSheetScaffold(title = "本会话的 AI 接口", onDismiss = onDismiss) {
         Spacer(Modifier.height(12.dp))
         if (profiles.isEmpty()) {
             Text(
-                "还没有配置接口，先到「我的 → 设置 → API 配置」添加",
+                "还没有配置接口，先到「我的 → 设置 → 模型配置」添加",
                 fontSize = 13.sp,
                 lineHeight = 20.sp,
                 color = MutedText,
                 modifier = Modifier.padding(vertical = 8.dp),
             )
         } else {
-            NeuSheetRow(
-                icon = MIcons.Code,
-                title = "跟随全局",
-                subtitle = "当前全局：$globalLabel",
-                selected = isFollowingGlobal,
-                onClick = onFollowGlobal,
-            )
-            Spacer(Modifier.height(8.dp))
             profiles.forEach { profile ->
                 NeuSheetRow(
                     icon = MIcons.Code,
@@ -519,24 +515,162 @@ fun VoiceBubble(
             ),
             label = "voiceWaveAmp",
         )
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-            listOf(0.55f, 1f, 0.75f).forEachIndexed { _, h ->
-                val amp = if (isPlaying) wave else 0.8f
-                Box(
-                    Modifier
-                        .width(2.5.dp)
-                        .height((13.dp * h * amp).coerceAtLeast(4.dp))
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(ink.copy(alpha = 0.9f)),
-                )
-            }
-        }
+        // v0.55.0：三条声波改 **Canvas 单节点**绘制。
+        // 原来是三个 Box、高度绑着动画值 —— 播放期间每一帧都要重新量一遍（布局 + 绘制两趟），
+        // 列表里有几条语音条在播就要付出几份。改成一个 Canvas 后只有一个节点、一次绘制。
+        VoiceWaveBars(
+            amp = if (isPlaying) wave else 0.8f,
+            color = ink,
+            modifier = Modifier.width(14.dp).height(16.dp),
+        )
         Spacer(Modifier.weight(1f))
         Text(
             com.menghuan.app.data.VoiceRecorder.formatDuration(durationMs),
             color = ink,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+/**
+ * 语音条上的三根声波竖条（v0.43.0 建；v0.55.0 改 Canvas 单节点）。
+ *
+ * 高度比例沿用原来的 0.55 / 1 / 0.75（错落才像声波），[amp] 是统一振幅系数：
+ * 播放中随呼吸动画起伏，静止时钉在 0.8。
+ *
+ * 画在 Canvas 里而不是用三个 Box，是为了让"播放中"这个持续动画**不产生任何布局** ——
+ * 三条一起画、一次绘制，配合外层 `graphicsLayer` 之外的动画都不会拖累列表滚动。
+ */
+@Composable
+private fun VoiceWaveBars(
+    amp: Float,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val ink = color
+    Canvas(modifier) {
+        val ratios = floatArrayOf(0.55f, 1f, 0.75f)
+        val w = 2.5.dp.toPx()
+        val gap = 3.dp.toPx()
+        val unit = w + gap
+        val startX = (size.width - (ratios.size * unit - gap)) / 2f
+        ratios.forEachIndexed { i, r ->
+            val h = (13.dp.toPx() * r * amp).coerceAtLeast(4.dp.toPx()).coerceAtMost(size.height)
+            drawRoundRect(
+                color = ink.copy(alpha = 0.9f),
+                topLeft = Offset(startX + i * unit, (size.height - h) / 2f),
+                size = Size(w, h),
+                cornerRadius = CornerRadius(w / 2f, w / 2f),
+            )
+        }
+    }
+}
+
+/**
+ * 语音通话记录卡（v0.49.0 建；**v0.55.0 整卡重绘**）。
+ *
+ * 重绘前它只是「📞 + 一行灰字」的小药丸：在消息流里既不醒目，也完全看不出这通电话是什么情况
+ * （谁打给谁、打通没有、多久）。现在重画成一张真正的卡片，四层信息各归其位：
+ *   ① **左侧圆形徽标** —— 图标本身就区分状态：打通是听筒，没打通是挂断听筒（危险色）；
+ *   ② **标题**「语音通话」+ 一枚方向标记（↑ 呼出 / ↓ 呼入）；
+ *   ③ **副题** —— 时长；未接通时走危险色并写「未接通」，而不是显示"0分00秒"；
+ *   ④ **右侧箭头** —— 点整卡看这通电话的文字转写。
+ *
+ * 方向不需要新增字段：`RealtimeCallRepository.saveCall` 已约定
+ * 「我打给 AI 的落用户侧、AI 打给我的落 AI 侧」，这里读 `isFromUser` 即可。
+ * 「未接通」同理：时长为 0 分 0 秒即代表这通没说上话。
+ *
+ * 配色继续走黑白灰：呼入/呼出**不靠颜色区分**（那会引入第二套语义色），
+ * 靠箭头方向 + 文字；只有"未接通"用 [NeuDanger]，与全应用"危险 = 橘红"一致。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun CallRecordCard(
+    /** 时长文案（「3分20秒」）；「0分00秒」会被判成未接通 */
+    duration: String,
+    /** true = 我打出去的（卡片在用户侧）；false = TA 打进来的 */
+    outgoing: Boolean,
+    maxWidth: Dp,
+    onClick: () -> Unit,
+    onLongPress: () -> Unit = {},
+) {
+    val missed = duration.startsWith("0分00秒")
+    val press = rememberNeuPressState()
+    Row(
+        Modifier
+            .widthIn(max = maxWidth)
+            .scale(press.scale)
+            .neuSurface(16.dp, color = NeuSurface, elevation = 2.dp)
+            .combinedClickable(
+                interactionSource = press.interactionSource,
+                indication = null,
+                onClick = onClick,
+                onLongClick = onLongPress,
+            )
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // ① 状态徽标
+        Box(
+            Modifier
+                .size(34.dp)
+                .neuSurface(999.dp, color = NeuTrack, inset = true),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (missed) MIcons.PhoneOff else MIcons.Phone,
+                contentDescription = null,
+                tint = if (missed) NeuDanger else TextPrimary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        Spacer(Modifier.width(11.dp))
+        // ②③ 标题（含方向标记） + 副题
+        Column(Modifier.weight(1f, fill = false)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "语音通话",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = TextPrimary,
+                    letterSpacing = (-0.1).sp,
+                )
+                Spacer(Modifier.width(7.dp))
+                Row(
+                    Modifier
+                        .neuSurface(999.dp, color = NeuTrack, inset = true)
+                        .padding(horizontal = 7.dp, vertical = 2.5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        if (outgoing) MIcons.TrendUp else MIcons.TrendDown,
+                        contentDescription = null,
+                        tint = TextSecondary,
+                        modifier = Modifier.size(11.dp),
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        if (outgoing) "呼出" else "呼入",
+                        fontSize = 10.5.sp,
+                        color = TextSecondary,
+                    )
+                }
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                if (missed) "未接通 · 点开看转写" else "$duration · 点开看转写",
+                fontSize = 11.5.sp,
+                color = if (missed) NeuDanger else MutedText,
+            )
+        }
+        // ④ 可点提示
+        Spacer(Modifier.width(10.dp))
+        Icon(
+            MIcons.ChevronRight,
+            contentDescription = null,
+            tint = FaintText,
+            modifier = Modifier.size(14.dp),
         )
     }
 }

@@ -1,12 +1,12 @@
 package com.menghuan.app.ui.realtime
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -25,8 +25,10 @@ import androidx.compose.ui.unit.sp
 import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.model.CallTurn
 import com.menghuan.app.ui.common.NeuSheetScaffold
+import com.menghuan.app.ui.common.staggerEnter
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MutedText
+import com.menghuan.app.ui.theme.NeuHairline
 import com.menghuan.app.ui.theme.TextPrimary
 
 /**
@@ -59,25 +61,39 @@ fun CallLogSheet(
                 modifier = Modifier.padding(vertical = 10.dp),
             )
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().height(420.dp),
-                contentPadding = PaddingValues(vertical = 6.dp),
-            ) {
-                items(turns.size) { i ->
-                    val t = turns[i]
-                    Text(
-                        buildAnnotatedString {
-                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = MutedText)) {
-                                append(if (t.speaker == "user") "你 " else "$personaName ")
-                            }
-                            withStyle(SpanStyle(fontSize = 13.5.sp, color = TextPrimary)) {
-                                append(t.text)
-                            }
-                        },
-                        lineHeight = 20.sp,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp),
+            // v0.55.0：**不再在弹层里套 LazyColumn**。
+            // `NeuSheetScaffold` 的内容本身是 `Column(verticalScroll)`，里面再嵌一个固定
+            // 420dp 高的 LazyColumn，两层都吃竖直手势 —— 手指划上去分不清该谁滚，
+            // 实际表现就是"划不动 / 整块跟着走"。一通电话的对话量本来就有限（几十句），
+            // 直接平铺进弹层的滚动列，手势只有一层，怎么划都是对的。
+            //
+            // 顺带：每句之间加一条发丝线，谁说的、说到哪一句一眼能数清（原来全靠 11sp 的
+            // 名字前缀区分，长对话里很容易串行）。
+            turns.forEachIndexed { index, t ->
+                if (index > 0) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp)
+                            .height(1.dp)
+                            .background(NeuHairline),
                     )
                 }
+                Text(
+                    buildAnnotatedString {
+                        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = MutedText)) {
+                            append(if (t.speaker == "user") "你 " else "$personaName ")
+                        }
+                        withStyle(SpanStyle(fontSize = 13.5.sp, color = TextPrimary)) {
+                            append(t.text)
+                        }
+                    },
+                    lineHeight = 20.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .staggerEnter(index, stepMs = 14, slideDp = 6.dp)
+                        .padding(vertical = 8.dp),
+                )
             }
         }
         Spacer(Modifier.height(8.dp))

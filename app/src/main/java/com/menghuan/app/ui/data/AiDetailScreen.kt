@@ -103,7 +103,7 @@ fun AiDetailScreen(
             if (insights.isEmpty()) {
                 item { EmptyBlock("还没有洞察", "多聊聊，AI 会从对话里看出你的模式") }
             } else {
-                items(insights, key = { "insight-${it.id}" }) { insight ->
+                items(insights, key = { "insight-${it.id}" }, contentType = { "insight" }) { insight ->
                     InsightDetailCard(insight, onDelete = { onDeleteInsight(insight.id) })
                 }
             }
@@ -114,7 +114,7 @@ fun AiDetailScreen(
             if (reports.isEmpty()) {
                 item { EmptyBlock("还没有周报", "每周日 21:30 自动生成一期") }
             } else {
-                items(reports, key = { "report-${it.id}" }) { report ->
+                items(reports, key = { "report-${it.id}" }, contentType = { "report" }) { report ->
                     ReportDetailCard(
                         report = report,
                         expanded = expandedReportId == report.id,

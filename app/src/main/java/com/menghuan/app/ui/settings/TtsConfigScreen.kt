@@ -189,7 +189,7 @@ fun TtsConfigScreen(onBack: () -> Unit) {
                         scope.launch {
                             busy = true
                             error = null
-                            val client = TtsClients.from(draft)
+                            val client = TtsClients.from(draft, context)
                             val voice = VoiceRef(
                                 draft.provider,
                                 app.settingsRepository.ttsDefaultVoice(draft.provider).first()?.voiceId

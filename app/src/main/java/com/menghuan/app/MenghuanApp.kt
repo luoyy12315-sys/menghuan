@@ -91,7 +91,7 @@ class MenghuanApp : Application() {
         // v0.54.4 起开关**按角色**（在每个人设的整页里），闹钟一律排上，发送前再逐个复查。
         applicationScope.launch {
             runCatching {
-                com.menghuan.app.notify.AlarmScheduler.scheduleProactive(this@MenghuanApp)
+                com.menghuan.app.data.ProactiveChat.scheduleNext(settingsRepository, this@MenghuanApp)
                 // AI 主动打电话（v0.53.5）：逐个人设按各自规则排闹钟（只排钟，不发请求；
                 // v0.54.5 起没有全局总开关，开关在各角色的规则里）
                 runCatching { com.menghuan.app.data.AiCall.rearm(settingsRepository, this@MenghuanApp) }

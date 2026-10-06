@@ -6,8 +6,6 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,7 +17,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -45,8 +42,6 @@ import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
-import com.menghuan.app.ui.theme.TextPrimary
-import com.menghuan.app.ui.theme.TextSecondary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -64,6 +59,9 @@ import kotlinx.coroutines.withContext
  * - 「添加铃声」旁边只标明**能上传什么文件**（mp3 / m4a / wav / ogg 等音频，mp4 等视频抽音轨）；
  * - 「接听延迟」从**手填秒数的输入框**改成**卡片形式**：右侧直接显示当前取值
  *   （立即接 / n 秒），点卡片或右侧弹出菜单选择（0 / 2 / 3 / 5 / 10 / 15 / 30 秒）。
+ *
+ * **v0.56.5（用户点名）**：本页只管铃声了 ——「接听延迟」**搬出去独立成项**，
+ * 与「语音通话铃声」并排出现在「通话行为」页上（设置 → 通话行为 → 接听延迟）。
  */
 @Composable
 fun CallRingtoneScreen(onBack: () -> Unit) {
@@ -218,60 +216,11 @@ fun CallRingtoneScreen(onBack: () -> Unit) {
             color = MutedText,
         )
 
-        // 接听延迟（v0.54.0 从「语音」页搬来；v0.54.5 用户点名：改**卡片形式**、**右边直接选**）
-        Spacer(Modifier.height(22.dp))
-        val answerDelay by app.settingsRepository.aiAnswerDelaySeconds.collectAsState(initial = 3)
-        var delayMenu by remember { mutableStateOf(false) }
-        NeuSheetRow(
-            icon = MIcons.Phone,
-            title = "接听延迟",
-            subtitle = "",
-            onClick = { delayMenu = true },
-            trailing = {
-                // DropdownMenu 的 Popup 锚定**直接父节点**，所以包一层 Box 当锚点（项目既定做法）
-                Box {
-                    Row(
-                        Modifier
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { delayMenu = true }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(delayLabel(answerDelay), fontSize = 14.sp, color = TextSecondary)
-                        Spacer(Modifier.width(4.dp))
-                        Icon(
-                            MIcons.ChevronDown,
-                            contentDescription = "选择接听延迟",
-                            tint = MutedText,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = delayMenu,
-                        onDismissRequest = { delayMenu = false },
-                        shadowElevation = 0.dp,
-                    ) {
-                        listOf(0, 2, 3, 5, 10, 15, 30).forEach { sec ->
-                            DropdownMenuItem(
-                                text = { Text(delayLabel(sec), fontSize = 15.sp, color = TextPrimary) },
-                                onClick = {
-                                    delayMenu = false
-                                    scope.launch { app.settingsRepository.setAiAnswerDelaySeconds(sec) }
-                                },
-                            )
-                        }
-                    }
-                }
-            },
-        )
+        // v0.56.5（用户点名）：「接听延迟」已从本页**拎出去**，成为「通话行为」页上与
+        // 「语音通话铃声」**同级**的一张卡（设置 → 通话行为 → 接听延迟），不再挤在铃声列表下面。
         Spacer(Modifier.height(24.dp))
     }
 }
-
-/** 「接听延迟」卡右侧与菜单里的文案：0 = 立即接，其余显示"n 秒" */
-private fun delayLabel(seconds: Int): String = if (seconds <= 0) "立即接" else "$seconds 秒"
 
 /**
  * 铃声列表一行：点本体 = 设为默认，点「试听」= 试听这一条；

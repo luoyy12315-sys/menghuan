@@ -97,7 +97,7 @@ class AgentLoop(private val settingsRepository: SettingsRepository) {
         val reply = OpenAiClient(api.baseUrl, api.apiKey, api.model)
             .collectReply(AgentPrompts.SYSTEM, listOf(ChatMessage(conversationId = 0, isFromUser = true, content = prompt)))
         runCatching {
-            com.menghuan.app.data.UsageTracker.add(settingsRepository, reply.usageTokens ?: 0)
+            com.menghuan.app.data.UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, api.model)
         }
         return AgentPrompts.parseAction(reply.text)
     }

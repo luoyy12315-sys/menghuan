@@ -1,9 +1,12 @@
 package com.menghuan.app.ui.settings
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -12,6 +15,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,11 +25,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -35,12 +43,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.MenghuanApp
 import com.menghuan.app.ui.common.AdaptiveScreen
+import com.menghuan.app.ui.common.EaseOutQuart
 import com.menghuan.app.ui.common.NeuCircleButton
 import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuRowPress
 import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.common.staggerEnter
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
@@ -116,8 +126,13 @@ fun settingsContainer(): MenghuanApp =
  * 让人一眼分清"这个入口属于哪一类"，不承担任何交互。
  */
 @Composable
-fun SettingsGroupLabel(title: String, caption: String? = null) {
-    Column(Modifier.padding(top = 20.dp, bottom = 9.dp)) {
+fun SettingsGroupLabel(
+    title: String,
+    caption: String? = null,
+    /** 错峰入场序号（v0.55.0）：与同页的 [SettingsLineRow] 连成一个序列 */
+    index: Int = 0,
+) {
+    Column(Modifier.staggerEnter(index).padding(top = 20.dp, bottom = 9.dp)) {
         Text(
             title,
             fontSize = 13.sp,
@@ -195,6 +210,11 @@ fun SettingsSearchField(
     value: String,
     onValueChange: (String) -> Unit,
     placeholder: String = "搜索设置项",
+    /**
+     * 聚焦器（v0.56.8）：从放大镜进入搜索态时**立刻聚焦输入框**，
+     * 让用户直接打字，不用再点一次输入框。
+     */
+    focusRequester: FocusRequester? = null,
 ) {
     val track = NeuTrack
     val cursorColor = NeuAccent
@@ -212,7 +232,9 @@ fun SettingsSearchField(
             singleLine = true,
             textStyle = TextStyle(fontSize = 14.sp, color = TextPrimary),
             cursorBrush = SolidColor(cursorColor),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
             decorationBox = { inner ->
                 if (value.isEmpty()) {
                     Text(placeholder, fontSize = 14.sp, color = MutedText)
@@ -270,18 +292,43 @@ fun SettingsLineRow(
     trailing: (@Composable () -> Unit)? = null,
     /** 右侧不挂控件时是否画那颗浅箭头（默认画：表明"点进去还有东西"） */
     showChevron: Boolean = true,
+    /** 标题字号（v0.56.0：会话设置页点名加大到 17sp，其它页沿用默认 15sp） */
+    titleSize: TextUnit = 15.sp,
+    /**
+     * 错峰入场序号（v0.55.0）：同一页里按出现顺序传，整页内容依次抬起。
+     * 与 [SettingsGroupLabel] 共用一套序列（分组标题也占一个序号）。
+     */
+    index: Int = 0,
+    /**
+     * 行下方是否画那条发丝线。**一组里的最后一行传 false** ——
+     * 组与组之间靠 [SettingsGroupLabel] 的 20dp 上间距分区，再补一条线就成了"悬空的线"。
+     */
+    divider: Boolean = true,
     /**
      * 点击回调。放在**最后一个参数**上是为了能用尾随 lambda 写
      * （`SettingsLineRow("音色") { … }`）；默认空实现 = 这一行点不动。
      */
     onClick: () -> Unit = {},
 ) {
-    Column(Modifier.fillMaxWidth()) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val track = NeuTrack
+    val hairline = NeuHairline
+    // ⚠️ v0.56.8（用户点名"不要那个点击之后的灰色条"，且说过不止一次）：
+    // 这里原来在按下时**给整行铺一层灰**（当时的设计口径是"全应用无涟漪，灰行是唯一表达"）。
+    // 现在**把灰条整个去掉**：按压缩放/高亮一律不做，只留下面那颗箭头在按压时轻微右移
+    // （一行"能点进去"的动线，不铺色、不闪）。
+    val highlight by animateFloatAsState(
+        targetValue = if (pressed) 1f else 0f,
+        animationSpec = tween(if (pressed) 90 else 220, easing = EaseOutQuart),
+        label = "lineRowPress",
+    )
+    Column(Modifier.fillMaxWidth().staggerEnter(index)) {
         Row(
             Modifier
                 .fillMaxWidth()
                 .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
+                    interactionSource = interaction,
                     indication = null,
                     onClick = onClick,
                 )
@@ -289,7 +336,7 @@ fun SettingsLineRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
-                Text(title, fontSize = 15.sp, color = TextPrimary)
+                Text(title, fontSize = titleSize, color = TextPrimary)
                 if (subtitle.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
                     Text(subtitle, fontSize = 12.sp, color = MutedText, maxLines = 1)
@@ -306,12 +353,17 @@ fun SettingsLineRow(
                         MIcons.ChevronRight,
                         contentDescription = null,
                         tint = FaintText,
-                        modifier = Modifier.size(14.dp),
+                        // 按压时箭头往右挪 2dp：一条"这行能点进去"的动线，比变色更含蓄
+                        modifier = Modifier
+                            .size(14.dp)
+                            // 写成 `Dp * Float` 而不是 `Float.dp`：后者在 Float/Double/Int
+                            // 三个 `.dp` 扩展之间会有重载歧义
+                            .offset(x = 2.dp * highlight),
                     )
                 }
             }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(NeuHairline))
+        if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(hairline))
     }
 }
 

@@ -190,7 +190,7 @@ private fun StickerGrid(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(stickers, key = { it.id }) { s ->
+        items(stickers, key = { it.id }, contentType = { "sticker" }) { s ->
             var menuOpen by remember { mutableStateOf(false) }
             Box(
                 Modifier
@@ -243,7 +243,7 @@ private fun StickerGrid(
             }
         }
         // 添加表情：固定在网格末尾的加号格（唯一入口，收藏为空时它就是唯一一格）
-        item(key = "sticker_add") {
+        item(key = "sticker_add", contentType = "addTile") {
             val press = rememberNeuPressState()
             Box(
                 Modifier

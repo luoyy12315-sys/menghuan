@@ -33,7 +33,9 @@ import kotlinx.coroutines.launch
  *
  * 三种录入的落地方式：
  * - 手动：表单直接敲
- * - 语音：系统 SpeechRecognizer（需 RECORD_AUDIO，运行时申请）→ LedgerParser.fromText
+ * - 语音：**VoiceRecorder 录音 + SherpaAsr 端侧转写**（v0.56.14 起，与语音条/通话同一条链；
+ *   原来的系统 SpeechRecognizer 是 v0.50.0 已判死刑的链路，权限误报就是这么来的）
+ *   → LedgerParser.fromText
  * - 识图：系统相册/相机选图 → 拷进私有目录 → vision 请求 → LedgerParser.fromImageReply
  */
 @Composable
@@ -96,7 +98,15 @@ fun LedgerRoute(onBack: () -> Unit) {
                 else -> {
                     val draft = LedgerParser.fromImageReply(result.reply)
                     imageDraft = draft
-                    imageMessage = if (draft.isValid) "已从图片识别，核对后保存" else "没识别出金额，请手动填写"
+                    imageMessage = if (draft.isValid) {
+                        "已从图片识别，核对后保存"
+                    } else {
+                        // v0.56.14：不再只说"没识别出金额"——模型兜底时会在 note 里说明原因
+                        // （"图片太模糊 / 图里没有金额"），把它亮出来，用户立刻知道卡在哪
+                        val said = draft.note.trim().take(60)
+                        if (said.isBlank()) "没识别出金额，请手动填写"
+                        else "没识别出金额，模型说：$said"
+                    }
                 }
             }
         }

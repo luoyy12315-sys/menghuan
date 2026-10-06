@@ -21,8 +21,21 @@ object AlarmScheduler {
     /** AI 周报闹钟专用 requestCode */
     private const val WEEKLY_REPORT_REQUEST_CODE = 2_000_000_002
 
-    /** 人设主动关心闹钟专用 requestCode（每晚 20:30，v0.38.0） */
+    /**
+     * 人设主动关心：v0.56.7 及更早那条**全局**闹钟（固定 20:30，v0.38.0）的 requestCode。
+     * v0.56.8 第二阶段起改成**每个角色一个闹钟**（[PROACTIVE_PERSONA_BASE]），
+     * 这个码只留着**取消**升级前排上的那条旧闹钟（[cancelProactive]），不再排新的。
+     */
     private const val PROACTIVE_REQUEST_CODE = 2_000_000_005
+
+    /**
+     * 人设主动关心（v0.56.8 第二批，**按角色**）：requestCode = base + personaId % 10000，
+     * 每个角色一个闹钟 —— 因为**时间段与条数都是每个角色一套**，A 的窗口和 B 的窗口互不干扰。
+     */
+    private const val PROACTIVE_PERSONA_BASE = 2_000_300
+
+    /** ProactiveReceiver 的 extra：这一枪打给谁（人设 id）；-1 = 老版本那条全局闹钟 */
+    const val EXTRA_PROACTIVE_PERSONA = "proactivePersonaId"
 
     /** 每日建议闹钟专用 requestCode（每天早上 07:30，v0.42.0） */
     private const val DAILY_SUGGESTION_REQUEST_CODE = 2_000_000_006
@@ -136,26 +149,41 @@ object AlarmScheduler {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-    /** 人设主动关心（每晚 20:30，默认关）：到点由 ProactiveReceiver 自排明天，当天已发过会静默 */
-    fun scheduleProactive(context: Context) {
-        val zone = java.time.ZoneId.systemDefault()
-        var next = java.time.LocalDate.now(zone).atTime(20, 30)
-        if (next.atZone(zone).toInstant().toEpochMilli() <= System.currentTimeMillis()) {
-            next = next.plusDays(1)
-        }
+    /**
+     * 人设主动关心（v0.38.0；v0.56.8 改成"在用户设的时间段里随机取时刻"；
+     * **第二批起每个角色一个闹钟**，因为时间段/条数都是按角色一套）。
+     *
+     * 不再固定 20:30：由 [com.menghuan.app.data.ProactiveChat.nextFireAt] 在这个角色自己的
+     * `[startHhmm]–[endHhmm]` 窗口里随机挑一个时刻排上；到点由 ProactiveReceiver 发完再随机排下一次
+     * （今天窗口过完就排明天）。调用方用 `ProactiveChat.scheduleNext(settings, context)` 即可，
+     * 不必自己读配置。
+     */
+    fun scheduleProactiveForPersona(context: Context, personaId: Long, startHhmm: String, endHhmm: String) {
+        val at = com.menghuan.app.data.ProactiveChat
+            .nextFireAt(System.currentTimeMillis(), startHhmm, endHhmm)
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = proactivePendingIntent(context)
+        val pi = proactivePendingIntent(context, personaId)
         val canExact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
         if (canExact) {
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atZone(zone).toInstant().toEpochMilli(), pi)
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
         } else {
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atZone(zone).toInstant().toEpochMilli(), pi)
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
         }
     }
 
+    /** 关掉某个角色的主动关心（或角色被删）→ 把它那颗闹钟摘掉 */
+    fun cancelProactiveForPersona(context: Context, personaId: Long) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.cancel(proactivePendingIntent(context, personaId))
+    }
+
+    /**
+     * 清掉 v0.56.7 及更早那条**全局**闹钟（固定 20:30）。
+     * 它没带人设 id，到点会走 ProactiveReceiver 的兼容分支；排新的之前先摘掉，避免重复触发。
+     */
     fun cancelProactive(context: Context) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        am.cancel(proactivePendingIntent(context))
+        am.cancel(legacyProactivePendingIntent(context))
     }
 
     /**
@@ -279,7 +307,18 @@ object AlarmScheduler {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-    private fun proactivePendingIntent(context: Context): PendingIntent =
+    /** 每个角色一颗：requestCode 按人设 id 拉开，PendingIntent 上带 id，到点知道该发给谁 */
+    private fun proactivePendingIntent(context: Context, personaId: Long): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            PROACTIVE_PERSONA_BASE + (personaId % 10_000L).toInt(),
+            Intent(context, ProactiveReceiver::class.java)
+                .putExtra(EXTRA_PROACTIVE_PERSONA, personaId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    /** 旧版全局闹钟（无 id）：只在 [cancelProactive] 里用来取消，不排新的 */
+    private fun legacyProactivePendingIntent(context: Context): PendingIntent =
         PendingIntent.getBroadcast(
             context,
             PROACTIVE_REQUEST_CODE,

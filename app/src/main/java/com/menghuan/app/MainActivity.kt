@@ -7,7 +7,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.annotation.StringRes
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
@@ -38,7 +38,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -64,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -100,6 +103,7 @@ import com.menghuan.app.ui.profile.ProfileScreen
 import com.menghuan.app.ui.settings.AboutScreen
 import com.menghuan.app.ui.settings.AppearanceScreen
 import com.menghuan.app.ui.settings.AsrModelScreen
+import com.menghuan.app.ui.settings.CallAnswerDelayScreen
 import com.menghuan.app.ui.settings.CallBehaviorScreen
 import com.menghuan.app.ui.settings.CallRingtoneScreen
 import com.menghuan.app.ui.settings.ChatModelScreen
@@ -660,6 +664,12 @@ private fun androidx.navigation.NavGraphBuilder.settingsComposables(navControlle
         popExitTransition = { pop + scalePop }) {
         AdaptiveScreen { CallRingtoneScreen(onBack = back) }
     }
+    // 接听延迟（v0.56.5）：从「语音通话铃声」页里拎出，与它同级挂在「通话行为」下
+    composable(SettingsRoutes.CALL_ANSWER_DELAY, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { CallAnswerDelayScreen(onBack = back) }
+    }
     // 权限（v0.53.8）：把应用会用到授权集中一处，逐项说明用途 + 直达系统设置
     composable(SettingsRoutes.PERMISSIONS, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
@@ -779,6 +789,15 @@ private fun TwoPanePlaceholder() {
  * 浮起胶囊底栏：白纸 + 发丝线 + 纸叠影；选中项 = 黑色胶囊指示器滑入（弹簧过冲）+
  * 图标/文字反白。刻意不用 Material NavigationBar（默认 80dp 高 + 胶囊指示器，与设计语言不符）。
  * 选中态跟随 Pager（拖动跨半页即滑移），点击 = animateScrollToPage 弹簧切页。
+ *
+ * **v0.56.9（用户点名"底栏改成可滑动的，那个黑色块可以滑动切换屏幕"）**：
+ * - 手指在底栏上**横向拖动**：黑块贴着手指走，**每跨过一格就翻一页**；
+ * - v0.56.11 修"黑块跟手指反方向"：位移不再取负——右拖 = 黑块右移 = 滑向右边的 tab；
+ * - **v0.56.14 修"拖动一弹一弹"**：旧实现弹簧位置 + 弹簧化的跟手残余两层叠加；
+ *   现在拖动中黑块 **snapTo 直接跟手（零动画）**，松手 / 点选才弹簧滑到目标格——
+ *   点选的 Q 弹过冲原样保留（用户点名不许删）。
+ * - 翻页仍然走 `animateScrollToPage`（弹簧过冲）—— **Q 弹感是这一版的硬要求**；
+ * - 点击切页照旧，两条路径共用同一个 Pager。
  */
 @Composable
 private fun HomeBottomBar(
@@ -786,15 +805,80 @@ private fun HomeBottomBar(
     chatUnread: Boolean = false,
     onSelectTab: (Int) -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val wide = maxWidth >= ContentMaxWidth
+        // 一格有多宽（px）：与下面指示器的 cell 同一套算法（底栏宽 - 左右 8dp，再除以 tab 数）
+        val cellPx = with(LocalDensity.current) {
+            ((if (wide) ContentMaxWidth else maxWidth) - 28.dp - 16.dp).toPx() / topLevelRoutes.size
+        }
+        // 黑块位置（px，相对轨道左缘）的**唯一来源**。
+        //
+        // v0.56.14 修"拖动一弹一弹"：旧实现是弹簧位置（animateDpAsState）+ 跟手残余
+        // （外面再包一层 animateFloatAsState 弹簧）两层动画叠一个黑块——拖动中每跨一格
+        // currentPage 一变弹簧就开始追，偏移又突变又带滞后，三股劲挤在一起 = 一弹一弹。
+        // 现在单一来源：**拖动中 snapTo 直接跟手指（零动画，丝滑）**；松手 / 点选 →
+        // 弹簧滑到目标格（MediumBouncy 过冲——点选的 Q 弹感保留，用户点名不许删）。
+        val indicator = remember { Animatable(Float.NaN) }
+        // 拖动进行中：所有弹簧协程让位，黑块只听手指的
+        var dragging by remember { mutableStateOf(false) }
+        LaunchedEffect(pagerState.targetPage, dragging, cellPx) {
+            if (dragging) return@LaunchedEffect
+            val target = cellPx * pagerState.targetPage
+            if (indicator.value.isNaN()) indicator.snapTo(target)
+            else indicator.animateTo(
+                target,
+                spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow),
+            )
+        }
         Box(
             Modifier
                 .fillMaxWidth()
                 .then(if (wide) Modifier.widthIn(max = ContentMaxWidth) else Modifier)
                 .padding(horizontal = 14.dp)
                 .padding(top = 4.dp, bottom = 8.dp)
-                .navigationBarsPadding(),
+                .navigationBarsPadding()
+                // 底栏本身可横滑：黑块贴着手指走（snapTo，无弹簧），每跨过**一格**翻一页。
+                // 不用 `dispatchRawDelta` 那一套（v0.56.8 试过，拖了没反应 ——
+                // 它只在 Pager 自己的滚动流程里生效，这里拿不到）。
+                // 手势放在 clickable 之外（更外层），拖动不会被点击吞掉。
+                .pointerInput(topLevelRoutes.size) {
+                    var startPage = 0
+                    var dragBase = 0f
+                    var crossed = 0
+                    var total = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            dragging = true
+                            startPage = pagerState.currentPage
+                            dragBase = indicator.value.takeUnless { it.isNaN() }
+                                ?: cellPx * startPage
+                            crossed = 0
+                            total = 0f
+                        },
+                        onDragEnd = { dragging = false },
+                        onDragCancel = { dragging = false },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            total += dragAmount
+                            // 手指往哪边拖黑块就往哪边走（右拖 = 滑向右边的 tab），完全跟手
+                            scope.launch {
+                                indicator.snapTo(
+                                    (dragBase + total).coerceIn(0f, cellPx * topLevelRoutes.lastIndex),
+                                )
+                            }
+                            // Float.toInt() 就是"向零取整"（= trunc），跨满一格才翻一页；
+                            // 翻页走 Pager 自己的弹簧，黑块不停、继续跟手
+                            val raw = total / cellPx
+                            val nextCrossed = raw.toInt()
+                            if (nextCrossed != crossed) {
+                                crossed = nextCrossed
+                                val target = (startPage + crossed).coerceIn(0, topLevelRoutes.lastIndex)
+                                scope.launch { pagerState.animateScrollToPage(target) }
+                            }
+                        },
+                    )
+                },
         ) {
             val barInset = 8.dp
             val tabIndex = pagerState.currentPage.coerceIn(0, topLevelRoutes.lastIndex)
@@ -804,18 +888,13 @@ private fun HomeBottomBar(
                     // 用户拍板：底栏不要阴影，靠细线描边与页面基底分区即可
                     .neuSurface(26.dp, color = NeuSurface, elevation = 0.dp),
             ) {
-                // 滑动指示器：黑色胶囊按 tab 序号平移，弹簧带轻微过冲
                 BoxWithConstraints(Modifier.matchParentSize()) {
                     val track = maxWidth - barInset * 2
                     val cell = track / topLevelRoutes.size
-                    val x by animateDpAsState(
-                        targetValue = barInset + cell * tabIndex,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMediumLow,
-                        ),
-                        label = "tabIndicator",
-                    )
+                    val x = with(LocalDensity.current) {
+                        (indicator.value.takeUnless { it.isNaN() } ?: cellPx * pagerState.targetPage)
+                            .toDp() + barInset
+                    }
                     Box(
                         Modifier
                             .offset(x = x)
@@ -887,3 +966,4 @@ private fun HomeBottomBar(
         }
     }
 }
+

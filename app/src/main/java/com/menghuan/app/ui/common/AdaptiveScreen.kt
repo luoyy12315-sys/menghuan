@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -160,6 +161,11 @@ fun AdaptiveSplitScreen(
  */
 @Composable
 fun NeuTopBar(
+    /**
+     * v0.55.0：顶栏自身的外挂装饰（聊天页滚动时在下沿画一条发丝线用它）。
+     * 放在第一位且给默认值，所有既有调用点一行都不用改。
+     */
+    modifier: Modifier = Modifier,
     title: String? = null,
     navigationIcon: @Composable (() -> Unit)? = null,
     actions: @Composable (() -> Unit)? = null,
@@ -168,7 +174,7 @@ fun NeuTopBar(
 ) {
     // 84dp = 双 38dp 图标按钮 + 8dp 间距：会话列表右侧两颗按钮正好放下不外溢
     val slot = actionsWidth ?: (LocalContentWidth.current * 0.195f).coerceIn(56.dp, 84.dp)
-    Column(Modifier.fillMaxWidth().background(Color.Transparent)) {
+    Column(modifier.fillMaxWidth().background(Color.Transparent)) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -209,6 +215,14 @@ fun NeuTopBar(
  * 图片按 size 采样解码，文件缺失或解码失败一律回退 emoji（绝不出现空白头像）。
  * [modifier] 供调用方加点击等交互（人设编辑器直接点头像换图）—— 加在圆的外层，
  * 传入时调用方负责 clip(CircleShape) 才能让点击热区也是圆的。
+ *
+ * [emojiScaleX] / [emojiScaleY]（v0.56.9）：**只缩放 emoji 本身**，圆底与环不动 ——
+ * 编辑人设里用它做"放大镜"：滑到的那个 emoji 是被**挤进**头像框的（从放大态压回原大小）。
+ * 默认 1f，其它调用点不受影响。
+ *
+ * [emojiMaxScale]（v0.56.11）：emojiScale 的**放大上限**。emoji 是位图字形，graphicsLayer
+ * 放大必糊——传它之后 emoji 按"基准字号 × emojiMaxScale"渲染、layer 改做 ≤1 的缩小
+ * （emojiScaleX/Y ÷ emojiMaxScale），动效观感不变、位图不再被拉糊。默认 1f 行为不变。
  */
 @Composable
 fun NeuAvatar(
@@ -217,6 +231,9 @@ fun NeuAvatar(
     accentRing: Boolean = false,
     ringBrush: androidx.compose.ui.graphics.Brush? = null,
     imagePath: String = "",
+    emojiScaleX: Float = 1f,
+    emojiScaleY: Float = 1f,
+    emojiMaxScale: Float = 1f,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
@@ -258,7 +275,17 @@ fun NeuAvatar(
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
             )
         } else {
-            Text(emoji, fontSize = (size.value * 0.42f).sp)
+            val base = emojiMaxScale.coerceAtLeast(0.01f)
+            Text(
+                emoji,
+                // 按"基准 × 放大上限"渲染，layer 只做 ≤1 的缩小（v0.56.11）：
+                // 最大态 = scale 1.0 清晰落定，落定态 = 原字号大小，全程不放大位图字形
+                fontSize = (size.value * 0.42f * base).sp,
+                modifier = Modifier.graphicsLayer {
+                    scaleX = emojiScaleX / base
+                    scaleY = emojiScaleY / base
+                },
+            )
         }
     }
 }

@@ -70,10 +70,12 @@ class TtsClientTest {
 
     private fun sfClient(key: String = "k") = TtsClients.from(
         TtsConfig(provider = TtsProvider.SILICONFLOW, baseUrl = base(), apiKey = key),
+        null,
     )
 
     private fun mimoClient(key: String = "k") = TtsClients.from(
         TtsConfig(provider = TtsProvider.XIAOMI_MIMO, baseUrl = base(), apiKey = key),
+        null,
     )
 
     // ===================== 硅基流动 =====================
@@ -141,6 +143,7 @@ class TtsClientTest {
         server.enqueue(audioResponse(fakeMp3()))
         val client = TtsClients.from(
             TtsConfig(provider = TtsProvider.CUSTOM, baseUrl = base(), apiKey = "k", model = "tts-1"),
+            null,
         )
         client.synthesize("你好", VoiceRef(TtsProvider.CUSTOM, "nova"))
         val req = server.takeRequest()
@@ -164,6 +167,7 @@ class TtsClientTest {
         )
         val client = TtsClients.from(
             TtsConfig(provider = TtsProvider.CUSTOM, baseUrl = base(), apiKey = "k", model = "x"),
+            null,
         )
         assertNull(client.synthesize("你好", VoiceRef(TtsProvider.CUSTOM, "nova")))
         assertTrue(client.lastFailure.orEmpty(), client.lastFailure!!.contains("model not found"))
@@ -241,7 +245,7 @@ class TtsClientTest {
 
     @Test
     fun `没配 Key 时不发请求，直接给出原因`() = runBlocking {
-        val client = TtsClients.from(TtsConfig(provider = TtsProvider.SILICONFLOW, baseUrl = base()))
+        val client = TtsClients.from(TtsConfig(provider = TtsProvider.SILICONFLOW, baseUrl = base()), null)
         assertNull(client.synthesize("喂", VoiceRef(TtsProvider.SILICONFLOW, "anna")))
         assertEquals(0, server.requestCount)
         assertTrue(client.lastFailure.orEmpty(), client.lastFailure!!.contains("未配置"))

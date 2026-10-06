@@ -95,7 +95,7 @@ class ExtractionEngine(
         val reply = OpenAiClient(config.baseUrl, config.apiKey, config.model)
             .collectReply(ProfileExtractor.systemPrompt(strategy), listOf(ChatMessage(conversationId = 0, isFromUser = true, content = content)))
         sb.append(reply.text)
-        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0) }
+        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model) }
 
         val extracted = ProfileExtractor.parse(sb.toString())
         val (newFacts, updatedFacts) = mergeFacts(extracted.facts)

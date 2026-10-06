@@ -201,6 +201,20 @@ class CustomOpenAiTts(config: TtsConfig) : HttpTtsClient(config) {
 }
 
 /**
+ * 小米 MiMo 克隆音色的**风格锚定指令**（v0.56.17）。
+ *
+ * 官方把 `user` 消息的 content 定义为"调整语气与风格的指令（也可以是对话历史，内容不会被念出来）"。
+ * 以前我们发空串，而 MiMo 的克隆是零样本、服务端没有 seed/temperature 可固定，
+ * 真机反馈"同一句话每次合成的音色都不一样"。客户端唯一能钉死的就是这条风格输入，
+ * 所以克隆时固定发同一句：至少让每次请求的**风格侧**完全一致。
+ *
+ * ⚠️ 这句话只写"与参考音频一致"，**不要**在这里描述任何具体音色/情绪——
+ * 描述性文字会被当成"风格要求"，反而可能盖过样本本身的音色。
+ */
+private const val MIMO_CLONE_STYLE_ANCHOR =
+    "保持与参考音频完全一致的音色、语速和情绪，不要改变音色。"
+
+/**
  * 小米 MiMo：**走 `/chat/completions`，不是 `/audio/speech`**，音频在
  * `choices[0].message.audio.data`（base64）。三个反直觉点，逐条都来自官方 API 参考：
  *
@@ -210,21 +224,58 @@ class CustomOpenAiTts(config: TtsConfig) : HttpTtsClient(config) {
  *    三个独立开源实现也都不传。
  * 3. 鉴权头官方给的是 `api-key`，FAQ 又说 `Authorization: Bearer` 也行 → **两个都发**。
  *
+ * 4.（v0.56.13）**模型按音色类型切**：官方 speech-synthesis-v2.5 把能力拆成三个互斥的模型，
+ *    音频样本复刻**只**认 `mimo-v2.5-tts-voiceclone`，预置音色模型（mimo-v2.5-tts）会拒绝内联样本——
+ *    所以带 `local:` 克隆样本的请求在这里强制切模型，用户配置里的 model 只管预置音色。
+ *
+ * 5.（v0.56.17）**克隆时给 `user` 消息补一条固定的风格锚定指令**：官方把 `user` 的 content
+ *    定义为"调整语气与风格的指令（也可以是对话历史）"，以前我们发**空串**。而 MiMo 的克隆是零样本
+ *    （音色只能靠当次内联的样本，没有 seed/temperature 可固定），真机反馈"同一句话每次合成音色都不同"。
+ *    既然客户端控制不了随机性，至少把**风格输入也钉死**成每次同一句，压住语气/情绪的漂移
+ *    （音色本身能否完全稳定由服务端决定，见 [MIMO_CLONE_STYLE_ANCHOR]）。预置音色没有参考音频，
+ *    原来就是空串、不涉及这个问题，保持不变。
+ *
  * 默认回 **WAV**（官方所有示例都用 wav/pcm16，enum 里那个 `mp3` 没有任何实现用过，不赌）。
  */
-class XiaomiMimoTts(config: TtsConfig) : HttpTtsClient(config) {
+class XiaomiMimoTts(config: TtsConfig, private val context: android.content.Context?) : HttpTtsClient(config) {
 
     override fun doSynthesize(text: String, voice: VoiceRef, target: TtsTarget): TtsAudio {
         // MiMo 永远要 wav（见 TtsTarget.formatFor）：官方示例全是 wav/pcm16，mp3 没人用过，不赌
+        val id = voice.voiceId.ifBlank { TtsVoices.defaultVoiceId(TtsProvider.XIAOMI_MIMO) }
+        // 克隆样本（`local:` 前缀）在本次请求里同时决定两件事：切哪个模型、user 指令发什么
+        val isClone = TtsVoices.localSamplePath(id) != null
         val body = JSONObject().apply {
-            put("model", config.effectiveModel())
+            put(
+                "model",
+                // 官方三模型能力互斥（speech-synthesis-v2.5），按音色类型切：
+                // 克隆样本（local: 前缀）→ 强制 voiceclone 模型；
+                // 预置音色 → 用户配置的模型，但填成 voiceclone/voicedesign 时自动回落
+                // （那两个模型不收预置音色名，真机 400 Param Incorrect 的根因）
+                if (isClone) {
+                    TtsVoices.MIMO_VOICECLONE_MODEL
+                } else {
+                    val configured = config.effectiveModel().trim()
+                    if (configured == TtsVoices.MIMO_VOICECLONE_MODEL ||
+                        configured == TtsVoices.MIMO_VOICEDESIGN_MODEL
+                    ) {
+                        TtsVoices.MIMO_PRESET_MODEL
+                    } else {
+                        configured
+                    }
+                },
+            )
             put(
                 "messages",
                 JSONArray()
-                    .put(JSONObject().put("role", "user").put("content", ""))
+                    // 风格指令位（官方口径）。克隆时给一条**固定**的锚定指令，见类注释第 5 条；
+                    // 预置音色维持原来的空串，不动没被反馈的行为
+                    .put(
+                        JSONObject().put("role", "user")
+                            .put("content", if (isClone) MIMO_CLONE_STYLE_ANCHOR else ""),
+                    )
                     .put(JSONObject().put("role", "assistant").put("content", text)),
             )
-            put("audio", JSONObject().put("format", "wav").put("voice", resolveVoice(voice)))
+            put("audio", JSONObject().put("format", "wav").put("voice", resolveVoice(id)))
             put("stream", false)
         }
         val request = Request.Builder()
@@ -249,13 +300,19 @@ class XiaomiMimoTts(config: TtsConfig) : HttpTtsClient(config) {
 
     /**
      * 克隆音色 = 每次请求把样本 base64 内联进 `audio.voice`（MiMo **没有上传接口**，
-     * 也没有 list/delete，样本只能存在本机、每次重传）。
+     * 也没有 list/delete，样本只能存在本机、每次重传）。模型的选择在 [doSynthesize] 里做
+     * （克隆必须走官方的 voiceclone 模型），这里只负责把 voiceId 变成 `audio.voice` 的值：
+     * 预置名原样发，本地样本读文件、校验编码后大小、拼 `data:{MIME};base64,` 前缀。
+     *
+     * **v0.56.16 修"克隆样本已丢失"**：音色页/会话设置存进 VoiceRef 的是**文件名**
+     * （`voice_xxx.wav`，见 `localVoiceRef` 的调用方），不是路径——原来直接
+     * `File("voice_xxx.wav")` 按相对路径找，必然不存在，小米克隆从建成就没合成成功过。
+     * 现在拼回 `filesDir/voices/` 目录再取（substringAfterLast 兼容万一存了完整路径的旧值）。
      */
-    private fun resolveVoice(voice: VoiceRef): String {
-        val id = voice.voiceId.ifBlank { TtsVoices.defaultVoiceId(TtsProvider.XIAOMI_MIMO) }
+    private fun resolveVoice(id: String): String {
         val path = TtsVoices.localSamplePath(id) ?: return id
-        val file = File(path)
-        if (!file.isFile) throw TtsException("克隆样本已丢失：$path")
+        val file = context?.let { File(VoiceCloner.voiceDir(it), path.substringAfterLast('/')) }
+        if (file == null || !file.isFile) throw TtsException("克隆样本已丢失：$path")
         if (!TtsVoices.isWithinMimoCloneLimit(file.length())) {
             throw TtsException(
                 "克隆样本编码后超过 10MB 上限（实际约 " +
@@ -287,12 +344,16 @@ class XiaomiMimoTts(config: TtsConfig) : HttpTtsClient(config) {
     }
 }
 
-/** 按配置里的 provider 挑实现（调用方只认 [TtsClient] 接口） */
+/** 按配置里的 provider 挑实现（调用方只认 [TtsClient] 接口）。
+ *
+ *  [context]（v0.56.16，可空：JVM 单测没有）：小米 MiMo 的克隆样本是**本机文件**，
+ *  合成时要读 `filesDir/voices/`——没有 context 拿不到目录（"克隆样本已丢失"的老 bug 一环）。
+ */
 object TtsClients {
 
-    fun from(config: TtsConfig): TtsClient = when (config.provider) {
+    fun from(config: TtsConfig, context: android.content.Context?): TtsClient = when (config.provider) {
         TtsProvider.SILICONFLOW -> SiliconFlowTts(config)
-        TtsProvider.XIAOMI_MIMO -> XiaomiMimoTts(config)
+        TtsProvider.XIAOMI_MIMO -> XiaomiMimoTts(config, context?.applicationContext)
         TtsProvider.CUSTOM -> CustomOpenAiTts(config)
     }
 }

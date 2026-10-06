@@ -31,6 +31,15 @@ data class AiCallRule(
     val lastCallDay: Long = 0L,
     /** 打电话时要说的内容（开场白要求）；空 = 交给模型自己按情境组织 */
     val instruction: String = "",
+    /**
+     * 「定时电话」总开关（v0.56.6）。
+     *
+     * 用户点名的结构：电话设置里保留 [enabled]（**允许主动打电话**）作为"TA 能不能主动打"的总闸，
+     * 另加一个**定时电话**开关 —— 打开后由用户按时间点一条条添加定时电话
+     * （几点拨打 + 接通后说什么），**不再用 [idleDays] 那种"多久没聊才打"的触发方式**。
+     * [time]/[idleDays] 两个字段保留只为兼容老数据，新界面不再编辑它们、也不再据此排闹钟。
+     */
+    val scheduledEnabled: Boolean = false,
 )
 
 /** 规则的编解码（纯函数；脏数据跳过而不是崩，与本项目其它 JSON 存储同一套姿势） */
@@ -46,7 +55,8 @@ object AiCallRuleCodec {
                     .put("time", r.time)
                     .put("idleDays", r.idleDays)
                     .put("lastCallDay", r.lastCallDay)
-                    .put("instruction", r.instruction),
+                    .put("instruction", r.instruction)
+                    .put("scheduledEnabled", r.scheduledEnabled),
             )
         }
         return array.toString()
@@ -68,6 +78,7 @@ object AiCallRuleCodec {
                         idleDays = o.optInt("idleDays", 3).coerceIn(1, 30),
                         lastCallDay = o.optLong("lastCallDay", 0L),
                         instruction = o.optString("instruction").trim(),
+                        scheduledEnabled = o.optBoolean("scheduledEnabled", false),
                     ),
                 )
             }

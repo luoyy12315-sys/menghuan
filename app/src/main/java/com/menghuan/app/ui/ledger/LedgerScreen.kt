@@ -52,6 +52,7 @@ import com.menghuan.app.ui.common.NeuCircleButton
 import com.menghuan.app.ui.common.NeuSectionTitle
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
+import com.menghuan.app.ui.common.RollingAmountText
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
@@ -136,8 +137,8 @@ fun LedgerScreen(
             ),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            item { CashCard(cashCents) }
-            item {
+            item(contentType = "cash") { CashCard(cashCents) }
+            item(contentType = "stats") {
                 StatsCard(
                     scope = scope,
                     month = month,
@@ -148,7 +149,7 @@ fun LedgerScreen(
                     onShiftPeriod = onShiftPeriod,
                 )
             }
-            item {
+            item(contentType = "section") {
                 Row(
                     Modifier.fillMaxWidth().padding(top = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -157,7 +158,7 @@ fun LedgerScreen(
                 }
             }
             if (periodEntries.isEmpty()) {
-                item {
+                item(contentType = "empty") {
                     Box(
                         Modifier
                             .fillMaxWidth()
@@ -169,7 +170,7 @@ fun LedgerScreen(
                     }
                 }
             } else {
-                items(periodEntries, key = { it.id }) { entry ->
+                items(periodEntries, key = { it.id }, contentType = { "entry" }) { entry ->
                     // 长按菜单锚点：菜单包在条目右下角的小 Box 里（Popup 锚定直接父节点）
                     Box(Modifier.fillMaxWidth()) {
                         LedgerRow(
@@ -213,8 +214,10 @@ private fun CashCard(cashCents: Long) {
         Row(verticalAlignment = Alignment.Bottom) {
             Text("¥", fontSize = 20.sp, color = TextSecondary, modifier = Modifier.padding(bottom = 4.dp))
             Spacer(Modifier.width(5.dp))
-            Text(
-                LedgerMath.formatCents(cashCents),
+            // v0.56.14：里程表滚动**恢复**（v0.56.11 删多了——用户点名"记账本详细页的动效"要回；
+            // 保持静态的是数据页入口卡那处，不在此列）
+            RollingAmountText(
+                text = LedgerMath.formatCents(cashCents),
                 fontSize = 40.sp,
                 fontWeight = FontWeight.Medium,
                 letterSpacing = (-1).sp,
@@ -310,12 +313,14 @@ private fun StatCell(label: String, value: String, valueColor: Color, modifier: 
     Column(modifier) {
         Text(label, fontSize = 11.sp, color = MutedText)
         Spacer(Modifier.height(5.dp))
-        Text(
-            value,
+        // v0.56.14：三个统计数的滚动**恢复**（v0.56.11 删多了）
+        RollingAmountText(
+            text = value,
             fontSize = 17.sp,
             fontWeight = FontWeight.Medium,
             letterSpacing = (-0.34).sp,
             color = valueColor,
+            durationMs = 520,
         )
     }
 }

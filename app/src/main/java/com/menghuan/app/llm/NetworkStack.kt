@@ -6,6 +6,7 @@ import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.TlsVersion
+import org.json.JSONObject
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLHandshakeException
 import javax.net.ssl.SSLSession
@@ -62,6 +63,34 @@ object NetworkStack {
         val cls = t.javaClass.simpleName
         val msg = t.message?.takeIf { it.isNotBlank() }
         return if (msg != null) "$msg（$cls）" else cls
+    }
+
+    /**
+     * 从**错误响应体**里挖一句可读原因，供"测试连接 / 生图失败"这类入口显示（v0.56.17 起共用）。
+     *
+     * 各家网关的形状不统一，三级兜底：
+     * - OpenAI 形状：`{"error":{"message":"...","type":"..."}}`（还有 `{"error":{"code":...}}`）
+     * - 扁平形状：`{"message":"..."}` / `{"detail":"..."}` / `{"error":"..."}`
+     * - 纯文本：直接取前 200 字 —— **豆包方舟的 400/404 就是这种**（
+     *   "The parameter `size` specified in the request is not valid: image size must be at least 3686400 pixels"）
+     *
+     * **为什么必须共用这一份**：本项目在 ImageProbe 的 404、生图链路、记账识图上
+     * 已经因为"把服务端原话吞掉、只回一句自己的猜测"踩过三次；各写各的必然漂移。
+     */
+    fun apiErrorText(body: String?): String? {
+        if (body.isNullOrBlank()) return null
+        val trimmed = body.trim()
+        if (!trimmed.startsWith("{")) return trimmed.take(200).ifBlank { null }
+        return runCatching {
+            val root = JSONObject(trimmed)
+            val err = root.opt("error")
+            val msg = when {
+                err is JSONObject -> err.optString("message").ifBlank { err.optString("code") }
+                err is String -> err
+                else -> root.optString("message").ifBlank { root.optString("detail") }
+            }
+            msg.trim().take(200).ifBlank { null }
+        }.getOrNull() ?: trimmed.take(200)
     }
 
     /**

@@ -50,7 +50,12 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import com.menghuan.app.ui.common.NeuPressSpec
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -296,8 +301,9 @@ private fun CameraContent(onCaptured: (String) -> Unit, onCancel: () -> Unit) {
                             .size(72.dp)
                             .clip(CircleShape)
                             .background(Color.White)
-                            .clickable(enabled = !capturing) {
-                                val capture = latestCapture.value ?: return@clickable
+                            // 快门按得更沉（0.92）：配得上"按下拍照"这个动作的分量
+                            .cameraPress(enabled = !capturing, scaleTo = 0.92f) {
+                                val capture = latestCapture.value ?: return@cameraPress
                                 capturing = true
                                 val dir = File(context.filesDir, "camera").apply { if (!exists()) mkdirs() }
                                 val file = File(dir, "shot_${System.currentTimeMillis()}.jpg")
@@ -409,8 +415,8 @@ private fun CameraContent(onCaptured: (String) -> Unit, onCancel: () -> Unit) {
                         .height(48.dp)
                         .clip(RoundedCornerShape(999.dp))
                         .background(Color.White)
-                        .clickable(enabled = pendingBitmap != null) {
-                            val f = pendingShot ?: return@clickable
+                        .cameraPress(enabled = pendingBitmap != null) {
+                            val f = pendingShot ?: return@cameraPress
                             currentOnCaptured(f.absolutePath)
                         },
                     contentAlignment = Alignment.Center,
@@ -446,7 +452,7 @@ private fun CameraRoundIcon(
             .size(size)
             .clip(CircleShape)
             .background(Color.White)
-            .clickable(onClick = onClick),
+            .cameraPress(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         content()
@@ -528,7 +534,7 @@ private fun CameraPermissionNotice(denied: Boolean, onRetry: () -> Unit, onCance
                     Modifier
                         .clip(CircleShape)
                         .background(Color.White)
-                        .clickable(onClick = onRetry)
+                        .cameraPress(onClick = onRetry)
                         .padding(horizontal = 22.dp, vertical = 10.dp),
                 ) {
                     Text("重试授权", color = Color.Black, fontSize = 14.sp)
@@ -538,11 +544,46 @@ private fun CameraPermissionNotice(denied: Boolean, onRetry: () -> Unit, onCance
                 Modifier
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.16f))
-                    .clickable(onClick = onCancel)
+                    .cameraPress(onClick = onCancel)
                     .padding(horizontal = 22.dp, vertical = 10.dp),
             ) {
                 Text("返回", color = Color.White, fontSize = 14.sp)
             }
         }
     }
+}
+
+/**
+ * 相机页的按压反馈（v0.55.0）。
+ *
+ * 相机页是全应用**唯一**还在吃 Material 默认 ripple 的地方：快门、发送、翻转、退出、
+ * 重试授权五个入口的 `.clickable()` 都没关 indication。默认 ripple 是无界水波、
+ * 淡出要 300ms 以上 —— 在一张实时取景画面上按快门，糊出一大片灰再慢慢褪，既抢眼又拖沓，
+ * 与全应用 v0.42.1 定下的"无涟漪 + 轻微缩放"完全是两套语言。
+ *
+ * 这里把两件事打包成一个修饰符：`indication = null` 关掉水波 + 按压缩放（默认 0.94）。
+ * 相机页的按钮底色是白的（为了在任意取景内容上都看得见），缩放是唯一还能表达"按住了"的手段。
+ *
+ * @param scaleTo 按下时的缩放到多少。快门传 0.92（更沉，配得上"按下拍照"），其余用默认。
+ */
+@Composable
+private fun Modifier.cameraPress(
+    enabled: Boolean = true,
+    scaleTo: Float = 0.94f,
+    onClick: () -> Unit,
+): Modifier {
+    val source = remember { MutableInteractionSource() }
+    val scale by animateFloatAsState(
+        targetValue = if (source.collectIsPressedAsState().value) scaleTo else 1f,
+        animationSpec = NeuPressSpec,
+        label = "cameraPress",
+    )
+    return this
+        .scale(scale)
+        .clickable(
+            interactionSource = source,
+            indication = null,
+            enabled = enabled,
+            onClick = onClick,
+        )
 }

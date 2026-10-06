@@ -400,6 +400,15 @@ class SettingsRepository(
     // v0.54.4：人设主动关心改为**按角色**（旧的两个全局键 proactive_enabled / proactive_last_day 已删除）
     private val keyPersonaProactive = stringPreferencesKey("persona_proactive")
     private val keyPersonaProactiveLastDay = stringPreferencesKey("persona_proactive_last_day")
+    /**
+     * 主动关心的**时间段**与**每天最多几条**（v0.56.8 第二批：**每个角色各一套**）。
+     *
+     * 值按 `id\t起|止` / `id\t条数` 的行式表存 —— 角色 A 20:00–23:00、角色 B 09:00–11:00 互不影响。
+     * （更早那两个全局键 `proactive_window_start/end` 与 `proactive_daily_limit` 只在未出包的
+     *   v0.56.8 里存在过，这里直接不建，不留死键。）
+     */
+    private val keyPersonaProactiveWindow = stringPreferencesKey("persona_proactive_window")
+    private val keyPersonaProactiveLimit = stringPreferencesKey("persona_proactive_limit")
     // v0.53.5：AI 主动打电话
     private val keyAiCallEnabled = booleanPreferencesKey("ai_call_enabled")
     private val keyAiCallTime = stringPreferencesKey("ai_call_time")
@@ -429,6 +438,8 @@ class SettingsRepository(
     private val keyAiAnswerDelay = intPreferencesKey("ai_answer_delay_seconds")
     private val keyUsageMonth = stringPreferencesKey("usage_month")
     private val keyUsageTokens = intPreferencesKey("usage_tokens")
+    /** 本月用量按模型分表（v0.56.7）：`月键\t模型\ttokens` 一行一条 */
+    private val keyUsageByModel = stringPreferencesKey("usage_by_model")
 
     /** 基础提示词：人设未填设定词时的中性 system prompt */
     val basePrompt: Flow<String> = store.data.map { it[keyBasePrompt] ?: AiPrompts.DEFAULT_BASE_PROMPT }
@@ -772,6 +783,68 @@ class SettingsRepository(
         }
     }
 
+    // ===== 自定义端点的手填音色库（v0.56.13）=====
+    //
+    // 自定义 OpenAI 兼容端点没有预置音色也没有克隆，手填 ID 是它唯一的音色来源；
+    // 单值键时代只能存一条、再填就覆盖（用户点名不合理）。改成行式小表
+    // （`id\t名字` 一行一条，与 [keyCloneVoiceNames] 同款）：可加多条、可起中文名、
+    // 可试听、可长按删除。硅基 / MiMo 的手填 ID 仍是单值（它们的主力是预置 + 克隆）。
+    // 旧的单值键在首次读取时自动迁移进来（名字先用 ID 顶着），搬完清旧键。
+    private val keyCustomVoices = ttsKey(TtsProvider.CUSTOM, "voices")
+
+    /** 自定义端点已录入的音色（id → 显示名，保持录入顺序） */
+    suspend fun customVoices(): List<Pair<String, String>> {
+        migrateLegacyCustomVoice()
+        return store.data.first()[keyCustomVoices]?.lines()
+            ?.mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size < 2 || parts[0].isBlank()) null else parts[0] to parts[1]
+            }
+            .orEmpty()
+    }
+
+    suspend fun addCustomVoice(id: String, name: String) {
+        val vid = id.trim()
+        if (vid.isBlank()) return
+        val clean = name.trim().replace('\t', ' ').replace('\n', ' ')
+        withContext(Dispatchers.IO) {
+            store.edit { prefs ->
+                val rows = (prefs[keyCustomVoices] ?: "").lines()
+                    .filter { it.isNotBlank() && it.substringBefore('\t') != vid }
+                    .toMutableList()
+                rows += "$vid\t${clean.ifBlank { vid }}"
+                prefs[keyCustomVoices] = rows.joinToString("\n")
+            }
+        }
+    }
+
+    suspend fun removeCustomVoice(id: String) {
+        if (id.isBlank()) return
+        withContext(Dispatchers.IO) {
+            store.edit { prefs ->
+                val rows = (prefs[keyCustomVoices] ?: "").lines()
+                    .filter { it.isNotBlank() && it.substringBefore('\t') != id }
+                if (rows.isEmpty()) prefs.remove(keyCustomVoices) else prefs[keyCustomVoices] = rows.joinToString("\n")
+            }
+        }
+    }
+
+    /** 旧单值手填 ID（v0.52.0~v0.56.12 只作用于自定义端点那一条）搬进多条表；幂等，搬完清旧键 */
+    private suspend fun migrateLegacyCustomVoice() {
+        val prefs = store.data.first()
+        val legacy = prefs[ttsKey(TtsProvider.CUSTOM, "manual_voice_id")]?.trim().orEmpty()
+        if (legacy.isEmpty()) return
+        val rows = prefs[keyCustomVoices]?.lines()?.filter { it.isNotBlank() }.orEmpty()
+        withContext(Dispatchers.IO) {
+            store.edit {
+                if (rows.none { it.substringBefore('\t') == legacy }) {
+                    it[keyCustomVoices] = (rows + "$legacy\t$legacy").joinToString("\n")
+                }
+                it.remove(ttsKey(TtsProvider.CUSTOM, "manual_voice_id"))
+            }
+        }
+    }
+
     /**
      * 克隆音色的**中文显示名**（v0.53.0），按服务端返回的 uri 索引。
      *
@@ -808,6 +881,77 @@ class SettingsRepository(
         }
     }
 
+    // ===== 克隆音色列表缓存（v0.56.5）=====
+    //
+    // 「音色」页的克隆那几条只有一个来源：服务商的 `/audio/voice/list`（一次网络往返）。
+    // 于是进页面时预置音色已经在了、克隆要等一个来回才"啪"地补进来 —— 用户原话
+    // "总是最后才加载出来，像卡了一样突然弹出来"。
+    // 这里把**上次拉到的结果**存在本机，进页面先用它把整份名单一次性渲染齐，再后台刷一次覆盖。
+
+    /** `<PROVIDER>\t<customName>\t<uri>\t<model>` 一行一条；切换服务商也各自保留自己那一份 */
+    private val keyClonedVoiceCache = stringPreferencesKey("tts_cloned_cache")
+
+    /** 该服务商上次拉到的克隆音色（本地读，毫秒级；失败/没缓存返回空表） */
+    suspend fun cachedClonedVoices(provider: TtsProvider): List<ClonedVoice> =
+        store.data.first()[keyClonedVoiceCache]?.lines()
+            ?.mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size < 4 || parts[0] != provider.name) return@mapNotNull null
+                val uri = parts[2]
+                if (uri.isBlank()) null else ClonedVoice(parts[1], uri, parts[3])
+            }
+            .orEmpty()
+
+    // ===== 隐藏的克隆音色（v0.56.12：音色页长按删除）=====
+    //
+    // 硅基的克隆音色实体在**服务商账号**里，App 不调服务商的删除接口——账号资产删了就找不回来，
+    // 而且「克隆音色」本来就不该被误触清掉。这里的"删除" = 加进这张隐藏表
+    // （`PROVIDER\tvoiceId` 一行一条，与 [keyCloneVoiceNames] 同款行式小表）：
+    // 名单里不再显示，缓存读取与网络刷新两条路径都按它过滤。手填 ID 与 MiMo 本机样本
+    // 是实打实的本地数据，删除就是真删（清键 / 删文件），不走这张表。
+    private val keyHiddenVoices = stringPreferencesKey("tts_hidden_voices")
+
+    /** 该服务商被用户删掉（隐藏）的克隆音色 uri 集合 */
+    suspend fun hiddenVoiceIds(provider: TtsProvider): Set<String> =
+        store.data.first()[keyHiddenVoices]?.lines()
+            ?.mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size == 2 && parts[0] == provider.name) parts[1].takeIf { it.isNotBlank() } else null
+            }?.toSet()
+            .orEmpty()
+
+    suspend fun hideVoice(provider: TtsProvider, voiceId: String) {
+        if (voiceId.isBlank()) return
+        withContext(Dispatchers.IO) {
+            store.edit { prefs ->
+                val table = (prefs[keyHiddenVoices] ?: "").lines().filter { it.isNotBlank() }.toMutableList()
+                val entry = "${provider.name}\t$voiceId"
+                if (entry !in table) table += entry
+                prefs[keyHiddenVoices] = table.joinToString("\n")
+            }
+        }
+    }
+
+    /** 覆盖写该服务商那一份缓存（别的服务商的条目原样留着） */
+    suspend fun setCachedClonedVoices(provider: TtsProvider, voices: List<ClonedVoice>) =
+        withContext(Dispatchers.IO) {
+            store.edit { prefs ->
+                val others = (prefs[keyClonedVoiceCache] ?: "").lines()
+                    .filter { it.isNotBlank() && it.substringBefore('\t') != provider.name }
+                val mine = voices.map { v ->
+                    listOf(
+                        provider.name,
+                        v.customName.replace('\t', ' ').replace('\n', ' '),
+                        v.uri.replace('\t', ' ').replace('\n', ' '),
+                        v.model.replace('\t', ' ').replace('\n', ' '),
+                    ).joinToString("\t")
+                }
+                val all = others + mine
+                if (all.isEmpty()) prefs.remove(keyClonedVoiceCache)
+                else prefs[keyClonedVoiceCache] = all.joinToString("\n")
+            }
+        }
+
     // ===== 人设主动关心（v0.38.0；v0.54.4 起**按角色**，只在每个角色的整页里开关）=====
 
     /** 哪些角色开了「主动关心」（`id\t1`） */
@@ -818,12 +962,81 @@ class SettingsRepository(
     suspend fun setPersonaProactive(personaId: Long, enabled: Boolean) =
         writeIdTable(keyPersonaProactive, personaId, if (enabled) "1" else "0")
 
-    /** 该角色上次主动关心的发送日（epochDay；当天已发过就不再发） */
-    suspend fun proactiveLastDayOf(personaId: Long): Long =
-        readIdTable(store.data.first()[keyPersonaProactiveLastDay])[personaId]?.toLongOrNull() ?: 0L
+    /**
+     * 该角色**今天**已经发了几条主动关心。
+     *
+     * v0.56.8：值从"上次发送日"扩成 `day:sent:planned`（见 [proactivePlannedToday]）；
+     * 老数据只有 day（`"20612"`）→ 按"当天发过 1 条"读，不丢、不重复发。
+     */
+    suspend fun proactiveSentTodayOf(personaId: Long, today: Long): Int {
+        val raw = readIdTable(store.data.first()[keyPersonaProactiveLastDay])[personaId] ?: return 0
+        val parts = raw.split(':')
+        if ((parts[0].toLongOrNull() ?: 0L) != today) return 0
+        // 老格式只有 day：当天算发过 1 条
+        return parts.getOrNull(1)?.toIntOrNull() ?: 1
+    }
 
-    suspend fun setProactiveLastDayOf(personaId: Long, day: Long) =
-        writeIdTable(keyPersonaProactiveLastDay, personaId, day.toString())
+    /**
+     * 该角色**今天打算发几条**：在 `1..上限` 里**随机摇一个**（上限见 [proactiveDailyLimit]）。
+     *
+     * - 摇出来就落盘，当天不再重摇（否则每响一次闹钟就重摇一次，条数没个准）；
+     * - 上限后来改小了 → 按新上限截断；改大了 → 今天仍按已经摇好的走，明天才用新上限；
+     * - 上限 ≤ 1 时恒为 1（"最多 1 条"就是每天 1 条）。
+     */
+    suspend fun proactivePlannedToday(personaId: Long, today: Long, limit: Int): Int {
+        val raw = readIdTable(store.data.first()[keyPersonaProactiveLastDay])[personaId]
+        val parts = raw?.split(':').orEmpty()
+        val day = parts.getOrNull(0)?.toLongOrNull() ?: 0L
+        val sent = if (day == today) (parts.getOrNull(1)?.toIntOrNull() ?: 1) else 0
+        if (day == today) {
+            val planned = parts.getOrNull(2)?.toIntOrNull() ?: 0
+            if (planned > 0) return if (limit <= 0) planned else planned.coerceAtMost(limit)
+        }
+        val safeLimit = limit.coerceAtLeast(1)
+        val planned = if (safeLimit <= 1) 1 else (1..safeLimit).random()
+        writeIdTable(keyPersonaProactiveLastDay, personaId, "$today:$sent:$planned")
+        return planned
+    }
+
+    /** 落盘"今天已发 [sent] 条 / 计划 [planned] 条"；[planned] 由 [proactivePlannedToday] 摇出后传回来 */
+    suspend fun setProactiveToday(personaId: Long, day: Long, sent: Int, planned: Int) =
+        writeIdTable(keyPersonaProactiveLastDay, personaId, "$day:$sent:${planned.coerceAtLeast(1)}")
+
+    /** 该角色上次发送日（epochDay，0 = 没发过）；用于"这一轮挑谁"时按最久没发的优先 */
+    suspend fun proactiveLastDayOf(personaId: Long): Long =
+        readIdTable(store.data.first()[keyPersonaProactiveLastDay])[personaId]
+            ?.substringBefore(':')?.toLongOrNull() ?: 0L
+
+    /**
+     * 该角色主动关心的**随机时间段**（v0.56.8 第二批：**每个角色一套**）：`起 HH:mm` to `止 HH:mm`。
+     * 每天在这个区间里随机取时刻发；跨零点也支持（止 ≤ 起 时视为到第二天）。
+     * 没单独设过 → 默认 20:00–23:00。
+     */
+    fun proactiveWindow(personaId: Long): Flow<Pair<String, String>> = store.data.map { prefs ->
+        val raw = readIdTable(prefs[keyPersonaProactiveWindow])[personaId] ?: ""
+        val start = raw.substringBefore('|', "").trim().ifEmpty { DEFAULT_PROACTIVE_WINDOW_START }
+        val end = raw.substringAfter('|', "").trim().ifEmpty { DEFAULT_PROACTIVE_WINDOW_END }
+        start to end
+    }
+
+    suspend fun setProactiveWindow(personaId: Long, start: String, end: String) =
+        writeIdTable(keyPersonaProactiveWindow, personaId, "${start.trim()}|${end.trim()}")
+
+    /**
+     * 该角色主动关心**每天最多几条**（v0.56.8 第二批：**每个角色一套**）。
+     *
+     * 是**上限不是定额**：实际发几条在 `1..上限` 里随机（见 [proactivePlannedToday]），
+     * 不超过这个数就行。什么数字都能填（小于 1 按 1 算，上限 999 —— 再大就是几分钟一条了）；
+     * 没设过 = 1。
+     */
+    fun proactiveDailyLimit(personaId: Long): Flow<Int> = store.data.map { prefs ->
+        val raw = readIdTable(prefs[keyPersonaProactiveLimit])[personaId]
+        (raw?.trim()?.toIntOrNull() ?: 1).coerceIn(1, 999)
+    }
+
+    suspend fun setProactiveDailyLimit(personaId: Long, count: Int) =
+        writeIdTable(keyPersonaProactiveLimit, personaId, count.coerceIn(1, 999).toString())
+
 
     // ===== AI 主动打电话（v0.53.6：**按人设独立配置**）=====
     //
@@ -1104,16 +1317,34 @@ class SettingsRepository(
     /**
      * 我打给 AI 时，TA 隔几秒才接听（默认 3 秒；0 = 立刻接）。
      * 纯粹为了像真电话 —— 秒接反而显得假。**只影响去电**，AI 打来的来电不受影响。
+     * v0.56.6：秒数改成**用户自定义输入**（原来是几个固定档位），上限放到 600 秒（10 分钟）。
      */
     val aiAnswerDelaySeconds: Flow<Int> = store.data.map { it[keyAiAnswerDelay] ?: 3 }
 
     suspend fun setAiAnswerDelaySeconds(seconds: Int) {
-        store.edit { it[keyAiAnswerDelay] = seconds.coerceIn(0, 30) }
+        store.edit { it[keyAiAnswerDelay] = seconds.coerceIn(0, 600) }
     }
 
     /** 本月 API 用量（total_tokens 累计；跨月由 UsageTracker.add 重置）。返回 月键 to tokens */
     val monthlyUsage: Flow<Pair<String, Int>> = store.data.map { prefs ->
         (prefs[keyUsageMonth] ?: "") to (prefs[keyUsageTokens] ?: 0)
+    }
+
+    /**
+     * 本月用量**按模型分开看**（v0.56.7）：`月键 to (模型 → tokens)`，按 tokens 降序。
+     * 只有服务商回了 usage 才记（拿不到的不猜），与总数同一口径。
+     */
+    val monthlyUsageByModel: Flow<Pair<String, List<Pair<String, Int>>>> = store.data.map { prefs ->
+        val month = prefs[keyUsageMonth] ?: ""
+        val rows = (prefs[keyUsageByModel] ?: "").lines()
+            .mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size < 3 || parts[0] != month) return@mapNotNull null
+                val tokens = parts[2].trim().toIntOrNull() ?: return@mapNotNull null
+                parts[1] to tokens
+            }
+            .sortedByDescending { it.second }
+        month to rows
     }
 
     suspend fun addUsageTokens(month: String, tokens: Int) {
@@ -1122,6 +1353,30 @@ class SettingsRepository(
             val base = if (storedMonth == month) prefs[keyUsageTokens] ?: 0 else 0
             prefs[keyUsageMonth] = month
             prefs[keyUsageTokens] = base + tokens
+        }
+    }
+
+    /**
+     * 记一笔**某个模型**的用量（v0.56.7）。表按"月键 → 模型 → 累计 tokens"存成 `月\t模型\ttokens`，
+     * 跨月整体重置（与总数一致）；模型名里的制表符/换行先洗掉，免得把行拆坏。
+     */
+    suspend fun addUsageTokensForModel(month: String, model: String, tokens: Int) {
+        if (tokens <= 0) return
+        val label = model.trim().replace('\t', ' ').replace('\n', ' ').ifBlank { "（未填模型）" }
+        store.edit { prefs ->
+            val rows = (prefs[keyUsageByModel] ?: "").lines()
+                .filter { it.isNotBlank() }
+                // 跨月：旧月的行整批丢掉（总数也是这个口径）
+                .filter { it.substringBefore('\t') == month }
+                .toMutableList()
+            val index = rows.indexOfFirst { it.substringBeforeLast('\t').substringAfter('\t') == label }
+            if (index >= 0) {
+                val old = rows[index].substringAfterLast('\t').toIntOrNull() ?: 0
+                rows[index] = "$month\t$label\t${old + tokens}"
+            } else {
+                rows += "$month\t$label\t$tokens"
+            }
+            prefs[keyUsageByModel] = rows.joinToString("\n")
         }
     }
 

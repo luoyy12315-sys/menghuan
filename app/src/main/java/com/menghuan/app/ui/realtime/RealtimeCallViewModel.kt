@@ -133,7 +133,7 @@ class RealtimeCallViewModel(
             val eng = PipelineVoiceCallEngine(
                 app,
                 client,
-                TtsClients.from(ttsConfig),
+                TtsClients.from(ttsConfig, app),
                 app.applicationScope,
             ) { p, st, et, turns, status, _ ->
                 // 第 6 个参数（谁打的）用闭包里的 initiatedByAi，引擎那边只是转发
