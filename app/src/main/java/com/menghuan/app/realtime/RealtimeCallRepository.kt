@@ -21,6 +21,8 @@ class RealtimeCallRepository(private val db: AppDatabase) {
         status: String,
         /** v0.53.7：true = 这通电话是 AI 打来的 → 记录卡落在 AI 那一侧（否则落在用户侧） */
         initiatedByAi: Boolean = false,
+        /** v0.58.0：这通是视频通话 → 记录卡写「视频通话」而不是「语音通话」 */
+        isVideoCall: Boolean = false,
     ) {
         val sessionId = db.callDao().insertSession(
             CallSession(
@@ -52,7 +54,8 @@ class RealtimeCallRepository(private val db: AppDatabase) {
             db.messageDao().insert(
                 com.menghuan.app.data.model.ChatMessage(
                     conversationId = personaId,
-                    content = "语音通话 · ${minutes}分${seconds.toString().padStart(2, '0')}秒",
+                    content = "${if (isVideoCall) "视频通话" else "语音通话"} · " +
+                        "${minutes}分${seconds.toString().padStart(2, '0')}秒",
                     isFromUser = !initiatedByAi,
                     timestamp = endedAt,
                     mediaKind = com.menghuan.app.data.model.MediaKind.CALL.name,

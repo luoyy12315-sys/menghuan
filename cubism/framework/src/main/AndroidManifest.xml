@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AGP 8 不再允许 manifest 里写 package（命名空间由 build.gradle.kts 的 namespace 提供），
+     官方 SDK 原文件带着这个属性会直接构建失败，这是 vendor 源码唯一的改动点。 -->
+<manifest />

@@ -8,6 +8,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,6 +40,8 @@ import androidx.compose.ui.unit.sp
 import com.menghuan.app.data.AiCallLogic
 import com.menghuan.app.data.AiCallRule
 import com.menghuan.app.data.CallRingtone
+import com.menghuan.app.data.CallVisualStore
+import com.menghuan.app.data.CallVisualType
 import com.menghuan.app.data.DEFAULT_PROACTIVE_WINDOW_END
 import com.menghuan.app.data.DEFAULT_PROACTIVE_WINDOW_START
 import com.menghuan.app.data.ProactiveChat
@@ -63,9 +66,12 @@ import com.menghuan.app.ui.settings.settingsContainer
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
+import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 「电话」里的默认来电时刻（用户不填就用它） */
 private const val DEFAULT_CALL_TIME = "21:00"
@@ -129,6 +135,9 @@ fun ChatSettingsScreen(
     // 联网搜索（按角色）
     val chatWeb by repo.chatWebSearch.collectAsState(initial = emptyMap())
     val webOn = chatWeb[personaId] == true
+    // v0.59.0：自动朗读也是**按角色**一条（与联网搜索同一套 `id\t1|0` 表）
+    val readAloudMap by repo.chatReadAloud.collectAsState(initial = emptyMap())
+    val readOn = readAloudMap[personaId] == true
     // 人设主动关心（按角色）
     val proactive by repo.personaProactive.collectAsState(initial = emptyMap())
     val proactiveOn = proactive[personaId] == true
@@ -137,8 +146,8 @@ fun ChatSettingsScreen(
         .collectAsState(initial = DEFAULT_PROACTIVE_WINDOW_START to DEFAULT_PROACTIVE_WINDOW_END)
     val proactiveLimit by repo.proactiveDailyLimit(personaId).collectAsState(initial = 1)
     // 会话级资产
-    val arts by repo.personaArt.collectAsState(initial = emptyMap())
-    val live2ds by repo.personaLive2d.collectAsState(initial = emptyMap())
+    // v0.58.0：persona_art / persona_live2d 这两张老表（DataStore 里的 id→单文件路径）已废弃，
+    // 通话形象改走 CallVisualStore（完整模型包 + metadata.json），见 Live2dVisualSheet / VideoVisualSheet。
     val backgrounds by repo.chatBackground.collectAsState(initial = emptyMap())
     // 铃声
     val library by repo.callRingtoneLibrary.collectAsState(initial = emptyList())
@@ -160,6 +169,21 @@ fun ChatSettingsScreen(
     val overrideId by repo.personaApiProfileId(personaId).collectAsState(initial = null)
 
     var showVoiceSheet by remember { mutableStateOf(false) }
+    // v0.58.1：定时消息的条目列表弹层（页面上一行「定时消息」点开就是它，条目不再摊在外面）
+    var showScheduledSheet by remember { mutableStateOf(false) }
+    // v0.58.0：通话形象的两个上传口（Live2D 模型包 / 伪视频素材）
+    var showLive2dSheet by remember { mutableStateOf(false) }
+    var showVideoAssetSheet by remember { mutableStateOf(false) }
+    // v0.58.1（用户拍板）：两行合成**一行「视频通话形象」**，点开先选类型再进对应的上传弹层
+    var showVisualTypeSheet by remember { mutableStateOf(false) }
+    var visualType by remember { mutableStateOf(CallVisualType.NONE) }
+    // 副标题读的是 metadata.json 里的 type。**进页面就得读一次**：
+    // 以前只在"展开选择弹层"那一刻读，于是刚进设置页那一行永远写着「未设置」，
+    // 模型包明明传好了、退出来看还是未设置（用户反馈"设置了还是经常显示未设置"）。
+    // 三个开关都进 key：任何一层弹层开/关都会重读，传完立刻看得见结果。
+    LaunchedEffect(personaId, showVisualTypeSheet, showLive2dSheet, showVideoAssetSheet) {
+        visualType = withContext(Dispatchers.IO) { CallVisualStore.read(context, personaId).type }
+    }
     var showApiSwitch by remember { mutableStateOf(false) }
     var showRingtoneSheet by remember { mutableStateOf(false) }
     var showCallSheet by remember { mutableStateOf(false) }
@@ -254,20 +278,8 @@ fun ChatSettingsScreen(
         }
     }
 
-    val artPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let {
-            importAsset(it, "persona_art", "jpg", "立绘已保存") { p ->
-                scope.launch { repo.setPersonaArt(personaId, p) }
-            }
-        }
-    }
-    val live2dPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let {
-            importAsset(it, "persona_live2d", "bin", "Live 2D 资源已保存") { p ->
-                scope.launch { repo.setPersonaLive2d(personaId, p) }
-            }
-        }
-    }
+    // v0.58.0：旧的「角色立绘 / Live 2D 单文件」两条上传线整个作废（单文件没法渲染），
+    // 换成两个真能用的弹层：Live2D 模型包 zip + 伪视频多素材状态指认。
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let {
             importAsset(it, "chat_background", "jpg", "聊天背景已保存") { p ->
@@ -282,67 +294,21 @@ fun ChatSettingsScreen(
     SettingsPage(title = "会话设置", onBack = onBack) {
         Spacer(Modifier.height(6.dp))
 
+        // ===== v0.58.1（用户拍板）：入口按用途分**五组**平铺 =====
+        //
+        // 规则：**不加分组标题、不做折叠展开**，组与组之间只留一条浅灰缝隙（[GroupSeam]）；
+        // 组内各行仍由 [SettingsLineRow] 的发丝线分隔，**每组的最后一行 divider=false**
+        // （线断在缝隙前面会看着像"悬空的线"）。序号 index 全页连续，错峰入场才不乱。
+        //
+        // ① 核心对话基础（最高频，决定聊天本质）
         SettingsLineRow("编辑人设", titleSize = 17.sp, index = 0) {
             onOpen("persona_editor/$personaId")
         }
-        // 电话：开关、来电时刻、阈值都在底部弹层里
-        SettingsLineRow("电话", titleSize = 17.sp, index = 1) { showCallSheet = true }
-        SettingsLineRow(
-            "角色立绘",
-            titleSize = 17.sp,
-            index = 2,
-            onClick = {
-                val current = arts[personaId]
-                if (current.isNullOrBlank()) artPicker.launch("image/*") else scope.launch {
-                    repo.setPersonaArt(personaId, "")
-                }
-            },
-        )
-        SettingsLineRow(
-            "Live 2D",
-            titleSize = 17.sp,
-            index = 3,
-            onClick = {
-                val current = live2ds[personaId]
-                if (current.isNullOrBlank()) live2dPicker.launch("*/*") else scope.launch {
-                    repo.setPersonaLive2d(personaId, "")
-                }
-            },
-        )
-        SettingsLineRow(
-            "聊天背景",
-            titleSize = 17.sp,
-            index = 4,
-            onClick = { showBackgroundSheet = true },
-        )
-        SettingsLineRow("音色", titleSize = 17.sp, index = 5) { showVoiceSheet = true }
-        SettingsLineRow("模型", titleSize = 17.sp, index = 6) { showApiSwitch = true }
-        // 铃声：点开是底部弹层里的铃声列表
-        SettingsLineRow("铃声", titleSize = 17.sp, index = 7) { showRingtoneSheet = true }
-
-        SettingsLineRow(
-            "定时消息",
-            titleSize = 17.sp,
-            index = 8,
-            onClick = {
-                editing = ScheduledMessage(id = "sm" + System.currentTimeMillis(), personaId = personaId)
-            },
-        )
-        myScheduled.forEachIndexed { i, m ->
-            SettingsLineRow(
-                m.time,
-                titleSize = 17.sp,
-                index = 9 + i,
-                onClick = { editing = m },
-            )
-        }
-
-        // 底部三行（用户点名往下放）：两个开关行 + 查看聊天记录
-        val bottomBase = 9 + myScheduled.size
+        SettingsLineRow("模型", titleSize = 17.sp, index = 1) { showApiSwitch = true }
         SettingsLineRow(
             "联网搜索",
             titleSize = 17.sp,
-            index = bottomBase,
+            index = 2,
             onClick = { scope.launch { repo.setChatWebSearchEnabled(personaId, !webOn) } },
             trailing = {
                 NeuSwitch(checked = webOn, onToggle = { on ->
@@ -350,14 +316,73 @@ fun ChatSettingsScreen(
                 })
             },
         )
+        // v0.59.0（用户拍板）：自动朗读**按角色各开各的**，放在第一组最后一行。
+        // 默认关：开着它这个角色的每条回复都会发一次合成请求，那是真花额度的；
+        // 长按菜单里的「朗读」不受这个开关管，随时能点。
+        SettingsLineRow(
+            "自动朗读",
+            titleSize = 17.sp,
+            index = 3,
+            divider = false,
+            onClick = { scope.launch { repo.setChatReadAloudEnabled(personaId, !readOn) } },
+            trailing = {
+                NeuSwitch(checked = readOn, onToggle = { on ->
+                    scope.launch { repo.setChatReadAloudEnabled(personaId, on) }
+                })
+            },
+        )
+
+        GroupSeam()
+
+        // ② 视觉形象设置（次高频，外观类聚合）
+        // v0.58.1：Live2D 与伪视频**合成这一行**，点进去先选类型（用户拍板）
+        SettingsLineRow(
+            "视频通话形象",
+            titleSize = 17.sp,
+            subtitle = when (visualType) {
+                CallVisualType.LIVE2D -> "Live2D 模型包"
+                CallVisualType.VIDEO -> "伪视频素材"
+                CallVisualType.NONE -> "未设置（通话显示头像）"
+            },
+            index = 4,
+            onClick = { showVisualTypeSheet = true },
+        )
+        SettingsLineRow(
+            "聊天背景",
+            titleSize = 17.sp,
+            index = 5,
+            divider = false,
+            onClick = { showBackgroundSheet = true },
+        )
+
+        GroupSeam()
+
+        // ③ 音频与通话设置（声音类聚合）
+        SettingsLineRow("音色", titleSize = 17.sp, index = 6) { showVoiceSheet = true }
+        // 铃声：点开是底部弹层里的铃声列表
+        SettingsLineRow("铃声", titleSize = 17.sp, index = 7) { showRingtoneSheet = true }
+        // 电话：开关、来电时刻、阈值都在底部弹层里
+        SettingsLineRow("电话", titleSize = 17.sp, index = 8, divider = false) { showCallSheet = true }
+
+        GroupSeam()
+
+        // ④ 主动互动提醒（触发类功能聚合）
         // v0.56.8（用户点名）：开关**挪进弹层**，这一行点开就是「主动关心」的设置
         SettingsLineRow(
             "人设主动关心",
             titleSize = 17.sp,
-            index = bottomBase + 1,
+            index = 9,
             onClick = { showProactiveSheet = true },
         )
-        SettingsLineRow("查看聊天记录", titleSize = 17.sp, index = bottomBase + 2, divider = false) {
+        // v0.58.1：定时消息的**条目不再摊在页面上**，全部收进这个弹层（点一条改它）
+        SettingsLineRow("定时消息", titleSize = 17.sp, index = 10, divider = false) {
+            showScheduledSheet = true
+        }
+
+        GroupSeam()
+
+        // ⑤ 辅助工具（最低频，行业通用放底部）
+        SettingsLineRow("查看聊天记录", titleSize = 17.sp, index = 11, divider = false) {
             onOpen("chat_history/$personaId")
         }
 
@@ -390,6 +415,87 @@ fun ChatSettingsScreen(
     }
 
     // ===== 铃声选择（底部弹层，v0.54.6）=====
+    // v0.58.1：通话形象（视频通话的视觉层）——两个上传口各自一个弹层
+    if (showScheduledSheet) {
+        // 定时消息的条目以前是一条条摊在页面上（v0.54.6 的老做法），现在收进这个弹层：
+        // 页面只留一行「定时消息」，点条目改它、点底部按钮加新的。
+        NeuSheetScaffold(title = "定时消息", onDismiss = { showScheduledSheet = false }) {
+            Spacer(Modifier.height(6.dp))
+            myScheduled.forEach { m ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(m.time, fontSize = 15.sp, color = TextPrimary)
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        m.instruction.ifBlank { "（没写要说什么）" },
+                        fontSize = 12.sp,
+                        color = MutedText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (!m.enabled) {
+                        Text("已停用", fontSize = 11.sp, color = MutedText)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    NeuTextButton("编辑", onClick = {
+                        showScheduledSheet = false
+                        editing = m
+                    })
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            NeuTextButton(text = "＋ 添加定时消息", onClick = {
+                showScheduledSheet = false
+                editing = ScheduledMessage(id = "sm" + System.currentTimeMillis(), personaId = personaId)
+            })
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+
+    // v0.58.1：一行管两种形象 —— 先在这里选类型，再进各自的上传弹层。
+    // 刻意**不叠两层底部弹层**（v0.57 那条教训：两层弹层会把标题/返回/遮罩搅成一锅），
+    // 所以这里是"关掉自己、再打开对面"。
+    if (showVisualTypeSheet) {
+        NeuSheetScaffold(title = "视频通话形象", onDismiss = { showVisualTypeSheet = false }) {
+            Spacer(Modifier.height(6.dp))
+            NeuSheetRow(
+                icon = MIcons.Person,
+                title = "Live2D 模型包",
+                subtitle = "上传 zip 模型包，通话里演 TA 的模型，会呼吸眨眼、实时对口型",
+                selected = visualType == CallVisualType.LIVE2D,
+                onClick = {
+                    showVisualTypeSheet = false
+                    showLive2dSheet = true
+                },
+            )
+            // v0.60：两张卡片的间距。原来两张卡直接上下贴着，实心描边连成一片，
+            // 看着像一张卡被劈成两半（用户点名"紧贴在一起"）。8dp 是全应用弹层行的既有节奏
+            // （见 ApiConfigScreen 的模型列表、定时消息弹层）。
+            Spacer(Modifier.height(8.dp))
+            NeuSheetRow(
+                icon = MIcons.Play,
+                title = "伪视频素材",
+                subtitle = "上传几段短视频，按待机/倾听/思考/说话切换画面",
+                selected = visualType == CallVisualType.VIDEO,
+                onClick = {
+                    showVisualTypeSheet = false
+                    showVideoAssetSheet = true
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+
+    if (showLive2dSheet) {
+        Live2dVisualSheet(personaId = personaId, onDismiss = { showLive2dSheet = false })
+    }
+    if (showVideoAssetSheet) {
+        VideoVisualSheet(personaId = personaId, onDismiss = { showVideoAssetSheet = false })
+    }
+
     if (showRingtoneSheet) {
         NeuSheetScaffold(title = "铃声", onDismiss = { showRingtoneSheet = false }) {
             Spacer(Modifier.height(6.dp))
@@ -760,5 +866,18 @@ private fun RingtoneOption(
         onClick = onClick,
         selected = selected,
     )
+    Spacer(Modifier.height(8.dp))
+}
+
+/**
+ * 组与组之间那条浅灰缝隙（v0.58.1，用户拍板的分组方式）。
+ *
+ * 页面**还是一张平铺列表**：不加分组标题、不做折叠展开，只靠这条缝把五组切开。
+ * 配合每组的最后一行 `divider = false`——发丝线断在灰缝前面会悬着像没画完。
+ */
+@Composable
+private fun GroupSeam() {
+    Spacer(Modifier.height(8.dp))
+    Box(Modifier.fillMaxWidth().height(8.dp).background(NeuTrack))
     Spacer(Modifier.height(8.dp))
 }

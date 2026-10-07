@@ -143,10 +143,12 @@ import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
 import com.menghuan.app.ui.theme.personaBrush
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -175,12 +177,61 @@ fun ChatScreen(
     onBack: () -> Unit,
     showBack: Boolean = true,   // 平板双栏：右栏嵌入时隐藏返回键（会话切换走左栏点选）
     onOpenCall: () -> Unit = {}, // v0.46.0：顶栏电话图标 → 实时语音通话页
+    /** v0.58.0：加号面板「视频通话」格 → 视频通话页（真实声音仍是同一套实时通话引擎） */
+    onOpenVideoCall: () -> Unit = {},
     /** v0.51.0：设置链改成全屏页，聊天页里"去配置 / 去下载"的出口一律把路由名交出去 */
     onOpenSettings: (String) -> Unit = {},
     vm: ChatViewModel = viewModel(key = "chat_$personaId", factory = ChatViewModel.factory(personaId)),
 ) {
     val uiState by vm.uiState.collectAsState()
     val persona by vm.activePersona.collectAsState()
+    // v0.58.0：视频通话入口的先决条件 = 这个人设绑过形象。列里有就直接放行（人设流里就有，不摸磁盘）。
+    // v0.60：列里是 NONE 时**再读一次盘上的 metadata** —— 口径是"两边不一致以文件为准"
+    // （AGENTS §零.7）。存量向量的真实来源：v0.58.0 的编辑人设曾把 `videoVisualType` 重置成 NONE，
+    // 而素材文件还在，于是形象明明配好了、点「视频」却被拦在"还没有通话形象"上。
+    val columnVisual = com.menghuan.app.data.CallVisualType.fromName(persona?.videoVisualType)
+    var hasCallVisual by remember(personaId) {
+        mutableStateOf(columnVisual != com.menghuan.app.data.CallVisualType.NONE)
+    }
+    val visualCheckContext = LocalContext.current.applicationContext
+    LaunchedEffect(personaId, persona?.videoVisualType) {
+        if (columnVisual != com.menghuan.app.data.CallVisualType.NONE) {
+            hasCallVisual = true
+            return@LaunchedEffect
+        }
+        hasCallVisual = withContext(Dispatchers.IO) {
+            runCatching {
+                val app = visualCheckContext as com.menghuan.app.MenghuanApp
+                com.menghuan.app.data.CallVisualStore.read(app, personaId).isUsable
+            }.getOrDefault(false)
+        }
+    }
+    var showNoVisualSheet by remember { mutableStateOf(false) }
+    if (showNoVisualSheet) {
+        NeuSheetScaffold(title = "还没有通话形象", onDismiss = { showNoVisualSheet = false }) {
+            Text(
+                "视频通话要有角色形象：Live2D 模型包，或几段按通话状态切换的短视频。",
+                fontSize = 14.sp,
+                color = MutedText,
+            )
+            Spacer(Modifier.height(14.dp))
+            NeuTextButton(
+                text = "去添加形象",
+                onClick = {
+                    showNoVisualSheet = false
+                    onOpenSettings("chat_settings/$personaId")
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            NeuTextButton(
+                text = "先用语音通话",
+                onClick = {
+                    showNoVisualSheet = false
+                    onOpenCall()
+                },
+            )
+        }
+    }
     val taskSuggestions by vm.taskSuggestions.collectAsState()
     var viewerPath by remember { mutableStateOf<String?>(null) } // 全屏图片查看（v0.39.0）
     var messageMenu by remember { mutableStateOf<ChatMessage?>(null) }
@@ -830,15 +881,19 @@ fun ChatScreen(
                                             )
                                         }
 
-                                    // 语音通话记录卡（v0.49.0）：挂断后落进聊天流，点开看文字转写；
+                                    // 通话记录卡（v0.49.0；v0.60 起分语音/视频）：
+                                    // 挂断后落进聊天流，点开看文字转写；
                                     // v0.54.6：**长按也弹消息菜单**（以前只有 clickable，
                                     // 长按完全没反应——用户反馈"长按语音通话条唤起不了菜单"）
                                     MediaKind.CALL -> {
                                         // v0.55.0：整卡重绘（图标 + 方向 + 时长 + 未接通），见 CallRecordCard
+                                        // v0.60：内容前缀就是通话类型（v0.58.0 起 saveCall 写的是
+                                        // 「视频通话 · …」/「语音通话 · …」），据此把标题与图标一起换掉
                                         val duration = msg.content
                                             .substringAfter("· ", msg.content)
                                             .trim()
                                             .ifBlank { msg.content }
+                                        val isVideoCall = msg.content.trimStart().startsWith("视频通话")
                                         Box(
                                             Modifier.fillMaxWidth(),
                                             contentAlignment = if (msg.isFromUser) Alignment.CenterEnd
@@ -847,6 +902,7 @@ fun ChatScreen(
                                             CallRecordCard(
                                                 duration = duration,
                                                 outgoing = msg.isFromUser,
+                                                video = isVideoCall,
                                                 maxWidth = bubbleMaxWidth,
                                                 onClick = {
                                                     callLogSession = msg.attachmentPath.toLongOrNull() ?: 0L
@@ -1149,14 +1205,21 @@ fun ChatScreen(
                         if (voiceMode) {
                             // 回打字态：要求键盘立刻回来（用户点的是"键盘"图标）
                             switchOutputMode(nextPanel = 0, nextVoice = false, showKeyboard = true)
-                        } else if (!com.menghuan.app.data.AsrModelManager.isReady(context)) {
-                            // 模型没下载就进语音态，用户按住说完只会得到一条空转写——
-                            // 与其让他录完才发现，不如这一下就把下载入口摆出来。
-                            Toast.makeText(context, "语音识别模型未下载", Toast.LENGTH_SHORT).show()
-                            onOpenSettings(SettingsRoutes.ASR_MODEL)
                         } else {
-                            // 切到语音态：收键盘、收面板（三者互斥），不要键盘
-                            switchOutputMode(nextPanel = 0, nextVoice = true, showKeyboard = false)
+                            // v0.59.0：识别引擎现在有离线/在线两条路，**只有选离线时才要求模型已下载**。
+                            // 引擎存在 DataStore 里，读它要挂起，所以这一下的判定挪进协程里做。
+                            scope.launch {
+                                val online = com.menghuan.app.data.SpeechToText.isOnlineEngine(context)
+                                if (!online && !com.menghuan.app.data.AsrModelManager.isReady(context)) {
+                                    // 模型没下载就进语音态，用户按住说完只会得到一条空转写——
+                                    // 与其让他录完才发现，不如这一下就把下载入口摆出来。
+                                    Toast.makeText(context, "离线识别模型未下载", Toast.LENGTH_SHORT).show()
+                                    onOpenSettings(SettingsRoutes.ASR_MODEL)
+                                } else {
+                                    // 切到语音态：收键盘、收面板（三者互斥），不要键盘
+                                    switchOutputMode(nextPanel = 0, nextVoice = true, showKeyboard = false)
+                                }
+                            }
                         }
                     },
                     enabled = !uiState.isStreaming,
@@ -1224,8 +1287,17 @@ fun ChatScreen(
                                                     audioPath = file.absolutePath,
                                                 ).orEmpty()
                                                 if (text.isBlank()) {
-                                                    // 没听清时**不丢内容**：照发语音，并说清为什么不是文字
-                                                    Toast.makeText(context, "没听清，已发语音", Toast.LENGTH_SHORT).show()
+                                                    // 没听清时**不丢内容**：照发语音，并说清为什么不是文字。
+                                                    // v0.59.0：原因现在是有内容的一句话（在线那一路会带回
+                                                    // 服务端原话：Key 错 / 这家没这个接口 / 超时），
+                                                    // 别再用一句"没听清"把配置问题糊掉。
+                                                    val why = com.menghuan.app.data.SpeechToText.lastFailure
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (why.isNullOrBlank()) "没听清，已发语音"
+                                                        else "识别失败：$why（已改发语音）",
+                                                        Toast.LENGTH_LONG,
+                                                    ).show()
                                                     vm.sendVoice(file.absolutePath, duration, "")
                                                 } else {
                                                     vm.sendVoiceAsText(text)
@@ -1241,11 +1313,20 @@ fun ChatScreen(
                                             val (file, duration) = result
                                             scope.launch {
                                                 // 录完再转写（录音期间绝不碰识别器：会抢麦克风）。
-                                                // 只有端侧离线一级，识别不出来就发空文字，语音条照发。
+                                                // 识别不出来就发空文字、语音条照发（原因在 SpeechToText.lastFailure）。
                                                 val text = com.menghuan.app.data.SpeechToText.transcribe(
                                                     context = context,
                                                     audioPath = file.absolutePath,
                                                 ) ?: ""
+                                                if (text.isBlank()) {
+                                                    // 与"滑到转文字"那条同样的口径：配置问题要说得出原因
+                                                    val why = com.menghuan.app.data.SpeechToText.lastFailure
+                                                    if (!why.isNullOrBlank()) {
+                                                        Toast.makeText(
+                                                            context, "识别失败：$why", Toast.LENGTH_LONG,
+                                                        ).show()
+                                                    }
+                                                }
                                                 vm.sendVoice(file.absolutePath, duration, text)
                                             }
                                         }
@@ -1359,6 +1440,12 @@ fun ChatScreen(
                             onFile = { panel = 0; filePicker.launch(arrayOf("*/*")) },
                             // v0.47.0：通话入口收进加号面板第四格（收面板 → 进通话页）
                             onCall = { panel = 0; onOpenCall() },
+                            // v0.58.0：视频通话。这个人设没配通话形象时不直接进
+                            //（进去了也只能看头像，用户会以为坏了），先问一句要不要去添加。
+                            onVideoCall = {
+                                panel = 0
+                                if (hasCallVisual) onOpenVideoCall() else showNoVisualSheet = true
+                            },
                         )
                     }
                 }
@@ -1506,6 +1593,15 @@ fun ChatScreen(
                 }
             } else null,
             transcriptShown = voiceTranscriptIds.contains(message.id),
+            // v0.59.0：朗读这一条（有文字才给这一格）。正在念的同一条再点 = 停。
+            onReadAloud = if (message.content.isNotBlank()) {
+                {
+                    vm.readAloud(message.id, message.content)
+                    messageMenu = null
+                    messageMenuAnchor = null
+                }
+            } else null,
+            reading = uiState.readingId == message.id,
             onDismiss = {
                 messageMenu = null
                 messageMenuAnchor = null
@@ -1625,6 +1721,9 @@ private fun MessageActionMenu(
     reasoningShown: Boolean,
     onToggleTranscript: (() -> Unit)?,
     transcriptShown: Boolean,
+    /** v0.59.0：朗读这一条（null = 这条没文字可念，不出现这一格） */
+    onReadAloud: (() -> Unit)? = null,
+    reading: Boolean = false,
     onDismiss: () -> Unit,
 ) {
     val density = LocalDensity.current
@@ -1650,6 +1749,17 @@ private fun MessageActionMenu(
                     if (reasoningShown) "收起思考" else "思考过程",
                     onToggleReasoning,
                     active = reasoningShown,
+                ),
+            )
+        }
+        if (onReadAloud != null) {
+            // 正在念的这条，这一格就是「停止朗读」——不用另找停止按钮
+            add(
+                MessageMenuEntry.Action(
+                    MIcons.VoiceWave,
+                    if (reading) "停止朗读" else "朗读",
+                    onReadAloud,
+                    active = reading,
                 ),
             )
         }

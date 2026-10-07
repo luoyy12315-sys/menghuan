@@ -85,6 +85,8 @@ fun TtsConfigScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(24.dp))
             return@SettingsPage
         }
+        // v0.59.0：「自动朗读 AI 的回复」的开关**不在这页**——它按角色各开各的，
+        // 在「会话设置」第一组最后那行（这里只配"用哪家、哪个模型、哪个音色"）。
         if (configured.isEmpty()) {
             Text(
                 "还没有接入语音模型",

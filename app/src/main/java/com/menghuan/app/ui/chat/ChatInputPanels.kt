@@ -278,7 +278,7 @@ private fun Modifier.combinedClickableSticker(
 }
 
 /**
- * 加号面板：相册 / 拍摄 / 文件 / 通话 四格。
+ * 加号面板：相册 / 拍摄 / 文件 / 通话 / 视频 五格。
  * v0.45.0：高度再压到 104dp、四周留白收紧，并把按钮按压从 Material ripple
  * 换成与输入栏一致的缩放反馈（用户要求"跟输入框周围按钮一样改小改快"）。
  * v0.47.0：第四格（原留空）放入「语音通话」——顶栏只剩三点设置，通话入口收进这里。
@@ -290,6 +290,8 @@ fun PlusPanel(
     onCamera: () -> Unit,
     onFile: () -> Unit,
     onCall: () -> Unit,
+    /** v0.58.0：视频通话（第五格） */
+    onVideoCall: () -> Unit,
 ) {
     Column(
         Modifier
@@ -298,11 +300,14 @@ fun PlusPanel(
             .background(NeuSurface)
             .padding(horizontal = 18.dp, vertical = 8.dp),
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+        // v0.58.0：四格变五格，间距 18→10dp、格子 52→48dp。
+        // 320dp 宽的窄屏算下来每格 48.8dp，正好还放得下（再挤就要压文字了）。
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             PlusAction("相册", MIcons.ImageIcon, onAlbum, Modifier.weight(1f))
             PlusAction("拍摄", MIcons.Camera, onCamera, Modifier.weight(1f))
             PlusAction("文件", MIcons.FileDoc, onFile, Modifier.weight(1f))
             PlusAction("通话", MIcons.Phone, onCall, Modifier.weight(1f))
+            PlusAction("视频", MIcons.Play, onVideoCall, Modifier.weight(1f))
         }
     }
 }
@@ -321,7 +326,7 @@ private fun PlusAction(
     ) {
         Box(
             Modifier
-                .size(52.dp)
+                .size(48.dp)
                 .scale(press.scale)
                 .clip(RoundedCornerShape(14.dp))
                 .neuSurface(14.dp, inset = true)

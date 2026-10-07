@@ -20,7 +20,13 @@ import com.menghuan.app.realtime.RealtimeCallEvent
 import com.menghuan.app.realtime.RealtimeCallRepository
 import com.menghuan.app.realtime.RealtimeCallState
 import com.menghuan.app.realtime.VoiceCallEngine
+import com.menghuan.app.data.CallVisualStore
+import com.menghuan.app.realtime.visual.CallVisualEngine
+import com.menghuan.app.realtime.visual.CallVisualEngines
+import com.menghuan.app.realtime.visual.VisualRuntime
+import com.menghuan.app.realtime.visual.toVisualState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +50,13 @@ data class RealtimeCallUiState(
     val ttsMissing: Boolean = false,
     /** 端侧识别模型未下载：整通电话识别不了，页面给一键跳转下载 */
     val asrMissing: Boolean = false,
+    /** v0.58.0：本页是不是视频通话（决定主视觉位显示形象还是头像） */
+    val videoMode: Boolean = false,
+    /**
+     * v0.58.0：视觉层运行状态。语音通话恒为 [VisualRuntime.Empty]，
+     * 页面据此回落到头像——**视觉坏了一定要能退回头像，通话照打**（方案文档 §二十四）。
+     */
+    val visualRuntime: VisualRuntime = VisualRuntime.Empty,
 )
 
 class RealtimeCallViewModel(
@@ -53,6 +66,8 @@ class RealtimeCallViewModel(
     private val initiatedByAi: Boolean = false,
     /** v0.53.7：AI 打来时已经生成好的开场白，作为它第一句的参考 */
     private val greeting: String = "",
+    /** v0.58.0：视频通话模式。真实声音仍来自同一套实时通话引擎，只是多挂一层视觉 */
+    private val videoMode: Boolean = false,
 ) : ViewModel() {
 
     private val db = app.db
@@ -60,8 +75,18 @@ class RealtimeCallViewModel(
 
     private var engine: VoiceCallEngine? = null
 
-    private val _ui = MutableStateFlow(RealtimeCallUiState())
+    /**
+     * 视觉引擎（v0.58.0）。**只有视频通话才会创建**——语音通话不加载 Live2D、
+     * 不建播放器、不扫描素材目录（方案文档 §二.一），两个模式互不污染。
+     */
+    private var visual: CallVisualEngine? = null
+    val visualEngine: CallVisualEngine? get() = visual
+
+    private val _ui = MutableStateFlow(RealtimeCallUiState(videoMode = videoMode))
     val ui: StateFlow<RealtimeCallUiState> = _ui
+
+    /** `prepareVisual()` 的任务句柄；`start()` 靠它等视觉层建好再接线，避免两处各写一份时序 */
+    private var visualJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -70,6 +95,12 @@ class RealtimeCallViewModel(
             }.getOrNull()
             _ui.update { it.copy(persona = persona) }
         }
+        // v0.61.0：**视频通话一进页就开始准备形象**，不再等 `start()`。
+        // 原来 attachVisual 坐在 start() 里，而 start() 被"AI 接听延迟"挡着（v0.53.7 那条
+        // "秒接显得假"）—— 于是那几秒铃声里什么都没准备，接通之后才开始读 model3.json、
+        // 解码 2048² 贴图、传纹理，用户看到的就是"先几秒空画面，角色才蹦出来"。
+        // 现在这段时间正好用来加载。
+        if (videoMode) visualJob = viewModelScope.launch { prepareVisual() }
     }
 
     /** 进页即叫（权限已授予时）；幂等 */
@@ -136,10 +167,17 @@ class RealtimeCallViewModel(
                 TtsClients.from(ttsConfig, app),
                 app.applicationScope,
             ) { p, st, et, turns, status, _ ->
-                // 第 6 个参数（谁打的）用闭包里的 initiatedByAi，引擎那边只是转发
-                repo.saveCall(p, st, et, turns, status, initiatedByAi)
+                // 第 6 个参数（谁打的）用闭包里的 initiatedByAi，引擎那边只是转发；
+                // 语音/视频同理 —— 通话类型是页面属性，不是引擎状态
+                repo.saveCall(p, st, et, turns, status, initiatedByAi, videoMode)
             }
             engine = eng
+            // 视觉层在进页时就已经在准备了（init 里那条），这里只是把引擎的状态与口型电平接上去。
+            // await 而不是直接读 visual：两边都是协程，不等就会撞上"引擎先就绪、visual 还是 null"。
+            if (videoMode) {
+                visualJob?.join()
+                visual?.let { bindEngineToVisual(it, eng) }
+            }
             // TTS 没配齐也能打通电话：识别与 LLM 照常，只是不出声、全靠字幕。
             // 但必须**明确告诉用户**为什么没声——静默无声是这个项目排查最久的问题。
             _ui.update { it.copy(ttsMissing = !ttsConfig.isComplete) }
@@ -163,6 +201,51 @@ class RealtimeCallViewModel(
         val next = !_ui.value.muted
         eng.setMuted(next)
         _ui.update { it.copy(muted = next) }
+    }
+
+    /**
+     * 视频通话：把视觉层建起来并开始加载（v0.58.0；v0.61.0 起**在进页时就调**）。
+     *
+     * 三条同步口径不变（方案文档 §七）：
+     * · 状态跟着**引擎状态**走（引擎的 AI_SPEAKING 是 AudioTrack 真出声之后才写的，
+     *   挂断/打断时也是它先落），所以不会出现"AI 没声音了角色还在张嘴"；
+     * · 口型跟着**按播放头对齐后的电平**走，不看"这一句发到哪了"；
+     * · 视觉自己的状态回灌给 UI，页面据此决定显示形象还是回回头像。
+     *
+     * 视觉加载失败只让 [VisualRuntime.Degraded] 出现，通话链路一个字都没动。
+     */
+    private suspend fun prepareVisual() {
+        val asset = withContext(Dispatchers.IO) { CallVisualStore.read(app, personaId) }
+        val v = CallVisualEngines.create(app, asset)
+        visual = v
+        _ui.update { it.copy(visualRuntime = v.runtime.value) }
+        viewModelScope.launch { v.runtime.collect { r -> _ui.update { it.copy(visualRuntime = r) } } }
+        runCatching { v.load(personaId, asset) }.onFailure {
+            _ui.update { it.copy(visualRuntime = VisualRuntime.Degraded("形象加载失败，本次通话只用头像")) }
+        }
+    }
+
+    /**
+     * 引擎就绪后把它的两路输出接到视觉层上。
+     *
+     * ⚠️ 这两条订阅**只在引擎存在之后**建立：视觉层现在比引擎早就绪（进页就开始加载形象），
+     * 先订阅会拿到一个还没 start 的引擎状态，把主视觉钉在 IDLE 上。
+     */
+    private fun bindEngineToVisual(v: CallVisualEngine, eng: VoiceCallEngine) {
+        viewModelScope.launch { eng.state.collect { v.setCallState(it.toVisualState()) } }
+        viewModelScope.launch { eng.aiLevel.collect { v.setAiMouthLevel(it) } }
+    }
+
+    /** 页面 ON_PAUSE：停掉视觉驱动（渲染/解码），**不碰通话** */
+    fun pauseVisual() {
+        visual?.pause()
+    }
+
+    /** 页面 ON_RESUME：只重新订阅当前状态，绝不重建通话会话（方案文档 §二十三） */
+    fun resumeVisual() {
+        val v = visual ?: return
+        v.resume()
+        engine?.let { e -> v.setCallState(e.state.value.toVisualState()) }
     }
 
     // 接通音只放一次
@@ -200,6 +283,9 @@ class RealtimeCallViewModel(
 
     override fun onCleared() {
         engine?.destroy()
+        // 视觉层随页面一起释放：播放器、GL 渲染器、模型引用与 GPU 占用（方案文档 §二十八）
+        runCatching { visual?.release() }
+        visual = null
         super.onCleared()
     }
 
@@ -208,10 +294,11 @@ class RealtimeCallViewModel(
             personaId: Long,
             initiatedByAi: Boolean = false,
             greeting: String = "",
+            videoMode: Boolean = false,
         ) = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MenghuanApp
-                RealtimeCallViewModel(app, personaId, initiatedByAi, greeting)
+                RealtimeCallViewModel(app, personaId, initiatedByAi, greeting, videoMode)
             }
         }
     }

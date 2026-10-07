@@ -374,7 +374,7 @@ interface CallDao {
         CallSession::class,
         CallTurn::class,
     ],
-    version = 14,
+    version = 16,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -393,6 +393,37 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun callDao(): CallDao
 
     companion object {
+        /**
+         * v16：人设的角色立绘（v0.58.1）。
+         *
+         * personas 加一列 `artImagePath`，默认空串——立绘是**可选**的，
+         * 没上传的人设生图行为与之前完全一致（纯文生图，不发参考图）。
+         * 立绘存在的意义是"AI 画自己时长相一致"，所以它必须是整图，
+         * 不能拿头像（[Persona.avatarImagePath]，多半是脸部大特写）顶替。
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `personas` ADD COLUMN `artImagePath` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        /**
+         * v15：人设的视频通话视觉类型（v0.58.0）。
+         *
+         * personas 加一列 `videoVisualType`，默认 `'NONE'`——
+         * 存量人设升级后一律"没有形象"，语音通话与聊天完全照旧（方案文档 §二十）。
+         * 素材本体是文件，不进库（目录形态见 CallVisualStore），库里只留"用哪种视觉"这一句意图。
+         */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `personas` ADD COLUMN `videoVisualType` TEXT NOT NULL DEFAULT 'NONE'"
+                )
+            }
+        }
+
         /**
          * v14：语音通话记录（v0.46.0）。
          * call_sessions = 每次通话一行；call_turns = 逐轮转写（挂断时一次性写入）。

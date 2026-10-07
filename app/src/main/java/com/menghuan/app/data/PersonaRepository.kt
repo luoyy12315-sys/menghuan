@@ -13,6 +13,8 @@ import kotlinx.coroutines.sync.withLock
 class PersonaRepository(
     private val db: AppDatabase,
     private val settingsRepository: SettingsRepository? = null,
+    /** v0.58.0：删除人设时清掉他的通话视觉素材目录（仓库层没有 Context，由容器注入） */
+    private val visualFilesCleaner: ((Long) -> Unit)? = null,
 ) {
 
     fun observePersonas(): Flow<List<Persona>> =
@@ -32,7 +34,8 @@ class PersonaRepository(
     }
 
     /**
-     * 物理删除人设 = 级联清理：该会话全部消息 + 未读标记 + 提炼水位线 + 会话级接口覆盖 + 人设音色。
+     * 物理删除人设 = 级联清理：该会话全部消息 + 未读标记 + 提炼水位线 + 会话级接口覆盖 + 人设音色
+     * + 通话视觉素材目录。
      * （人设无独立闹钟；任务闹钟按任务独立，不受影响。）
      */
     suspend fun delete(id: Long) {
@@ -45,6 +48,8 @@ class PersonaRepository(
         // v0.54.4：专属铃声与「主动关心」开关一并清掉（不留孤儿键）
         settingsRepository?.setPersonaRingtone(id, "")
         settingsRepository?.setPersonaProactive(id, false)
+        // v0.58.0：视觉素材是几百 MB 的文件，人设没了就必须跟着没
+        runCatching { visualFilesCleaner?.invoke(id) }
     }
 
     /** 对话风格按 persona 持久化（长按头像切换后保存） */

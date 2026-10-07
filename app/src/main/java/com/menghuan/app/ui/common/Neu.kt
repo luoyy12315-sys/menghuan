@@ -57,6 +57,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -380,6 +381,12 @@ fun NeuTextField(
     maxLines: Int = if (singleLine) 1 else 5,
     /** 软键盘类型（v0.56.6）：纯数字字段传 [KeyboardType.Number]，默认文本键盘 */
     keyboardType: KeyboardType = KeyboardType.Text,
+    /**
+     * 只读字段（v0.60.1）：非 null 时整块凹陷面变成一次点击——**不弹键盘、不聚焦**。
+     * 给"点一下就去看/去选东西"的字段用（如编辑人设里的角色立绘：点它选图，框里显示文件名），
+     * 这样它的 label 与内边距和真输入框是同一套，不用另画一个长得像输入框的东西。
+     */
+    onClick: (() -> Unit)? = null,
 ) {
     Column(modifier) {
         if (label != null) {
@@ -393,32 +400,51 @@ fun NeuTextField(
             Spacer(Modifier.height(7.dp))
         }
         Box(Modifier.fillMaxWidth().neuSurface(12.dp, inset = true)) {
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                textStyle = TextStyle(
+            if (onClick != null) {
+                Text(
+                    text = value.ifBlank { placeholder },
                     fontSize = 15.sp,
                     lineHeight = 21.sp,
-                    color = TextPrimary,
                     letterSpacing = (-0.14).sp,
-                ),
-                singleLine = singleLine,
-                maxLines = maxLines,
-                minLines = minLines,
-                keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-                cursorBrush = SolidColor(NeuAccent),
-                decorationBox = { inner ->
-                    Box(contentAlignment = Alignment.CenterStart) {
-                        if (value.isEmpty()) {
-                            Text(placeholder, fontSize = 15.sp, color = MutedText, lineHeight = 21.sp)
+                    color = if (value.isBlank()) MutedText else TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { onClick() }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                )
+            } else {
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    textStyle = TextStyle(
+                        fontSize = 15.sp,
+                        lineHeight = 21.sp,
+                        color = TextPrimary,
+                        letterSpacing = (-0.14).sp,
+                    ),
+                    singleLine = singleLine,
+                    maxLines = maxLines,
+                    minLines = minLines,
+                    keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+                    cursorBrush = SolidColor(NeuAccent),
+                    decorationBox = { inner ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (value.isEmpty()) {
+                                Text(placeholder, fontSize = 15.sp, color = MutedText, lineHeight = 21.sp)
+                            }
+                            inner()
                         }
-                        inner()
-                    }
-                },
-            )
+                    },
+                )
+            }
         }
     }
 }

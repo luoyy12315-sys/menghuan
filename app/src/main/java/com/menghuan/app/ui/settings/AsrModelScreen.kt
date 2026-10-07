@@ -27,6 +27,16 @@ import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.AsrDownloadPhase
 import com.menghuan.app.data.AsrDownloadSession
 import com.menghuan.app.data.AsrModelFile
+import com.menghuan.app.data.ASR_OFFLINE
+import com.menghuan.app.data.ASR_ONLINE
+import com.menghuan.app.data.OnlineAsr
+import com.menghuan.app.data.WavPcm
+import com.menghuan.app.ui.common.NeuTextField
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import com.menghuan.app.data.AsrModelManager
 import com.menghuan.app.data.AsrModelRules
 import com.menghuan.app.data.AsrModelSource
@@ -61,6 +71,23 @@ fun AsrModelScreen(onBack: () -> Unit) {
     val phase by AsrDownloadSession.phase.collectAsState()
     val running = AsrDownloadSession.isRunning
 
+    // v0.59.0（用户拍板）：识别引擎两条路 —— 离线 SenseVoice（本机模型）/ 在线接口（自配）。
+    // ⚠️ **手动切换、不做自动回退**：当年云端就是坐在"离线不行就自动试云端"的第二级上，
+    // 结果每次白等一轮超时、"识别为空"到底哪一级出的事谁也说不清。选了在线就只走在线，
+    // 失败当场说原因。
+    val settings = app.settingsRepository
+    val scope = rememberCoroutineScope()
+    val engine by settings.asrEngine.collectAsState(initial = ASR_OFFLINE)
+    val onlineUrl by settings.asrOnlineUrl.collectAsState(initial = "")
+    val onlineKey by settings.asrOnlineApiKey.collectAsState(initial = "")
+    val onlineModel by settings.asrOnlineModel.collectAsState(initial = "")
+    var urlDraft by remember(onlineUrl) { mutableStateOf(onlineUrl) }
+    var keyDraft by remember(onlineKey) { mutableStateOf(onlineKey) }
+    var modelDraft by remember(onlineModel) { mutableStateOf(onlineModel) }
+    var testing by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    var testOk by remember { mutableStateOf(false) }
+
     // 每次面板重开或有动作后重算一次；不在每帧重组里 stat 磁盘
     var ready by remember { mutableStateOf(AsrModelManager.isReady(context)) }
     var pending by remember { mutableStateOf(AsrModelManager.pendingBytes(context)) }
@@ -74,6 +101,97 @@ fun AsrModelScreen(onBack: () -> Unit) {
         var confirmDelete by remember { mutableStateOf(false) }
     SettingsPage(title = "语音识别模型", onBack = onBack) {
         Spacer(Modifier.height(14.dp))
+
+        // ===== 识别引擎（v0.59.0）=====
+        NeuSectionTitle("识别引擎")
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth()) {
+            NeuChip(text = "离线（本机）", selected = engine != ASR_ONLINE) {
+                scope.launch { settings.setAsrEngine(ASR_OFFLINE) }
+            }
+            Spacer(Modifier.width(8.dp))
+            NeuChip(text = "在线接口", selected = engine == ASR_ONLINE) {
+                scope.launch { settings.setAsrEngine(ASR_ONLINE) }
+            }
+        }
+        if (engine == ASR_ONLINE) {
+            Spacer(Modifier.height(12.dp))
+            NeuTextField(
+                value = urlDraft,
+                onValueChange = { urlDraft = it; testResult = null },
+                label = "接口地址",
+                placeholder = "例：https://你的服务商域名/v1",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            NeuTextField(
+                value = modelDraft,
+                onValueChange = { modelDraft = it; testResult = null },
+                label = "模型名",
+                placeholder = "例：whisper-large-v3 / SenseVoiceSmall",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            NeuTextField(
+                value = keyDraft,
+                onValueChange = { keyDraft = it; testResult = null },
+                label = "API Key",
+                placeholder = "粘贴服务商的 Key",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            // 测试发的是 0.4 秒静音 WAV：它只能证明"地址对、Key 对、这家真有这个接口"，
+            // 证明不了识别质量——所以话要说准，别写成"测试通过 = 能识别你的话"
+            Spacer(Modifier.height(12.dp))
+            NeuButton(
+                text = if (testing) "测试中…" else "测试接口",
+                kind = NeuButtonKind.Secondary,
+                enabled = !testing && urlDraft.isNotBlank() && keyDraft.isNotBlank() && modelDraft.isNotBlank(),
+                onClick = {
+                    testing = true
+                    testResult = null
+                    scope.launch {
+                        val verdict = withContext(Dispatchers.IO) {
+                            val wav = File(context.cacheDir, "asr_probe.wav")
+                            runCatching {
+                                wav.writeBytes(WavPcm.writeMono(ShortArray(6400), 16000))
+                                val said = runCatching {
+                                    OnlineAsr.transcribe(urlDraft.trim(), keyDraft.trim(), modelDraft.trim(), wav)
+                                }.getOrNull()
+                                if (said != null) "OK|$said" else "BAD|${OnlineAsr.lastFailure ?: "未知原因"}"
+                            }.getOrElse { "BAD|${it.javaClass.simpleName}" }
+                                .also { runCatching { wav.delete() } }
+                        }
+                        testOk = verdict.startsWith("OK")
+                        testResult = if (testOk) {
+                            "接口可用 · 静音返回「${verdict.substringAfter("OK|")}」" +
+                                "（静音没字是正常的，这只证明地址和 Key 通了）"
+                        } else {
+                            "失败：" + verdict.substringAfter("BAD|")
+                        }
+                        testing = false
+                    }
+                },
+            )
+            testResult?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = if (testOk) NeuAccent else NeuDanger)
+            }
+            Spacer(Modifier.height(12.dp))
+            NeuButton(
+                text = "保存在线配置",
+                kind = NeuButtonKind.Primary,
+                onClick = {
+                    scope.launch {
+                        settings.setAsrOnlineUrl(urlDraft)
+                        settings.setAsrOnlineModel(modelDraft)
+                        settings.setAsrOnlineApiKey(keyDraft)
+                        testResult = "已保存"
+                        testOk = true
+                    }
+                },
+            )
+            Spacer(Modifier.height(16.dp))
+        }
 
         NeuSectionTitle(if (ready) "已就绪" else "未就绪")
         Spacer(Modifier.height(8.dp))

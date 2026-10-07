@@ -568,18 +568,20 @@ private fun VoiceWaveBars(
 }
 
 /**
- * 语音通话记录卡（v0.49.0 建；**v0.55.0 整卡重绘**）。
+ * 语音/视频通话记录卡（v0.49.0 建；**v0.55.0 整卡重绘**；**v0.60 分通话类型**）。
  *
  * 重绘前它只是「📞 + 一行灰字」的小药丸：在消息流里既不醒目，也完全看不出这通电话是什么情况
  * （谁打给谁、打通没有、多久）。现在重画成一张真正的卡片，四层信息各归其位：
  *   ① **左侧圆形徽标** —— 图标本身就区分状态：打通是听筒，没打通是挂断听筒（危险色）；
- *   ② **标题**「语音通话」+ 一枚方向标记（↑ 呼出 / ↓ 呼入）；
+ *      v0.60 起视频通话走摄像机图标（未接通仍由危险色 + 副题表达）；
+ *   ② **标题**「语音通话」/「视频通话」（v0.60 起按类型）+ 一枚方向标记（↑ 呼出 / ↓ 呼入）；
  *   ③ **副题** —— 时长；未接通时走危险色并写「未接通」，而不是显示"0分00秒"；
  *   ④ **右侧箭头** —— 点整卡看这通电话的文字转写。
  *
- * 方向不需要新增字段：`RealtimeCallRepository.saveCall` 已约定
- * 「我打给 AI 的落用户侧、AI 打给我的落 AI 侧」，这里读 `isFromUser` 即可。
- * 「未接通」同理：时长为 0 分 0 秒即代表这通没说上话。
+ * 类型不需要新增字段：`RealtimeCallRepository.saveCall` 早已把「语音通话 / 视频通话」
+ * 写进消息内容（v0.58.0），调用方从内容前缀判出来传 [video] 即可。
+ * 方向同理：约定「我打给 AI 的落用户侧、AI 打给我的落 AI 侧」，这里读 `isFromUser`。
+ * 「未接通」也一样：时长为 0 分 0 秒即代表这通没说上话。
  *
  * 配色继续走黑白灰：呼入/呼出**不靠颜色区分**（那会引入第二套语义色），
  * 靠箭头方向 + 文字；只有"未接通"用 [NeuDanger]，与全应用"危险 = 橘红"一致。
@@ -591,6 +593,12 @@ fun CallRecordCard(
     duration: String,
     /** true = 我打出去的（卡片在用户侧）；false = TA 打进来的 */
     outgoing: Boolean,
+    /**
+     * v0.60：这通是**视频通话**（记录内容写的就是「视频通话 · …」）。
+     * 以前标题与图标写死成语音那套，视频通话的记录卡也显示「语音通话」（用户点名）。
+     * 徽标图标表达"是什么通话"，未接通仍由危险色 + 副题文案表达。
+     */
+    video: Boolean = false,
     maxWidth: Dp,
     onClick: () -> Unit,
     onLongPress: () -> Unit = {},
@@ -619,7 +627,11 @@ fun CallRecordCard(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                if (missed) MIcons.PhoneOff else MIcons.Phone,
+                when {
+                    video -> MIcons.Video
+                    missed -> MIcons.PhoneOff
+                    else -> MIcons.Phone
+                },
                 contentDescription = null,
                 tint = if (missed) NeuDanger else TextPrimary,
                 modifier = Modifier.size(16.dp),
@@ -630,7 +642,7 @@ fun CallRecordCard(
         Column(Modifier.weight(1f, fill = false)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "语音通话",
+                    if (video) "视频通话" else "语音通话",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                     color = TextPrimary,

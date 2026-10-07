@@ -24,6 +24,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -73,6 +74,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menghuan.app.realtime.RealtimeCallState
+import com.menghuan.app.realtime.visual.VisualRuntime
 import com.menghuan.app.data.CallRingtone
 import com.menghuan.app.ui.common.AdaptiveScreen
 import com.menghuan.app.ui.common.EaseOutQuart
@@ -102,6 +104,11 @@ import kotlinx.coroutines.launch
  * 实时语音通话页（v0.47.0 重构）：无顶栏（用户反馈与中部头像重复），主视觉 =
 * 中部大头像（说话时呼吸脉动）+ 名字 + 状态；字幕做成歌词式——贴底、最新一两句
 * 清晰突出、越旧的越淡，顶部用背景色渐变收束；底部静音/挂断大圆钮。
+ *
+ * v0.60：**视频通话改为全屏铺满**（用户要求 9:16 竖屏全屏铺满、不黑边不拉伸）——
+ * 画面是垫在最底层的背景（cover 排布，见 [CallVisualSlot]），名字/状态/字幕/操作钮叠在它上面，
+ * 上下各补一层暗色渐变托底保证白字可读。以前画面是按素材比例排的一张卡片、夹在名字与字幕之间，
+ * 竖屏素材一进来整列就比屏幕还高，把字幕与静音/挂断整个挤出屏幕——真机上的"视频通话没法用"。
  */
 @Composable
 fun RealtimeCallScreen(
@@ -113,9 +120,11 @@ fun RealtimeCallScreen(
     initiatedByAi: Boolean = false,
     /** v0.53.7：AI 打来时已经生成好的开场白 */
     greeting: String = "",
+    /** v0.58.0：视频通话模式（主视觉位换成 Live2D / 伪视频，没有形象时仍回落到头像） */
+    videoMode: Boolean = false,
     vm: RealtimeCallViewModel = viewModel(
-        key = "call_${personaId}_${if (initiatedByAi) "ai" else "me"}",
-        factory = RealtimeCallViewModel.Factory(personaId, initiatedByAi, greeting),
+        key = "call_${personaId}_${if (initiatedByAi) "ai" else "me"}_${if (videoMode) "video" else "voice"}",
+        factory = RealtimeCallViewModel.Factory(personaId, initiatedByAi, greeting, videoMode),
     ),
 ) {
     val ui by vm.ui.collectAsState()
@@ -150,6 +159,23 @@ fun RealtimeCallScreen(
     }
     // 返回键 = 挂断；ENDED 后延迟退出，给挂断提示音留出时间
     BackHandler { vm.hangUp() }
+    // v0.58.0：视觉层跟着页面生命周期走 —— 切后台/锁屏停掉渲染与解码（省电、
+    // 也避免 EGL 上下文被系统回收后乱画），回前台只重新订阅状态，**不重建通话**。
+    // 语音通话没有视觉层，这两个回调都是空操作。
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> vm.pauseVisual()
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> vm.resumeVisual()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
     LaunchedEffect(ui.state) {
         if (ui.state == RealtimeCallState.ENDED) {
             delay(650)
@@ -234,7 +260,46 @@ fun RealtimeCallScreen(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(NeuBackground)) {
+    // v0.60：视频通话的主视觉层。本页是视频模式 + 视觉引擎已创建 + runtime 是 Ready → 挂画面层。
+    // v0.61.1（用户点名）：**"挂上画面层"和"切到视频布局"必须分开**。
+    // Ready 只代表视图挂上了、模型开始加载；`Ready.drawn` 才代表真的画出了一帧。
+    // 以前两者是同一个条件，于是用户先看到几秒"空画面 + 顶栏"、角色才蹦出来 ——
+    // 那几秒页面长得和修复前一模一样，等于白等。现在加载期间保持居中大头像那一套。
+    val videoVisual = if (!videoMode) null else
+        vm.visualEngine?.let { e -> (ui.visualRuntime as? VisualRuntime.Ready)?.let { r -> e to r } }
+    val videoVisualOn = videoVisual != null
+    val videoPictureOn = videoVisual?.second?.drawn == true
+
+    // v0.60.1（用户点名照参考图改）：**语音通话的头像按屏幕比例放大、并挪到屏高上三分之一处**。
+    // 参考图量出来是：圆头像直径 ≈ 屏宽 59%，中心 ≈ 屏高 38.7%（含状态栏那条）。
+    // 这里用屏幕比例而不是写死 dp（AGENTS 布局规矩：等比例元素一律走比例，换机型才不会走形）。
+    // ⚠️ 只有"画面还没画出来"的这一支（语音通话 + 视频通话加载中/回落头像）走这个尺寸；
+    //    视频通话真的出画面时走另一支的居中顶栏，两者互不影响。
+    BoxWithConstraints(
+        // v0.61.1：恢复恒定铺 NeuBackground。以前"有画面就透明"是给 SurfaceView 挖洞用的，
+        // TextureView 走正常绘制，角色透明处本来就该透出主题底色，不需要再留窗口白边
+        Modifier.fillMaxSize().background(NeuBackground),
+    ) {
+        val avatarSize = maxWidth * 0.59f
+        val avatarCanvasSize = avatarSize * CallAvatarCanvasRatio
+        // 0.37 而不是 0.387：AdaptiveScreen 已经吃掉状态栏那一条，
+        // 从内容区顶部算起要扣掉它，落回全屏才是参考图那个位置
+        val avatarTopGap = (maxHeight * 0.37f - avatarCanvasSize / 2f).coerceAtLeast(0.dp)
+        // ① 画面层：垫在最底下、铺满整屏（v0.60 用户要求 9:16 竖屏全屏铺满）。
+        //    画面层自己按 cover 铺满整块（伪视频在 VideoVisualEngine 里给 TextureView 设变换矩阵，
+        //    Live2D 由 fitProjection 自己居中适配）：不拉伸、不留边、居中裁掉溢出的一边。
+        //    v0.61.1：**首帧之前整块是透明的，画出来才淡入** —— 省得角色"啪"地出现。
+        if (videoVisualOn) {
+            val slotAlpha by animateFloatAsState(
+                targetValue = if (videoPictureOn) 1f else 0f,
+                animationSpec = tween(260, easing = EaseOutQuart),
+                label = "visualSlotAlpha",
+            )
+            videoVisual?.let { (engine, _) ->
+                CallVisualSlot(engine = engine, modifier = Modifier.fillMaxSize().alpha(slotAlpha))
+            }
+        }
+
         Column(
             Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -246,48 +311,68 @@ fun RealtimeCallScreen(
                     .fillMaxWidth()
                     // v0.55.0 进场编排：头像块 → 字幕区 → 操作钮，三块依次抬起，
                     // 与路由的横向滑入叠成"页面铺开"，而不是整屏内容同一帧出现。
+                    // v0.61.1：**恢复无条件生效**。以前"有画面时不加"是因为画面是 SurfaceView，
+                    // post-layout 变换可能与曲面对不上合成；现在 Live2D 也走 TextureView
+                    // （正常 View 绘制），这个顾虑不存在了，两条通话共用同一套进场节奏。
                     .staggerEnter(0, stepMs = 60, slideDp = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Spacer(Modifier.height(40.dp))
-                // 说话时头像外扩两圈同心环（v0.55.0）：原来只有头像自己 0.985↔1.035 缩放，
-                // 在整屏留白的通话页里几乎看不出"谁在说话"。加两圈缓慢外扩、边扩边淡的环，
-                // 声源的方向感才立得住。环走 Canvas 单节点，开着整通电话也不产生重组。
-                //
-                // ⚠️ v0.56.5 修「角色思考 / 角色听我说话头像位置不一样」：
-                // 根因是这个容器原来**尺寸跟着环走**——`CallPulseRings` 在 !active 时直接 return
-                // （连节点都不占），active 时才带 `size(196.dp)` 进来；于是整块从 124dp 长到 196dp，
-                // 居中的头像被整体**往下推 36dp**（上面一行名字、下面状态胶囊也跟着挪）。
-                // 现在把尺寸钉在**画布本身**（恒定 [CallAvatarCanvas]），环只在这个画布内画或不画，
-                // 头像的位置就与状态无关了。
-                Box(Modifier.size(CallAvatarCanvas), contentAlignment = Alignment.Center) {
-                    CallPulseRings(
-                        active = pulsing,
-                        color = ringInk,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    NeuAvatar(
-                        emoji = persona?.avatarEmoji ?: "🙂",
-                        imagePath = persona?.avatarImagePath.orEmpty(),
-                        size = 124.dp,
-                        ringBrush = personaBrush(personaId),
-                        modifier = Modifier.graphicsLayer {
-                            scaleX = breath.value
-                            scaleY = breath.value
-                        },
-                    )
-                }
-                Spacer(Modifier.height(18.dp))
-                Text(name, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = TextPrimary)
-                Spacer(Modifier.height(6.dp))
-                // v0.55.0：状态收进凹陷灰胶囊 + 一颗会呼吸的状态点 ——
-                // 原来是一行孤零零的灰字，跟下面的提示块抢注意力，
-                // 「正在听你说话」这种进行时的状态也读不出来。
-                Crossfade(
-                    targetState = if (!answerDelayDone && hasPermission) "正在呼叫…" else stateLabel(ui),
-                    label = "stateLabel",
-                ) { label ->
-                    CallStatusChip(label = label, live = active)
+                // v0.60.1（用户点名）：**视频通话出画面时改顶栏形状** ——
+                // 名字换成头像、贴最上方，状态挂在头像右边、时间在下面。
+                // 判据是 videoPictureOn（真的画出一帧了），不是"视图挂上了"：
+                // 加载那几秒仍走 else 那一套居中大头像，两颗头像也不会同时出现。
+                // ⚠️ else 那条还兜着"没有形象 / 视觉坏了"的回落（方案文档 §二十四：视觉失败 ≠ 通话失败）。
+                val statusLabelNow =
+                    if (!answerDelayDone && hasPermission) "正在呼叫…" else stateLabel(ui)
+                if (videoPictureOn) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        NeuAvatar(
+                            emoji = persona?.avatarEmoji ?: "🙂",
+                            imagePath = persona?.avatarImagePath.orEmpty(),
+                            size = 42.dp,
+                            ringBrush = personaBrush(personaId),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Crossfade(targetState = statusLabelNow, label = "stateLabel") { label ->
+                            CallStatusChip(label = label, live = active)
+                        }
+                    }
+                } else {
+                    Spacer(Modifier.height(avatarTopGap))
+                    // 说话时头像外扩两圈同心环（v0.55.0）：原来只有头像自己 0.985↔1.035 缩放，
+                    // 在整屏留白的通话页里几乎看不出"谁在说话"。加两圈缓慢外扩、边扩边淡的环，
+                    // 声源的方向感才立得住。环走 Canvas 单节点，开着整通电话也不产生重组。
+                    //
+                    // ⚠️ v0.56.5 修「角色思考 / 角色听我说话头像位置不一样」：
+                    // 根因是这个容器原来**尺寸跟着环走**——`CallPulseRings` 在 !active 时直接 return
+                    // （连节点都不占），active 时才带尺寸进来；于是整块被撑高，
+                    // 居中的头像被整体往下推（上面一行名字、下面状态胶囊也跟着挪）。
+                    // 现在把尺寸钉在**画布本身**（恒等于头像边长 × [CallAvatarCanvasRatio]），
+                    // 环只在这个画布内画或不画，头像的位置就与状态无关了。
+                    Box(Modifier.size(avatarCanvasSize), contentAlignment = Alignment.Center) {
+                        CallPulseRings(
+                            active = pulsing,
+                            color = ringInk,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        NeuAvatar(
+                            emoji = persona?.avatarEmoji ?: "🙂",
+                            imagePath = persona?.avatarImagePath.orEmpty(),
+                            size = avatarSize,
+                            ringBrush = personaBrush(personaId),
+                            modifier = Modifier.graphicsLayer {
+                                scaleX = breath.value
+                                scaleY = breath.value
+                            },
+                        )
+                    }
+                    Spacer(Modifier.height(18.dp))
+                    // v0.60.1（用户点名）：**这一套不再显示名字** —— 头像就是身份，
+                    // 大圆头像 + 渐变环已经足够认出是谁，那行 20sp 的名字反而抢位置。
+                    Crossfade(targetState = statusLabelNow, label = "stateLabel") { label ->
+                        CallStatusChip(label = label, live = active)
+                    }
                 }
                 // 打通之后才走字：0 秒不显示，免得刚接通就挂个 00:00
                 if (elapsedSec > 0) {
@@ -295,9 +380,17 @@ fun RealtimeCallScreen(
                     Text(
                         "%02d:%02d".format(elapsedSec / 60, elapsedSec % 60),
                         fontSize = 12.sp,
+                        // v0.61.1：不再为"压在画面上"改白色 —— 用户点名去掉蒙层，
+                        // 底色就是主题色，用回正常的灰阶才读得清
                         color = MutedText,
                         letterSpacing = 0.8.sp,
                     )
+                }
+                // v0.58.0：形象坏了要说一句（静默降级是这个项目排查最久的一类问题）。
+                // 只说现象与后果，不教操作——电话正在讲，这时候不该让用户读段落。
+                (ui.visualRuntime as? VisualRuntime.Degraded)?.let { d ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(d.reason, fontSize = 12.sp, color = NeuDanger, textAlign = TextAlign.Center)
                 }
                 if (ui.error != null) {
                     Spacer(Modifier.height(12.dp))
@@ -349,6 +442,8 @@ fun RealtimeCallScreen(
                     .staggerEnter(1, stepMs = 60, slideDp = 16.dp),
                 contentAlignment = Alignment.BottomCenter,
             ) {
+                // v0.61.1（用户点名）：**三层暗色蒙层全部删掉**，字幕不再压暗色托底，
+                // 字色回到主题灰阶（蒙层没了之后白字压在浅色角色上根本看不见）。
                 CallSubtitlePanel(
                     lines = remember(ui.turns, ui.userPartial, ui.aiPartial) { buildLines(ui) },
                     name = name,
@@ -359,7 +454,9 @@ fun RealtimeCallScreen(
                 )
             }
 
-            // 底部操作：静音 + 挂断
+            // 底部操作：静音 + 挂断。
+            // v0.61.1（用户点名）：整行不再铺那条从透明到黑的渐变托底 ——
+            // 两颗钮本来就有自己的圆底（白面 / 危险色），要的是"各自悬浮"的效果。
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -403,12 +500,13 @@ fun RealtimeCallScreen(
 private val SubtitleViewportHeight = 150.dp
 
 /**
- * 通话页头像**画布**的固定边长（v0.56.5）：脉冲环与头像都在这个方框里居中排布。
+ * 通话页头像**画布**与头像本体的边长比（v0.56.5 钉死的是 196 : 124，同一个比值）。
  *
- * 钉死它是为了"角色思考"与"角色听我说话"两态下**头像位置一模一样** ——
- * 环只在说话时画，但**画布尺寸必须恒定**（见头像块处的注释）。
+ * 画布必须比头像大一圈，脉冲环才有地方画；而**画布尺寸必须恒定**（不跟着环的有无涨缩），
+ * 否则"角色思考"与"角色听我说话"两态下头像位置会不一样（见头像块处的注释）。
+ * v0.60.1 起头像边长改成屏宽比例，画布就按这个比值跟着等比放大。
  */
-private val CallAvatarCanvas = 196.dp
+private const val CallAvatarCanvasRatio = 196f / 124f
 
 /**
  * 字幕面板（v0.54.0）：歌词式排版 + 可滚动完整记录。

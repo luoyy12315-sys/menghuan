@@ -258,7 +258,10 @@ class ChatListViewModel(
             MediaKind.IMAGE -> "[图片]"
             MediaKind.AUDIO -> "[语音]"
             MediaKind.FILE -> "[文件]"
-            MediaKind.CALL -> "📞 ${msg.content}" // 语音通话记录卡（v0.49.0）
+            MediaKind.CALL -> {
+                // 通话记录卡（v0.49.0；v0.60 起按类型换图标）：内容里已经写明是哪种通话
+                if (msg.content.trimStart().startsWith("视频通话")) "📹 ${msg.content}" else "📞 ${msg.content}"
+            }
             else -> msg.content.replace('\n', ' ')
         }
         return if (msg.isFromUser) "你：$content" else content

@@ -64,6 +64,8 @@ class MenghuanApp : Application() {
                 AppDatabase.MIGRATION_11_12,
                 AppDatabase.MIGRATION_12_13,
                 AppDatabase.MIGRATION_13_14,
+                AppDatabase.MIGRATION_14_15,
+                AppDatabase.MIGRATION_15_16,
             )
             .build()
         settingsRepository = SettingsRepository(this)
@@ -73,7 +75,18 @@ class MenghuanApp : Application() {
         applicationScope.launch {
             runCatching { settingsRepository.warmKeyCache() }
         }
-        personaRepository = PersonaRepository(db, settingsRepository)
+        // v0.58.0：废弃的「角色立绘 / Live 2D 单文件」资产清一次（新的通话形象在 call_visuals/）
+        applicationScope.launch {
+            runCatching { settingsRepository.clearDeprecatedPersonaAssetKeys() }
+            runCatching {
+                deleteFilesDirTree("persona_art")
+                deleteFilesDirTree("persona_live2d")
+            }
+        }
+        personaRepository = PersonaRepository(db, settingsRepository) { id ->
+            // 人设删除时连通话视觉素材一起清（几百 MB 的文件不能变孤儿）
+            com.menghuan.app.data.CallVisualStore.deletePersona(this, id)
+        }
         profileRepository = ProfileRepository(db)
         extractionEngine = ExtractionEngine(db, settingsRepository, taskSuggestionHub, applicationScope)
         weeklyReportGenerator = com.menghuan.app.data.WeeklyReportGenerator(db, settingsRepository)
@@ -149,5 +162,14 @@ class MenghuanApp : Application() {
         // （见 MeScreen.GalleryScreen（v0.51.0 起是全屏页）），低频、串行、不占启动路径。
         // 今日任务小组件随启动刷新一次（任务数据可能被导入等旁路改过）
         com.menghuan.app.widget.TodayWidgetRefresher.refresh(this)
+    }
+
+    /**
+     * 删掉 filesDir 下一个固定名字的目录（v0.58.0：清废弃的立绘 / Live 2D 单文件资产）。
+     * 名字由调用方写死，不接受任何外部输入；目录不存在就当成功。
+     */
+    private fun deleteFilesDirTree(sub: String) {
+        val dir = java.io.File(filesDir, sub)
+        if (dir.isDirectory) dir.deleteRecursively()
     }
 }

@@ -23,6 +23,7 @@ import com.menghuan.app.data.AsrModelRules
 import com.menghuan.app.data.DEFAULT_IMAGE_PROFILE_ID
 import com.menghuan.app.data.DEFAULT_PROFILE_ID
 import com.menghuan.app.data.SEARCH_BOCHA
+import com.menghuan.app.data.SEARCH_CUSTOM
 import com.menghuan.app.data.SEARCH_TAVILY
 import com.menghuan.app.data.TtsConfig
 import com.menghuan.app.data.WebSearchClient
@@ -58,6 +59,8 @@ fun ModelConfigScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
     val ttsConfig by app.settingsRepository.ttsConfig.collectAsState(initial = TtsConfig())
     val searchProvider by app.settingsRepository.searchProvider.collectAsState(initial = SEARCH_BOCHA)
     val searchKey by app.settingsRepository.searchApiKey.collectAsState(initial = "")
+    // v0.59.0：自定义这一家的 Key 是独立的一份，副标题要跟着当前生效那家取
+    val customSearchKey by app.settingsRepository.searchCustomApiKey.collectAsState(initial = "")
     // 模型状态只在进页时读一次：磁盘 stat 不贵，但也不该每帧重组都去碰
     val asrReady = remember { AsrModelManager.isReady(app) }
 
@@ -103,7 +106,10 @@ fun ModelConfigScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
             show = true,
             icon = MIcons.Search,
             title = "联网搜索",
-            subtitle = searchSubtitle(searchProvider, searchKey),
+            subtitle = searchSubtitle(
+                searchProvider,
+                if (searchProvider == SEARCH_CUSTOM) customSearchKey else searchKey,
+            ),
             onClick = { onOpen(SettingsRoutes.SEARCH_CONFIG) },
         )
         Spacer(Modifier.height(10.dp))
@@ -253,10 +259,19 @@ fun WebSearchConfigScreen(onBack: () -> Unit) {
 
     val provider by app.settingsRepository.searchProvider.collectAsState(initial = SEARCH_BOCHA)
     val searchKey by app.settingsRepository.searchApiKey.collectAsState(initial = "")
+    // v0.59.0：自定义这一家有**独立的 Key 和一个用户自填的地址**
+    val customKey by app.settingsRepository.searchCustomApiKey.collectAsState(initial = "")
+    val customUrl by app.settingsRepository.searchCustomUrl.collectAsState(initial = "")
 
     // 草稿跟着已存值走：DataStore 首次读到真实值时会刷新一次，之后用户编辑不再被覆盖
     var providerDraft by remember(provider) { mutableStateOf(provider) }
     var keyDraft by remember(searchKey) { mutableStateOf(searchKey) }
+    var customKeyDraft by remember(customKey) { mutableStateOf(customKey) }
+    var urlDraft by remember(customUrl) { mutableStateOf(customUrl) }
+
+    val isCustom = providerDraft == SEARCH_CUSTOM
+    // 当前这一家正在用的 Key（测试按钮和"配没配 Key"的判断都走它）
+    val activeKey = if (isCustom) customKeyDraft.trim() else keyDraft.trim()
 
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
@@ -275,19 +290,49 @@ fun WebSearchConfigScreen(onBack: () -> Unit) {
                 providerDraft = SEARCH_TAVILY
                 testResult = null
             }
+            // v0.59.0（用户拍板）：第三家 = 自己填接口地址 + Key
+            NeuChip(text = "自定义", selected = isCustom) {
+                providerDraft = SEARCH_CUSTOM
+                testResult = null
+            }
         }
         Spacer(Modifier.height(10.dp))
-        Text(
-            "去 ${WebSearchClient.consoleUrlOf(providerDraft)} 注册并在控制台创建 API Key，粘贴到下面。" +
-                "接口：${WebSearchClient.endpointOf(providerDraft)}",
-            fontSize = 11.sp,
-            lineHeight = 16.sp,
-            color = MutedText,
-        )
+        if (isCustom) {
+            // 自定义这一家**不写任何官网地址**：用户的接口是哪来的只有他自己知道，
+            // 编一个"看起来合理"的域名出来是最坏的做法（AGENTS §零.6）
+            NeuTextField(
+                value = urlDraft,
+                onValueChange = { urlDraft = it; testResult = null },
+                label = "接口地址",
+                placeholder = "例：https://你的中转域名/v1/web-search",
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "请求体发 {\"query\", \"max_results\", \"count\"}；返回里的结果数组按 " +
+                    "webPages / results / data / items / documents 依次找。",
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                color = MutedText,
+            )
+        } else {
+            Text(
+                "去 ${WebSearchClient.consoleUrlOf(providerDraft)} 注册并在控制台创建 API Key，粘贴到下面。" +
+                    "接口：${WebSearchClient.endpointOf(providerDraft)}",
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                color = MutedText,
+            )
+        }
         Spacer(Modifier.height(12.dp))
         NeuTextField(
-            value = keyDraft,
-            onValueChange = { keyDraft = it; testResult = null },
+            value = if (isCustom) customKeyDraft else keyDraft,
+            onValueChange = {
+                // **只写当前这一家的草稿**：三家共用一个 state 的话，
+                // 切到家就把自己那份填过的 Key 覆盖掉了（v0.52.0 语音合成踩过的坑）
+                if (isCustom) customKeyDraft = it else keyDraft = it
+                testResult = null
+            },
             label = "API Key",
             placeholder = "粘贴控制台里的 Key",
             modifier = Modifier.fillMaxWidth(),
@@ -298,16 +343,19 @@ fun WebSearchConfigScreen(onBack: () -> Unit) {
         NeuButton(
             text = if (testing) "测试中…" else "测试搜索",
             modifier = Modifier.fillMaxWidth(),
-            enabled = !testing && keyDraft.isNotBlank(),
+            enabled = !testing && activeKey.isNotBlank() && (!isCustom || urlDraft.isNotBlank()),
             onClick = {
                 testing = true
                 testResult = null
                 val testingProvider = providerDraft
-                val testingKey = keyDraft.trim()
+                val testingKey = activeKey
+                val testingUrl = if (isCustom) urlDraft.trim() else ""
                 scope.launch {
                     val started = System.currentTimeMillis()
                     val outcome = runCatching {
-                        WebSearchClient.searchOrThrow(testingProvider, testingKey, TEST_SEARCH_QUERY)
+                        WebSearchClient.searchOrThrow(
+                            testingProvider, testingKey, TEST_SEARCH_QUERY, customEndpoint = testingUrl,
+                        )
                     }
                     val cost = System.currentTimeMillis() - started
                     outcome
@@ -347,7 +395,14 @@ fun WebSearchConfigScreen(onBack: () -> Unit) {
             onClick = {
                 scope.launch {
                     app.settingsRepository.setSearchProvider(providerDraft)
-                    app.settingsRepository.setSearchApiKey(keyDraft.trim())
+                    // 只写**当前这一家**的 Key：一把全写会把另一家填好的 Key 抹掉
+                    //（v0.52.0 语音合成三家就是这么互相覆盖的，测试抓出来过）
+                    if (isCustom) {
+                        app.settingsRepository.setSearchCustomApiKey(customKeyDraft.trim())
+                        app.settingsRepository.setSearchCustomUrl(urlDraft.trim())
+                    } else {
+                        app.settingsRepository.setSearchApiKey(keyDraft.trim())
+                    }
                 }
                 onBack()
             },

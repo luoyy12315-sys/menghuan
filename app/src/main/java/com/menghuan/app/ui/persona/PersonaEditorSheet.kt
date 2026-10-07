@@ -1,6 +1,8 @@
 package com.menghuan.app.ui.persona
 
+import android.content.Context
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -74,11 +76,14 @@ import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
+import com.menghuan.app.ui.common.neuRowPress
+import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.settings.SettingsPage
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
 import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.TextPrimary
+import com.menghuan.app.ui.theme.TextSecondary
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -117,6 +122,8 @@ private data class PersonaDraft(
     val emoji: String = "🙂",
     val prompt: String = "",
     val avatarImagePath: String = "",
+    /** 角色立绘（v0.58.1）：AI 生图时当参考图，让 TA 画"自己"长相一致 */
+    val artImagePath: String = "",
 )
 
 /** 编辑人设页的数据源：读全部人设 → 按 id 找那条 */
@@ -195,6 +202,7 @@ private fun PersonaEditorContent(
                 emoji = persona?.avatarEmoji ?: "🙂",
                 prompt = persona?.systemPrompt ?: "",
                 avatarImagePath = persona?.avatarImagePath.orEmpty(),
+                artImagePath = persona?.artImagePath.orEmpty(),
             )
         )
     }
@@ -216,6 +224,32 @@ private fun PersonaEditorContent(
                 target.outputStream().use { output -> input.copyTo(output) }
             }
             if (target.length() > 0) draft = draft.copy(avatarImagePath = target.absolutePath)
+        }
+    }
+
+    // v0.58.1：角色立绘。和头像一样**复制进私有目录**再存绝对路径——
+    // SAF 的读授权是会话级的，冷启动后 URI 就可能读不到，而这张图每次生图都要用。
+    // 目录独立（portraits/），不和 avatars/ 混：一个是"脸"、一个是"整个人"。
+    val artPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val old = draft.artImagePath
+        runCatching {
+            val dir = File(context.filesDir, "portraits").apply { mkdirs() }
+            // 落盘文件名**沿用用户那张图的原名**：立绘那一栏的输入框显示的就是它。
+            // 编一个 art_<时间戳> 出来，用户看到的是自己没见过的名字（v0.60.1）。
+            val target = portraitTargetFile(dir, safDisplayName(context, uri))
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (target.length() > 0) {
+                draft = draft.copy(artImagePath = target.absolutePath)
+                // 换图就把上一张删掉，否则每改一次留一张在盘上
+                if (old.isNotBlank() && old != target.absolutePath) {
+                    runCatching { File(old).delete() }
+                }
+            }
         }
     }
 
@@ -375,9 +409,19 @@ private fun PersonaEditorContent(
                     ) { avatarPicker.launch("image/*") },
             )
         }
-        if (draft.avatarImagePath.isNotBlank()) {
-            Spacer(Modifier.height(8.dp))
-            NeuTextButton("恢复默认头像", onClick = { draft = draft.copy(avatarImagePath = "") }, color = NeuDanger)
+        // v0.60.1（用户点名）：头像下面那颗钮改成**细线胶囊**，并且**一直在**——
+        // 默认头像时写「点击编辑」（点它 = 选图），换成自定义图之后写「恢复默认」（点它 = 换回 emoji）。
+        // 宽度与头像框同为 56dp → 自动和头像左右对齐；10sp / 22dp 高，离头像 4dp。
+        Spacer(Modifier.height(4.dp))
+        AvatarPill(
+            text = if (draft.avatarImagePath.isNotBlank()) "恢复默认" else "点击编辑",
+            danger = draft.avatarImagePath.isNotBlank(),
+        ) {
+            if (draft.avatarImagePath.isNotBlank()) {
+                draft = draft.copy(avatarImagePath = "")
+            } else {
+                avatarPicker.launch("image/*")
+            }
         }
         Spacer(Modifier.height(14.dp))
         NeuTextField(
@@ -395,6 +439,33 @@ private fun PersonaEditorContent(
             placeholder = "例：朋友 / 陪伴者 / 教练 / 心理咨询师",
             modifier = Modifier.fillMaxWidth(),
         )
+        Spacer(Modifier.height(14.dp))
+        // v0.58.1：**角色立绘**（和头像两回事）—— AI 生图画"自己"时发给生图服务的参考图，
+        // 让发色 / 瞳色 / 服装 / 画风保持一致；头像只是圆裁的一张脸，当参考图等于把形象全丢了。
+        // v0.60.1（用户点名）：挪到「身份」下面，形状改成和名字/身份**同款的输入框**，
+        // 框里显示已选图片的文件名、点整块弹图片选择器，原来那颗「上传立绘」按钮删掉。
+        // label 字号因此天然与其它字段一致（同一个组件、同一份排版），不另画一套"看起来像输入框"的东西。
+        // 已上传时下面留一颗「删除立绘」（与头像那行的「恢复默认头像」同一形状）——
+        // 上传入口收进框里之后，这是唯一的清除口。按项目规矩：这里不写说明性小字。
+        NeuTextField(
+            value = draft.artImagePath.takeIf { it.isNotBlank() }?.let { File(it).name }.orEmpty(),
+            onValueChange = {},
+            label = "角色立绘",
+            placeholder = "未上传，点这里选择图片",
+            onClick = { artPicker.launch("image/*") },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (draft.artImagePath.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            NeuTextButton(
+                "删除立绘",
+                onClick = {
+                    runCatching { File(draft.artImagePath).delete() }
+                    draft = draft.copy(artImagePath = "")
+                },
+                color = NeuDanger,
+            )
+        }
         Spacer(Modifier.height(14.dp))
         // v0.53.6：音色那一项已按用户要求**从编辑人设里移除** ——
         // 改为从「对话页右上角菜单 → 音色」选（见 ui/persona/PersonaVoiceSheet.kt）。
@@ -445,10 +516,15 @@ private fun PersonaEditorContent(
                             title = draft.title.trim().ifBlank { draft.name.trim() },
                             avatarEmoji = savedEmoji,
                             avatarImagePath = draft.avatarImagePath,
+                            artImagePath = draft.artImagePath,
                             systemPrompt = draft.prompt.trim(),
                             isBuiltIn = persona?.isBuiltIn ?: false,
                             tone = persona?.tone ?: ToneStyle.GENTLE.name, // 对话风格已取消（v0.32.0）
                             pinned = persona?.pinned ?: false,
+                            // ⚠️ v0.58.1：**这两个必须从原人设带过来**，漏一个就会在编辑设定词/头像时
+                            // 把人设的通话形象绑定的那一列悄悄重置成默认值（VideoCall 白配）。
+                            hidden = persona?.hidden ?: false,
+                            videoVisualType = persona?.videoVisualType ?: "NONE",
                             createdAt = persona?.createdAt ?: System.currentTimeMillis(),
                         )
                     )
@@ -583,4 +659,63 @@ private fun GuideText(text: String) {
         color = MutedText,
         modifier = Modifier.padding(vertical = 2.dp),
     )
+}
+
+/**
+ * 头像下面那颗**细线胶囊**（v0.60.1 用户点名）：一圈发丝线 + 999dp 胶囊 + 小字。
+ *
+ * 原来用的是 [NeuTextButton] —— 那是一颗 40dp 高的**裸文字**（无容器），
+ * 既离头像远，也看不出是个能点的东西。这里走全应用统一的"白面细线 + 无涟漪缩放"语言
+ * （`neuSurface(999.dp)` 非 inset 分支就是白面 + 1dp hairline 描边）。
+ *
+ * **宽度钉死成头像框的 56dp**：头像在整排里是 `CenterStart`，圆心正好在 28dp，
+ * 胶囊和它同宽就自动与头像左右对齐（第一版按内容宽 + 13dp 内边距，比头像宽出一圈、
+ * 还贴着左边起排，用户点名"太大、没对齐头像框"）。字也收到 10sp / 22dp 高。
+ */
+@Composable
+private fun AvatarPill(text: String, danger: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .width(56.dp)
+            .height(22.dp)
+            .neuRowPress(onClick)
+            .neuSurface(999.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Normal,
+            maxLines = 1,
+            color = if (danger) NeuDanger else TextSecondary,
+        )
+    }
+}
+
+/** SAF 选中项的原始文件名；查不到就退回 URI 末段（立绘输入框显示的就是它） */
+private fun safDisplayName(context: Context, uri: Uri): String = runCatching {
+    var name: String? = null
+    context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+        val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && c.moveToFirst()) name = c.getString(idx)
+    }
+    name ?: uri.lastPathSegment?.substringAfterLast('/')
+}.getOrNull().orEmpty()
+
+/** 收掉路径分隔符与控制符、重名自动加序号；只落进 portraits/ 这一层目录 */
+private fun portraitTargetFile(dir: File, rawName: String): File {
+    val cleaned = rawName
+        .replace(Regex("[^\\p{L}\\p{Digit}._\\- ]"), "_")
+        .trim('.', ' ', '_')
+        .take(60)
+    val base = cleaned.substringBeforeLast('.').ifBlank { "立绘" }
+    val ext = cleaned.substringAfterLast('.', "jpg")
+        .takeIf { it.isNotBlank() && it != cleaned && it.length <= 5 } ?: "jpg"
+    var f = File(dir, "$base.$ext")
+    var i = 0
+    while (f.exists()) {
+        i++
+        f = File(dir, "$base-$i.$ext")
+    }
+    return f
 }

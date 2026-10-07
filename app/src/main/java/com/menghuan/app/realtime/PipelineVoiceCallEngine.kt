@@ -30,6 +30,15 @@ import kotlinx.coroutines.withContext
 interface VoiceCallEngine {
     val state: StateFlow<RealtimeCallState>
     val events: SharedFlow<RealtimeCallEvent>
+
+    /**
+     * AI **正在播**的语音电平（0f–1f，v0.58.0）。
+     * 视频通话用它驱动 Live2D 口型——它的口径是"播放头真播到这儿了"，
+     * 不是"这一句已经发给播放器了"，所以嘴巴不会比声音先动。
+     * 语音通话不读它，不产生任何额外开销。
+     */
+    val aiLevel: StateFlow<Float>
+
     fun start(config: RealtimeCallConfig)
     /** v0.53.7：AI 主动打来的电话，接通后由 AI 先开口（引擎就绪后调用一次） */
     fun speakFirst()    fun hangUp()
@@ -74,6 +83,9 @@ class PipelineVoiceCallEngine(
     private val _events = MutableSharedFlow<RealtimeCallEvent>(extraBufferCapacity = 128)
     override val events: SharedFlow<RealtimeCallEvent> = _events
 
+    private val _aiLevel = MutableStateFlow(0f)
+    override val aiLevel: StateFlow<Float> = _aiLevel
+
     private var config: RealtimeCallConfig? = null
     private var audio: CallAudioManager? = null
     private var vad: CallVad? = null
@@ -115,6 +127,9 @@ class PipelineVoiceCallEngine(
         }
         audio = am
         vad = v
+        // 口型电平：只有视频通话那边会订阅 aiLevel，这里挂监听本身只是几次原子写，
+        // 语音通话不多做任何事（方案文档 §二.一：语音通话不许被视觉层拖累）
+        am.levelListener = { v0 -> _aiLevel.value = v0 }
         startedAt = System.currentTimeMillis()
         lastMuted = false
         bargeInSpeechMs = 0
@@ -163,6 +178,7 @@ class PipelineVoiceCallEngine(
         ttsChannel?.close()
         audio?.stopPlayback()
         audio?.close(appContext) // 恢复 AudioManager（任务书 §二十一）
+        _aiLevel.value = 0f      // 口型随挂断立刻归零，视觉层不会停在张嘴那一帧
         vad?.release()
         audio = null
         vad = null

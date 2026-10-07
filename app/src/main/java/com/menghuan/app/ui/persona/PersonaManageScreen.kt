@@ -2,6 +2,7 @@ package com.menghuan.app.ui.persona
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -54,6 +55,7 @@ import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuDanger
 import com.menghuan.app.ui.theme.TextPrimary
+import com.menghuan.app.ui.theme.TextSecondary
 import com.menghuan.app.ui.theme.personaBrush
 import kotlinx.coroutines.launch
 import com.menghuan.app.ui.theme.NeuSurface
@@ -85,6 +87,13 @@ fun PersonaManageScreen(
     onBack: () -> Unit,
     /** v0.53.5：编辑人设是独立整页，这里只把 id 交出去（0 = 新建） */
     onEdit: (Long) -> Unit,
+    /**
+     * v0.60.1（用户点名"会话删了就找不到了"）：从这张卡**直接进 TA 的会话**。
+     * 「删除会话」会把人设标成 hidden 且清空消息 → 消息列表按 `hidden && 无消息` 把它过滤掉，
+     * 而本页原来只有"点开 = 编辑"，全应用再没有第二条路能进那个会话。
+     * 进去一次就够了：`ChatViewModel.init` 里本来就会 `setHidden(false)`，会话自己回到列表。
+     */
+    onOpenChat: (Long) -> Unit,
     vm: PersonaManageViewModel = viewModel(factory = PersonaManageViewModel.Factory),
 ) {
     val personas by vm.personas.collectAsState(initial = emptyList())
@@ -124,6 +133,7 @@ fun PersonaManageScreen(
                     PersonaCard(
                         persona = persona,
                         onClick = { onEdit(persona.id) },
+                        onOpenChat = { onOpenChat(persona.id) },
                         onLongClick = { deleteTarget = persona },
                     )
                 }
@@ -162,7 +172,12 @@ fun PersonaManageScreen(
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun PersonaCard(persona: Persona, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun PersonaCard(
+    persona: Persona,
+    onClick: () -> Unit,
+    onOpenChat: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     NeuCard(
         cornerRadius = 22.dp,
         contentPadding = 14.dp,
@@ -204,12 +219,29 @@ private fun PersonaCard(persona: Persona, onClick: () -> Unit, onLongClick: () -
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Icon(
-                MIcons.ChevronRight,
-                contentDescription = null,
-                tint = FaintText,
-                modifier = Modifier.width(18.dp),
-            )
+            // v0.60.1：卡片右端那颗图标**从装饰变成入口** —— 点它 = 进 TA 的会话。
+            // 沿用全应用那套"点卡片本体是一件事、点右侧图标是另一件事"（见 v0.53.0 的 API 配置卡）：
+            // 本体仍是编辑，图标是聊天。命中区给足 40dp、图标 21dp、用 TextSecondary 才看得清
+            // （原来是 18dp 宽的 FaintText 装饰箭头，既不能点也几乎看不见）。
+            Box(
+                Modifier
+                    .size(40.dp)
+                    .clickable(
+                        interactionSource = remember {
+                            androidx.compose.foundation.interaction.MutableInteractionSource()
+                        },
+                        indication = null,
+                        onClick = onOpenChat,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    MIcons.ChatBubble,
+                    contentDescription = "进入聊天",
+                    tint = TextSecondary,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
         }
     }
 }

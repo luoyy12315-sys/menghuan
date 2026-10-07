@@ -14,8 +14,8 @@ android {
         applicationId = "com.menghuan.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 139
-        versionName = "0.57"
+        versionCode = 149
+        versionName = "0.61.1"
         // 只保留中英文资源，去掉依赖库里几十种语言的 strings/日期符号
         resourceConfigurations.addAll(listOf("zh", "zh-rCN", "en"))
         // sherpa-onnx AAR 自带 4 套 ABI（arm64/v7a/x86/x86_64）共 127MB so，
@@ -52,6 +52,26 @@ android {
     // 所以只需保 onnx；原来一起写的 txt 是给内置 tokens.txt 用的，现已无用。
     androidResources {
         noCompress.addAll(listOf("onnx"))
+    }
+
+    // Live2D Cubism Framework 源码（v0.58.0）：官方 SDK 的 105 个 .java 原样放在 cubism/ 下，
+    // 当作本模块的额外源码目录编进来（**不能建成 library 模块**：它依赖的闭源 Core 是本地 .aar，
+    // AGP 禁止 library 模块带本地 .aar 出 AAR）。目录独立 = 升级 SDK 时替换整个 cubism/ 就行，
+    // 不和 app 自己的代码混在一起。
+    sourceSets {
+        getByName("main") {
+            java.srcDirs("../cubism/framework/src/main/java")
+            // ⚠️ **这条不能省**（v0.60.3 真机才查出来）：Cubism Java 5-r.5 的 GLSL 源码
+            // **不是内嵌在 Java 里的**，`CubismShaderAndroid` 运行时按
+            // `com/live2d/sdk/cubism/framework/shaders/standardES/*.vert|.frag` 去读文件。
+            // 官方 Framework 是 library 模块、这些文件放在它的 `src/main/assets` 下会自动打进 AAR；
+            // 我们只挂了 `java.srcDirs` 把源码搬进 app 模块，**assets 就整个漏掉了**
+            // → 一个着色器都编译不出来 → 模型加载"成功"、`ready=true`、零异常，
+            // 但 `drawModel()` 什么也不画，屏幕上永远是一片透明/白。
+            // ⚠️ 用 **srcDir（单数，追加）** 而不是 srcDirs：后者的语义是"替换"，
+            // 一旦替换会把模块自己的 `app/src/main/assets`（里面有离线识别用的 asr/silero_vad.onnx）整个挤掉。
+            assets.srcDir(rootProject.file("cubism/framework/src/main/assets"))
+        }
     }
 
     buildTypes {
@@ -124,6 +144,23 @@ dependencies {
     // 自带 4 个 ABI 的 onnxruntime/jni so；中文流式模型放在 src/main/assets/asr/
     // （见 SherpaAsr）。proguard-rules.pro 里有对应 keep 规则。
     implementation(files("libs/sherpa-onnx-1.13.8.aar"))
+
+    // Live2D Cubism Core（v0.58.0 视频通话的闭源渲染内核）：官方 AAR，
+    // 官方 Core/RedistributableFiles.txt 明确允许随应用分发这个文件。
+    // Framework 那层开源 Java 源码走 sourceSets 的额外 srcDir（见上面 android.sourceSets）。
+    // ⚠️ 用 rootProject.file 而不是相对路径：模块目录是 app/，源码却放在仓库根的 cubism/ 下。
+    implementation(files(rootProject.file("cubism/libs/Live2DCubismCore.aar")))
+
+    // 伪视频通话（v0.58.0）：Media3 ExoPlayer 播本地 mp4。
+    // 只引 exoplayer，不引 media3-ui —— 通话页要的是"切状态不黑屏"，
+    // PlayerView 那块 exo_shutter 反而是黑来源；自己挂 TextureView 给播放器更可控，
+    // 顺带省掉 media3-ui 的 330KB。解码走系统 MediaCodec，不新增 so。
+    //
+    // ⚠️ **版本钉死在 1.9.0，不要顺手升级**：1.10 起 AAR metadata 的 minCompileSdk=36，
+    // 本工程 compileSdk=35 + AGP 8.7.3 会在 `:app:checkReleaseAarMetadata` 直接构建失败
+    // （实测 1.11.1 报 "requires libraries and applications to compile against version 36"）。
+    // 要升 media3 就得先升 compileSdk 到 36 并换支持它的 AGP，那是另一件事。
+    implementation("androidx.media3:media3-exoplayer:1.9.0")
 
     // 本地数据库：对话 / 人设 / 任务
     implementation("androidx.room:room-runtime:2.6.1")

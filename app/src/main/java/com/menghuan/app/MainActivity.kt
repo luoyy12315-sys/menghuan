@@ -414,6 +414,7 @@ private fun MenghuanAppRoot(
                         personaId = pId,
                         onBack = { navController.popBackStack() },
                         onOpenCall = { navController.navigate("call/$pId") },
+                        onOpenVideoCall = { navController.navigate("video_call/$pId") },
                         onOpenSettings = { route -> navController.navigate(route) },
                     )
                 }
@@ -449,6 +450,32 @@ private fun MenghuanAppRoot(
                     )
                 }
             }
+            // 视频通话页（v0.58.0）：与语音通话**两个独立入口、两条路由**，
+            // 底下跑的是同一套实时通话引擎，只是多挂一层视觉（方案文档 §一 / §五）。
+            // 来电（AI 主动打）仍只走语音那条 —— 视觉资源没准备好时不该强行上画面。
+            composable(
+                route = "video_call/{personaId}",
+                arguments = listOf(navArgument("personaId") { type = NavType.LongType }),
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                val callId = entry.arguments?.getLong("personaId") ?: 1L
+                AdaptiveScreen {
+                    RealtimeCallScreen(
+                        personaId = callId,
+                        onBack = { navController.popBackStack() },
+                        onOpenSettings = { route -> navController.navigate(route) },
+                        videoMode = true,
+                    )
+                }
+            }
             composable(
                 route = "personas",
                 deepLinks = listOf(navDeepLink { uriPattern = "menghuan://personas" }),
@@ -467,6 +494,8 @@ private fun MenghuanAppRoot(
                     PersonaManageScreen(
                         onBack = { navController.popBackStack() },
                         onEdit = { id -> navController.navigate("persona_editor/$id") },
+                        // v0.60.1：人设管理页直接进会话（被「删除会话」隐藏过的人设靠这条路找回来）
+                        onOpenChat = { id -> navController.navigate("chat/$id") },
                     )
                 }
             }
@@ -742,6 +771,7 @@ private fun HomePages(
                                     onBack = { onTwoPaneChatChange(0L) },
                                     showBack = false,
                                     onOpenCall = { navController.navigate("call/$twoPaneChatId") },
+                                    onOpenVideoCall = { navController.navigate("video_call/$twoPaneChatId") },
                                     onOpenSettings = { route -> navController.navigate(route) },
                                 )
                             }

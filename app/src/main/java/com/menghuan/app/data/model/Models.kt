@@ -26,6 +26,28 @@ data class Persona(
     val pinned: Boolean = false,    // 会话置顶（长按会话行切换）
     @ColumnInfo(defaultValue = "0")
     val hidden: Boolean = false,    // 已删除的会话（微信式：清空消息后从列表隐藏，新消息/重新打开即恢复）
+    /**
+     * 视频通话的视觉形象类型（v0.58.0）：`NONE` / `LIVE2D` / `VIDEO`，
+     * 存 [com.menghuan.app.data.CallVisualType] 的枚举名。
+     *
+     * 这一列只回答"想用哪种视觉"；具体素材（哪些 mp4、哪个模型包、准备好没有）
+     * 在 `filesDir/call_visuals/<personaId>/metadata.json` 里，两边职责分开（方案文档 §十九）。
+     * 旧数据默认 NONE，所以升级后语音通话与聊天的行为完全不变（方案文档 §二十）。
+     */
+    @ColumnInfo(defaultValue = "NONE")
+    val videoVisualType: String = "NONE",
+    /**
+     * 角色立绘的**本机文件绝对路径**（v0.58.1，`filesDir/portraits/`）。
+     *
+     * 两个用途：① 人设页/以后要显示全身形象的地方；② **AI 生图时当参考图发给生图服务**，
+     * 让 TA 画"自己"时长相、发色、服装对得上（见 ImageGenerationClient.generate 的 refImage）。
+     *
+     * ⚠️ 这和 [avatarImagePath]（会话头像，圆裁小图）是两回事，别共用一个字段：
+     * 头像多半是脸的大特写，拿去做生图参考会把整套服装都丢掉。
+     * 旧的 DataStore 键 `persona_art` 已在 v0.58.0 废弃清理，这一列是它的正式替代。
+     */
+    @ColumnInfo(defaultValue = "")
+    val artImagePath: String = "",
     val createdAt: Long = System.currentTimeMillis(),
 )
 

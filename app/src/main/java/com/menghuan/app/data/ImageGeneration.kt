@@ -20,8 +20,16 @@ import kotlin.math.abs
  * "The parameter `size` specified in the request is not valid: image size must be at least
  * 3686400 pixels"）被整个吞掉，用户只看到"生图失败：模型未配置或调用失败"，无从下手。
  * 本项目在 ImageProbe 的 404、记账识图上已经因为同一毛病踩过三次，这次一并收口。
+ *
+ * [note]（v0.58.1）= **图成功了但没完全按预期成功**要告诉用户的话：
+ * 目前只有一种——带了立绘参考图、这家服务不认，于是自动退回纯文生图出了图。
+ * 这种"结果对但条件没生效"的情况绝不能闷声，否则用户会以为那张像 TA。
  */
-data class ImageGenResult(val path: String? = null, val error: String? = null)
+data class ImageGenResult(
+    val path: String? = null,
+    val error: String? = null,
+    val note: String? = null,
+)
 
 /**
  * AI 生图（v0.35.0）。
@@ -63,7 +71,7 @@ class ImageGenerationClient(
 
     /**
      * 调生图接口并把图片落盘，返回 [ImageGenResult]：成功带路径，失败带**给用户看的**原因
-     * （服务端原话优先，见 [NetworkStack.apiErrorText]）。
+     * （服务端原话优先，见 [NetworkStack.apiErrorText]）。[refImage] = 角色立绘（v0.58.1，图生图参考图）。
      *
      * ## 为什么不再传 `size`（v0.56.17）
      * 这里原来写死 `"size": "1024x1024"`，真机上豆包 Seedream 5.0 直接 400：
@@ -72,15 +80,53 @@ class ImageGenerationClient(
      * 智谱 cogview-3（只吃 1024x1024 等）拒 —— **没有任何一个尺寸能满足所有家**。
      * 所以这个字段干脆不发，让各家用自己的默认值（豆包 2048x2048、OpenAI auto、…）。
      * ⚠️ 「测试连接」的 [ImageProbe] 必须与这里保持一致，否则会出现"测试通过、真生图失败"。
+     *
+     * ## 参考图怎么发、发不出去怎么办（v0.58.1）
+     * 各家 OpenAI 兼容网关的 img2img **字段名不统一**（`image` / `images` / `init_image` /
+     * `ref_image`…），而且相当一部分压根没实现。本项目按 AGENTS §零.6 的规矩**不猜参数名**：
+     * 只发国内网关最通用的一种写法（`"image": ["data:image/png;base64,…"]`），
+     * 一旦被服务端判错，就**自动去掉参考图重试一次**——
+     * 出图成功则在 [ImageGenResult.note] 里明说"这张没按立绘生成"，两次都失败就把两句原话都带回去。
+     * 这样"支持参考图的家用得上、不支持的家最多回到原来的行为"，不会因为这个新功能把生图整体搞挂。
      */
-    suspend fun generate(prompt: String, dir: File): ImageGenResult = withContext(Dispatchers.IO) {
-        if (!isConfigured() || prompt.isBlank()) {
-            return@withContext ImageGenResult(error = "配置不完整（缺接口地址 / Key / 模型）")
+    suspend fun generate(prompt: String, dir: File, refImage: File? = null): ImageGenResult =
+        withContext(Dispatchers.IO) {
+            if (!isConfigured() || prompt.isBlank()) {
+                return@withContext ImageGenResult(error = "配置不完整（缺接口地址 / Key / 模型）")
+            }
+            val dataUrl = refImage?.let { referenceDataUrl(it) }
+            if (refImage != null && dataUrl == null) {
+                // 立绘在、但读不出来或超过上限：不许"悄悄当没这张图"就出图，
+                // 那会让用户以为画的是 TA
+                return@withContext ImageGenResult(
+                    error = "立绘读不出来或超过 $MAX_REF_MB MB，这次没生成（换一张小一点的图试试）",
+                )
+            }
+            val first = post(prompt, dir, dataUrl)
+            if (dataUrl == null || first.path != null) return@withContext first
+            val second = post(prompt, dir, null)
+            if (second.path != null) {
+                ImageGenResult(
+                    path = second.path,
+                    note = "这家生图服务不认参考图（${first.error.orEmpty().take(90)}），" +
+                        "这张没按立绘生成",
+                )
+            } else {
+                ImageGenResult(
+                    error = "带立绘：${first.error ?: "失败"}；不带立绘：${second.error ?: "失败"}",
+                )
+            }
         }
+
+    /** 一次 HTTP 尝试。[refDataUrl] 非空才带 `image` 字段（[ImageProbe] 探活走的是不带的那条） */
+    private suspend fun post(prompt: String, dir: File, refDataUrl: String?): ImageGenResult {
         val body = JSONObject()
             .put("model", model)
             .put("prompt", prompt)
             .put("n", 1)
+            .apply {
+                if (refDataUrl != null) put("image", org.json.JSONArray().put(refDataUrl))
+            }
             .toString()
             .toRequestBody("application/json".toMediaType())
 
@@ -90,7 +136,7 @@ class ImageGenerationClient(
             .post(body)
             .build()
 
-        runCatching {
+        return runCatching {
             // v0.36.3：握手被服务端掐断时自动降级 TLS1.2+http1.1 重试（见 callWithTlsFallback）
             http.callWithTlsFallback(request) { resp ->
                 if (!resp.isSuccessful) {
@@ -113,6 +159,25 @@ class ImageGenerationClient(
             }
         }.getOrElse { ImageGenResult(error = NetworkStack.describeNetworkFailure(it)) }
     }
+
+    /**
+     * 立绘 → `data:image/…;base64,…`。读不出、超过 [MAX_REF_MB]、或不是可识别的图片格式时返回 null。
+     *
+     * 上限是**故意压低**的：base64 比原文件大 ~33%，一张 20MB 的立绘塞进 JSON 里，
+     * 轻则超时、重被网关按 body size 拒掉，重到把整个生图请求打死。
+     * 真机上要传大图应先压一遍再说，这里不静默放大限制。
+     */
+    private fun referenceDataUrl(file: File): String? = runCatching {
+        if (!file.isFile || file.length() <= 0L) return null
+        if (file.length() > MAX_REF_MB * 1024 * 1024) return null
+        val mime = when (file.extension.lowercase()) {
+            "png" -> "image/png"
+            "jpg", "jpeg" -> "image/jpeg"
+            "webp" -> "image/webp"
+            else -> return null
+        }
+        "$mime;base64," + java.util.Base64.getEncoder().encodeToString(file.readBytes())
+    }.getOrNull()
 
     /** 兼容三种常见返回：data[0].url（b64_json 时用本地 base64）、data[0].b64_json */
     private fun parseImageUrl(json: JSONObject): String? {
@@ -155,6 +220,12 @@ class ImageGenerationClient(
     companion object {
         const val MARK_START = "[生图:"
         const val MARK_END = "]"
+
+        /**
+         * 参考图（立绘）的原图大小上限。base64 会让请求体再涨约 1/3，
+         * 压到 8MB 是为了不被网关按 body size 拒掉——宁可不带也不静默发一个超大包。
+         */
+        const val MAX_REF_MB = 8
 
         /** 落盘目录：应用私有目录，卸载即清理；不进相册不联网 */
         fun imagesDir(appFilesDir: File): File = File(appFilesDir, "images")

@@ -37,9 +37,18 @@
    - 语音采集：`data/VoiceRecorder.kt` —— AudioRecord 直采 PCM + 手写 WAV 头。  
    - **语音栈 v0.50.0 整体重做**（施工依据 `docs/PLAN-v0.50.0-语音执行方案.md`，协议依据
      `docs/RESEARCH-v0.50.0-TTS协议查证.md`）：一条识别链 + 一条合成链 + 一个标记协议 + 两个开关。
-     - 识别：`data/SherpaAsr.kt` 是**唯一一级** —— sherpa-onnx `OfflineRecognizer` +
-       **SenseVoice 离线非流式**。`SpeechToText.kt` 已收成单级；云端 Whisper 与系统识别器
-       两级实测永远走不通，连同 `OpenAiClient.transcribe` 一起删除，**不要复活**。
+     - 识别：**两条并列的路，手动切换、绝不自动回退**（v0.59.0 用户拍板把在线识别加了回来）。
+       - `data/SherpaAsr.kt` = 离线一级（sherpa-onnx `OfflineRecognizer` + **SenseVoice 离线非流式**），默认走它；
+       - `data/OnlineAsr.kt` = 在线一级（通用 OpenAI 兼容 `POST {地址}/audio/transcriptions`，multipart
+         `file` + `model`），地址/Key/模型用户自己填，**App 不猜任何服务商域名**（§零.6）；
+       - `data/SpeechToText.kt` 按 `SettingsRepository.asrEngine`（`offline` / `online`）二选一。
+       ⚠️ **绝不做"在线不行就回落离线"**：当年云端 Whisper 与系统识别器就是坐在自动回退的第二级上，
+       用户配的端点实测不支持 → 每次白等一轮超时、"识别为空"哪一级出的事谁也说不清，三个版本后整条删掉
+       （连 `OpenAiClient.transcribe` 一起）。现在它是一条**明示的选择**：选在线就只走在线，
+       失败把 `OnlineAsr.lastFailure` 原样报给用户（401 是没配好 Key、404 是这家压根没这个接口、
+       超时是网络，三种原因的处理动作完全不同，**不许糊成"没听清"**）。
+       ⚠️ **通话例外**：通话逐段喂 PCM、**始终走端侧**（在线要"一个文件一次请求"，每句多一次网络往返
+       会把对话拖死），与这个开关无关。
      - **语音消息与通话共用同一个识别器实例**（`CallAsr.kt` 已删，通话改调
        `SherpaAsr.transcribeSamples`）：228MB 权重建两个 session ≈ 500MB，中低端机直接 OOM。
      - **识别模型不随包**：`data/AsrModelManager.kt`（Range 断点续传 + 逐文件 sha256 + 删除）
@@ -93,10 +102,20 @@
        **原地升级**成语音条（不另插一条，否则文字与语音说同一件事）；`VoiceBubble(isUser=…)`
        AI 侧走面色细线、用户侧保持黑底药丸。播完一定复位不再只靠 `MediaPlayer.onCompletion`
        （MP3 尾部 padding 时那个回调可能整场不来）——`ChatScreen` 有按 position/duration 的看门狗。
-     - **已删除、不要复活**：Edge TTS（`EdgeTtsClient.kt`）、AI 回复朗读（`ReadAloudPlayer.kt` +
-       单聊右上角喇叭 + `chat_read_aloud` 键）、**`realtime/Mp3Decoder.kt`**（v0.52.0）——
+     - **已删除、不要复活**：Edge TTS（`EdgeTtsClient.kt`）、**`realtime/Mp3Decoder.kt`**（v0.52.0）——
        它把**输入** `MediaFormat` 硬写成 `24000Hz/单声道`，真实流不符就吐 0 帧，
        同时是"通话：声音合成失败/音频解码失败"与"克隆：文件格式不对"两条真机反馈的同一个根因。
+     - **朗读（v0.59.0 按用户要求加回来，形状与当年不同）**：长按消息气泡菜单「朗读」念任意一条 +
+       **按角色各开各的**「自动朗读」开关（在**该角色的会话设置第一组最后那行**，与「联网搜索」并列），
+       **默认全关**。当年被删的是"右上角喇叭自动念"那一套
+       （`ReadAloudPlayer.kt` + 全局 `chat_read_aloud` 键），**不要把它复活回来**：现在的实现是
+       `ChatViewModel.readAloud()`，合成**复用语音条那条链**（`TtsClients` + `voiceForConversation`
+       三级回落音色），播放 = 临时文件 + `MediaPlayer`；`UiState.readingId` 让气泡知道自己在被念。
+       开关存法与「会话联网」同一套 `id\t1|0` 表（`chatReadAloud`）。
+       ⚠️ 三条纪律：① 同一时刻只念一条，再点同一条 = 停；② 复位**不能只靠 `onCompletion`**
+       （MP3 尾部 padding 时那个回调可能整场不来）——按 `probeDurationMs` 的时长挂兜底；
+       ③ 每次打断都 `readToken++`，让在飞的合成协程回来发现自己过期就放弃，
+       不许它把新一轮的状态覆盖掉。AI 已经发了语音条的回复**跳过自动朗读**（同一句话别念两遍）。
      - 构建配置三处硬约束：`noCompress` **只剩 `onnx`**（`txt` 随内置 tokens 一起移除）、
        `ndk.abiFilters` **只剩 `arm64-v8a`**（去 v7a 省 22MB，用户已确认放弃 32 位老机）、
        `proguard-rules.pro` 的 `-keep class com.k2fsa.sherpa.onnx.**` **保持不变**（JNI 字段被混淆会崩）。
@@ -130,6 +149,116 @@
    不确定的写"请查看服务商官网"，不要编一个看起来合理的域名。
    （反例：参考包里的 `cloud.siliconflow.cn/i/owSKCHzC` 是**第三方作者的邀请链接**，带邀请码，
    绝不能抄进本 App 的文案。）
+7. **视频通话（v0.58.0）：通话能力与视觉形象彻底解耦，以下五条不许回退。**
+   施工依据外部方案文档 `~/tabbit/梦欢_实时通话_视频化通话_开发方案与总Prompt.md`（本期不做 3D）。
+   - **只有两个入口共用一套实时通话**：`call/{personaId}`（语音）与 `video_call/{personaId}`（视频）
+     都跑 `PipelineVoiceCallEngine`，**没有第二条网络链路、第二套音频链路**。视觉层挂在
+     `realtime/visual/`（`CallVisualEngine` + 三个实现 None/Video/Live2d + `CallVisualState` 六态），
+     由 VM 订阅引擎状态后驱动。
+   - **语音通话必须完全不碰视觉层**（方案 §二.一）：不加载 Live2D、不建播放器、不扫素材目录。
+     `videoMode=false` 时 VM 连 `CallVisualEngine` 都不创建。
+   - **视觉失败 ≠ 通话失败**（方案 §二十四）：任何视觉异常只把 `VisualRuntime.Degraded(原因)` 交给
+     页面回落到头像，**禁止把异常冒泡进通话链路**（`suspend fun load` 内部 swallow，帧循环包 runCatching）。
+   - **口型电平按播放头报，不按写入速度报**：唯一来源是 `CallAudioManager.playPcm` 里那个
+     `pendingLevels/pendingEnds` 队列 —— 非阻塞写会先把 AudioTrack 缓冲灌满，按写入速度算电平
+     就是"AI 还没出声嘴先动半秒"。`stopPlayback()` 必归零（打断后嘴要收）。
+     RMS→门限→开平方在 `CallAudioLevel`（纯函数 + 单测），平滑在 `Live2dCharacter.MouthProvider`
+     （一阶低通，与帧率无关）。⚠️ 官方 Sample 的 `LAppWavFileHandler.getParameter()` 是**空壳**
+     （直接 return 0.0f），别当参考实现抄；正规入口是 `CubismLipSyncUpdater(ids, IParameterProvider)`。
+   - **`cubism/` 是 vendor 的官方 Cubism SDK for Java 5-r.5，不要"顺手升级/替换/自研解析 .moc3"**：
+     Framework 105 个 java 文件原样放在 `cubism/framework/src/main/java`，**通过 app 的
+     `sourceSets.main.java.srcDirs` 编进 app 模块，不建成独立 library 模块** —— AGP 明确禁止
+     library 模块带本地 `.aar` 出 AAR（实测 `:cubism-framework:bundleReleaseLocalLintAar` 直接
+     报 "Direct local .aar file dependencies are not supported when building an AAR"）。
+     闭源 Core 是 `cubism/libs/Live2DCubismCore.aar`，由 app 用
+     `implementation(files(rootProject.file("cubism/libs/Live2DCubismCore.aar")))` 引
+     （和 `app/libs/sherpa-onnx-1.13.8.aar` 同一种接法；官方 `Core/RedistributableFiles.txt`
+     允许随包分发，arm64 so 实测 110KB）。它**没有任何 Maven 坐标**（Maven Central / Aliyun 全 404），
+     只能从 live2d.com 下载页拿（⚠️ 本机 `curl` 对 www.live2d.com 报 000 是**证书假死**，
+     `--insecure` 就 200 —— 浏览器能正常打开，别说"官网不可达"）。
+     JNI keep 规则写在 **`app/proguard-rules.pro`** 里：
+     `-keep class com.live2d.sdk.cubism.core.** { *; }` **保持不动**（Core 字段被 JNI 按名字访问，
+     混淆即崩，同 sherpa-onnx 那条教训）。官方 Framework 自带的 consumer-rules.pro 是**空文件**，
+     指望它自动带进规则是错的。
+   - **Media3 钉死在 1.9.0，别升到 1.10/1.11**：1.10 起 AAR metadata 要求 `minCompileSdk=36`，
+     本工程 compileSdk 35 + AGP 8.7.3 会在 `:app:checkReleaseAarMetadata` 直接失败。
+   - 伪视频**只用 `androidx.media3:media3-exoplayer`，不引 media3-ui**：PlayerView 的 `exo_shutter`
+     就是黑屏来源，自己挂 TextureView 反而"新帧出来前一直显示上一帧"、切状态不闪黑，还省 330KB。
+     素材一律静音（AI 的声音只有 AudioTrack 那一条链路）。
+   - ⚠️ **v0.60 起视频通话页 = 全屏铺满，别再改回"按比例排的卡片"**（用户点名要 9:16 竖屏全屏铺满、
+     不黑边不拉伸）：画面是**垫在最底层的背景层**（`CallVisualSlot` 只负责把整屏交给引擎），
+     顶栏/字幕/静音挂断叠在它上面；以前画面夹在顶栏与字幕之间、按素材比例撑高，
+     竖屏素材直接把字幕与挂断挤出屏幕（"视频通话没法用"的真根因）。
+     铺满口径 = **cover**，由引擎在 View 内部做（伪视频 `VideoVisualEngine.applyCoverTransform`
+     给 TextureView 设变换矩阵；Live2D 走 `fitProjection`）：留边违背"铺满"、拉伸会变形，二者都不要。
+     有画面时页底**不能再铺 `NeuBackground`**（改透明），否则白底从画面边缘透出来描白边；
+     可读性靠上下两层暗色渐变托底 + 时长/字幕走白色系。
+     另：有画面时**不要**给叠在画面上的控件加 `staggerEnter`/`graphicsLayer` 这类 post-layout 变换
+     （官方 SurfaceView 文档：合成按布局位置算，变换过的兄弟视图可能与曲面合不上）。
+   - **通话页一律不显示名字**（v0.60.1 用户两次点名：视频顶栏、语音主视觉都是"头像就是身份"）：
+     圆头像 + `personaBrush` 渐变环已经足够认出是谁，那行 20sp 的名字不要复活。
+   - **语音通话的主视觉头像 = 屏宽 59%、中心落在屏高约 38.7%**（v0.60.1 用户照参考图点名）：
+     `RealtimeCallScreen` 外层是 `BoxWithConstraints`，边长与顶部留白都按 `maxWidth`/`maxHeight`
+     比例算（**不许写死 dp**，AGENTS 布局规矩），画布边长 = 头像边长 × `CallAvatarCanvasRatio`（196:124，
+     脉冲环画在画布内、画布尺寸必须恒定，否则两态头像位置会跳）。
+     ⚠️ 视频通话**有画面**那一支不受影响（走上面的居中顶栏，42dp 小头像）。
+   - **视频通话有画面时 = 顶栏「头像 + 状态」一行、时间一行**（v0.60.1 用户点名，别再改回名字）：
+     名字换成 42dp 圆头像（`personaBrush` 渐变环，同会话列表那颗），状态胶囊挂头像右边，
+     时间在下面一行，整组**居中贴顶**。⚠️ 只在 `videoVisualOn` 时走这套；
+     **没有形象（回落到居中大头像）时按上面那条大头像的规矩**，同一屏不会出现两颗头像。
+   - ⚠️ **Live2D "加载成功却什么都不画" 的真根因：框架的 GLSL 是运行时读文件的，两处都不能缺**
+     （v0.60.4 才查到底；v0.58~v0.60.3 三版都归错因，白绕）。Cubism Java 5-r.5 的
+     `CubismShaderAndroid` 会按 `com/live2d/sdk/cubism/framework/shaders/standardES/*.vert|.frag`
+     调 `ICubismLoadFileFunction` 读着色器源码，**读不到只 `cubismLogError` 后 `return 0`，不抛异常**
+     → 所有 shader program 句柄为 0 → `drawModel()` 画不出任何东西，而 moc/贴图/物理是我们自己
+     `File.readBytes()` 读的，所以 `ready=true`、`fail=null`、零报错。两处缺一不可：
+     1. `app/build.gradle.kts` 的 `sourceSets.main` 必须挂
+        `assets.srcDir(rootProject.file("cubism/framework/src/main/assets"))`。
+        官方 Framework 是 library 模块、着色器在它的 `src/main/assets` 里会自动进 AAR；
+        我们改成 `java.srcDirs` 搬源码后**assets 整个漏掉**了。
+        ⚠️ 用**单数 `srcDir`（追加）**，别用 `srcDirs` —— 那会把模块自己的
+        `app/src/main/assets/asr/silero_vad.onnx`（离线识别）挤掉，语音当场废。
+     2. `CubismFramework.Option` 必须设 **`loadFileFunction`**（官方 Sample 在
+        `LAppMinimumDelegate` 私有构造里有这句 `cubismOption.loadFileFunction = new LAppMinimumPal.LoadFileFunction()`，
+        照抄时**漏了这一行就是全场静默失败**）。本工程实现在 `Live2dBootstrap` / `AssetLoadFileFunction`。
+     3. **这类静默失败必须当场判死**：`Live2dVisualEngine` 首帧探针先查
+        `Live2dBootstrap.shaderLoadFailure`，非空就 `Degraded("Live2D 着色器资源没打进包…")`
+        回落到头像并把原因写在页面上。**别再靠"看着是白屏"猜**。
+   - **下面两条也是真 bug（v0.60.1 修的），但都不是"看不见"的那一个**，别把它们当根因写回去：
+     1. **模型加载必须在 `onSurfaceChanged`，不许挪回 `onSurfaceCreated`**。`GLSurfaceView` 保证
+        created 先于 changed，**created 时窗口尺寸还是 0**，而 `CubismRendererAndroid.create(w, h)`
+        拿这两个数去建**离屏渲染目标**——0×0 的缓冲不报错，只会把每帧画进零尺寸目标。
+        官方 Sample 躲这一刀靠的是 `onSurfaceChanged → setRenderTargetSize(w, h)`，
+        视图重新量过（旋转/分屏/回前台）时这一句也不能省。
+     2. **v0.61.0 起 Live2D 的视图是 `GlTextureView`（TextureView + 自建 EGL 上下文与渲染线程），
+        不要改回 `GLSurfaceView`**。`SurfaceView` 只有两种摆法且都不行：排在窗口下面要在窗口上挖洞，
+        而 Compose 的 `AndroidView` 里**整棵 Compose 绘制树比子 View 先画**，洞会把顶栏/字幕/挂断
+        一起擦掉；`setZOrderOnTop(true)` 排到窗口上面，角色又**盖住它覆盖范围内的 UI**
+        （v0.60.2~v0.60.4 真机反馈"挡住挂断键"）。TextureView 走普通 View 绘制：透明处透出页面、
+        UI 永远画在它上面。代价是 EGL 上下文、渲染线程、surface 生命周期都要自己管，
+        全收在 `realtime/visual/live2d/GlTextureView.kt` 一个文件里。
+        ⚠️ 官方 Sample 不涉及这一层（它的曲面是不透明整屏、上面没有 UI），**别拿它当依据**。
+   - `publish()` 里 `live2d publish size=… ready=… fail=…` 与首帧 `live2d probe corner rgba=…`
+     是分辨"没加载 / 加载失败 / 画不出来 / 缓冲没 alpha"的唯一手段，**别删**。
+     （`rgba=0,0,0,0` = 缓冲透明、内容没画 → 直指着色器；这条就是破案的钥匙。）
+   - 上传入口是会话设置页的**一行「视频通话形象」**（v0.58.1 用户拍板：原来 Live 2D / 伪视频 两行合成一行，
+     点开先选类型再进各自的上传弹层；**不叠两层底部弹层**，是"关掉自己再打开对面"）。
+     「Live2D 模型包」= zip 模型包 / 「伪视频素材」= 多选 mp4 + 逐状态指认；不在人设编辑页重复一份。
+     旧的「角色立绘」行与 `persona_art` / `persona_live2d` 两个 DataStore 键**已废弃并清理**（单文件渲染不出来）。
+     素材落 `filesDir/call_visuals/<personaId>/`，库里只有 `personas.videoVisualType`（Room v15）；
+     两边不一致**以文件为准**。
+   - **角色立绘（v0.58.1）= 另一条线，别和通话形象混**：入口在**编辑人设页**（`personas.artImagePath`，Room **v16**，
+     文件落 `filesDir/portraits/`），用途是 **AI 生图时当参考图发给生图服务**（图生图），让 TA 画"自己"长相一致。
+     v0.60.1 用户点名改形状：它是**「身份」下面一个和名字/身份同款的 `NeuTextField`**
+     （`onClick` 参数 = 只读 + 整块可点、不弹键盘），框里显示图片文件名、点它就是选图，
+     **原来的「上传立绘」按钮已删除**；已上传时下面一颗「删除立绘」。
+     落盘**沿用用户那张图的原名**（`portraitTargetFile` 收非法字符 + 重名加序号），
+     不再编 `art_<时间戳>` 那种用户没见过的名字。
+     它和 `avatarImagePath`（圆裁头像）是两列，**不许互相顶替**：头像多半只有脸，当参考图等于把服装形象丢了。
+     ⚠️ 各家网关的参考图字段名不统一（`image`/`images`/`init_image`/`ref_image`…），本项目的口径是
+     **不猜参数名**：只发国内最通用的 `"image": [dataURL]`，被服务端判错就**自动去掉参考图重试一次**，
+     成功则在 `ImageGenResult.note` 里明说"这张没按立绘生成"——结果对但条件没生效的事不许闷声。
+
 
 ## 一、项目是什么
 
@@ -272,8 +401,16 @@
 - 人设管理 / 基础档案 / AI 提示词 / 设置（含外观）入口**只在「我的」页**；
   （v0.45.0：AI 提示词从设置面板提出来、单独成一级行卡；设置面板里不再放人设管理，避免与「我的」页重复）  
   会话列表顶栏只留标题与搜索图标，不放任何其它图标按钮
+  - **人设管理每张卡：点卡片本体 = 编辑，点右端那颗 `ChatBubble` = 进 TA 的会话**（v0.60.1）。
+    那颗图标**不是装饰**（原来是 18dp 的 `FaintText` 箭头）：40dp 命中区 + 21dp 图标 + `TextSecondary`。
+    它是被「删除会话」`setHidden` 隐藏的会话**唯一的找回路** —— 列表按 `hidden && 无消息` 过滤，
+    而 `ChatViewModel.init` 一打开就 `setHidden(false)`，所以从这儿进去一次就回来了。别改回装饰箭头。
 - **主题切换只在「设置 → 外观」子弹层里做**（v0.35.1），别再把三选一摊回设置面板底部
 - 人设编辑器**点头像直接换图**（v0.35.1），渐变环恒定保留；不要再加「自定义」按钮或 emoji 输入框
+  - 头像正下方**恒定有一颗细线胶囊**（v0.60.1 用户点名）：默认头像时写「点击编辑」（点它 = 选图），
+    换成自定义图后写「恢复默认」（点它 = 清掉图）。**宽度钉死和头像框同为 56dp**（头像在整排里是
+    `CenterStart`，同宽才自动对齐）、10sp / 22dp 高、`neuSurface(999.dp)` 发丝描边、**离头像 4dp**。
+    原来是那颗 40dp 高的裸文字钮（`NeuTextButton`），又远又不像能点 —— 别再改回去。
 - **界面不写说明性小字**（v0.42.1，用户明确要求）：空状态的客套话、「点格子看当天明细」这类操作提示、  
   「配置 AI 接口后即可生成」这类前置说明一律不留；**数据标签保留**（现金余额、收入/支出/结余、日期）。
 - **数据页不挂手动生成/提炼动作**（v0.42.2）：区块头右侧不留任何动作文字，  

@@ -764,4 +764,106 @@ class AiPromptsTest {
         assertTrue(manual.contains("回到对话能看到它还在生成"))
         assertTrue(manual.contains("切回会话列表、去看别的角色都不打断"))
     }
+
+    /**
+     * v0.58：视频通话上线（第五格入口 + Live2D 模型包 + 伪视频状态指认）。
+     *
+     * 两条 replace 一条改写、一条追加，都锚在 v0.38 底稿「实时语音通话」那一行：
+     * - 改写那条要**双向断言**：新写法在 + 旧写法"第四格「通话」"不在；
+     *   加号面板已经从四格变五格，旧措辞留在手册里就是教用户去点不存在的位置。
+     * - 追加那条只能断"新句在"（锚点本身还在），落空时第一条断言就红。
+     */
+    @Test
+    fun `v058 视频通话进手册`() {
+        assertTrue(manual.contains("- **视频通话**（v0.58.0）：加号面板第五格「视频」"))
+        assertTrue(manual.contains("① 「Live2D 模型包」= 上传一个 **zip 模型包**"))
+        assertTrue(manual.contains("② 「伪视频素材」= 上传几段 **mp4**"))
+        // 只有待机必填、其余状态回退 —— 用户最容易在这里做错
+        assertTrue(manual.contains("**只有「待机」必填**"))
+        // 故障隔离是这功能最硬的一条承诺，手册必须能答"形象坏了电话会不会断"
+        assertTrue(manual.contains("**只把画面退回头像，电话照打**"))
+        // 新写法生效：通话格不再报序号
+        assertTrue(manual.contains("加号面板 → 「通话」格，"))
+        // 旧措辞必须消失
+        assertFalse(manual.contains("第四格「通话」"))
+    }
+
+    /**
+     * v0.58.1：会话设置里 Live 2D / 伪视频 **合成一行「视频通话形象」**，
+     * 另外「角色立绘」在**编辑人设**页重新出现，用途是 AI 生图时的参考图（图生图）。
+     *
+     * 两条都是改写，所以照项目规矩**双向断言**：新措辞在 + 旧措辞不在
+     * （"那里两行""旧的「角色立绘」入口已删除"都还在的话，说明 replace 静默落空了）。
+     */
+    @Test
+    fun `v058_1 视频通话形象合并与立绘进手册`() {
+        assertTrue(manual.contains("会话设置 → 「视频通话形象」** 里配"))
+        assertTrue(manual.contains("不再是 Live 2D / 伪视频 两行"))
+        assertTrue(manual.contains("- **角色立绘**（v0.58.1，入口 **编辑人设** 页）"))
+        assertTrue(manual.contains("把它当参考图一并发给生图服务（图生图）"))
+        // 不认参考图的家要能说出来，否则用户以为那张一定像 TA
+        assertTrue(manual.contains("这张没按立绘生成"))
+        // 旧措辞必须消失
+        assertFalse(manual.contains("里传，那里两行："))
+        assertFalse(manual.contains("旧的「角色立绘」入口已删除"))
+    }
+
+    /**
+     * v0.59.0：朗读回来、语音识别可切在线接口、联网搜索可自定义。
+     *
+     * 三条都是**在锚点后追加**（锚点本身还在），所以只能断"新句在"——
+     * replace 静默落空时第一条断言就红。
+     * 用户问"怎么让 TA 念给我听 / 在线识别怎么配 / 搜索换成我自己的接口"时，
+     * 手册必须答得上来（AGENTS §零.5：滞后比没有助手更糟）。
+     */
+    @Test
+    fun `v059 朗读 在线识别 自定义搜索 进手册`() {
+        assertTrue(manual.contains("- **朗读**（v0.59.0）：**长按任意一条消息 → 「朗读」**"))
+        // 开关是**按角色**的，位置也变了（v0.59.0 用户拍板：会话设置第一组最后那行）。
+        // 这是改写不是追加，所以双向断言：新位置在 + 旧位置"设置 → 语音模型"那句不在。
+        assertTrue(manual.contains("**按角色各开各的**「自动朗读」开关"))
+        assertTrue(manual.contains("**这个角色的会话设置第一组最后那行**"))
+        assertFalse(manual.contains("另有「设置 → 语音模型 → **自动朗读 AI 的回复**」开关"))
+        assertTrue(manual.contains("**默认关**——开着它每来一条回复都会发一次合成请求"))
+        // 通话不跟着切在线，这条最容易答错，必须在手册里写死
+        assertTrue(manual.contains("**实时语音通话始终用端侧离线识别**"))
+        assertTrue(manual.contains("选了在线就只走在线，失败会把原因原样说出来"))
+        assertTrue(manual.contains("- **联网搜索加了「自定义」**（v0.59.0）"))
+        assertTrue(manual.contains("自定义家有**独立的一份 Key**"))
+    }
+
+    /**
+     * v0.60.1（用户点名）：角色立绘的入口形状与位置都变了 —— 从「上传立绘」按钮
+     * 变成"点输入框选图、框里显示文件名"，并且挪到「身份」下面。
+     * 这条是**改写**不是追加，所以双向断言：新措辞在 + 旧那句"（v0.58.1，入口 编辑人设 页）：上传一张"必须不在
+     * （replace 的子串对不上时是静默落空，只断新句守不住）。
+     */
+    @Test
+    fun `v0601 角色立绘入口改写成输入框 进手册`() {
+        assertTrue(manual.contains("位置在**「身份」下面那一栏**"))
+        assertTrue(manual.contains("**点输入框**选一张这个角色的全身/半身图"))
+        assertTrue(manual.contains("框里显示这张图的**文件名**"))
+        assertTrue(manual.contains("「上传立绘」按钮已经删掉"))
+        assertFalse(manual.contains("- **角色立绘**（v0.58.1，入口 **编辑人设** 页）：上传一张"))
+        // 头像那颗钮：改名 + 常驻 + 细线胶囊（同一条 v0.60.1 里的第二处入口变化）
+        assertTrue(manual.contains("头像下面**恒定有一颗小胶囊**"))
+        assertTrue(manual.contains("还是默认头像时写「点击编辑」"))
+        assertTrue(manual.contains("换过图之后写「恢复默认」"))
+        assertFalse(manual.contains("换过图旁边会出现「恢复默认头像」"))
+    }
+
+    /**
+     * v0.60.1（用户点名"会话删了就找不到了"）：人设管理页每张卡右边那颗气泡图标 = 进 TA 的会话，
+     * 这是被 hidden 过滤掉的会话**唯一**的找回路（进去一次 ChatViewModel.init 就 setHidden(false)）。
+     *
+     * 底稿那句「发新消息即恢复」在实践里等于回不来（会话进不去，用户没法主动发那条新消息），
+     * 手册要是还这么写，用户问"我删掉的聊天怎么找回来"就会得到一句做不到的话 —— 双向断言都上。
+     */
+    @Test
+    fun `v0601 删除会话的找回路 进手册`() {
+        assertTrue(manual.contains("**想再聊回来**：我的 → 人设管理 → 点那张卡**右边的聊天气泡图标**"))
+        assertTrue(manual.contains("进去一次这个会话就回到消息列表了"))
+        assertTrue(manual.contains("**每张卡右边那颗气泡图标 = 直接进 TA 的会话**"))
+        assertFalse(manual.contains("人设保留，发新消息即恢复"))
+    }
 }

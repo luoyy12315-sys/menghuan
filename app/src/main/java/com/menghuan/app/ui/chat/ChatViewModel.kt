@@ -42,6 +42,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -60,6 +61,12 @@ data class ChatUiState(
     val imagePrompt: String = "",           // 正在生成的画面提示词（生图动画卡展示用）
     val error: String? = null,   // 请求失败提示；失败消息不写入历史
     val errorKind: String = ErrorBar.KIND_RETRY, // 错误条动作种类（重试 / 去开启 / 去配置 / 无动作）
+    /**
+     * 正在朗读哪一条消息（v0.59.0，null = 没在念）。
+     * 长按菜单的「朗读」和「自动朗读 AI 回复」共用这一个状态：**同一时刻只念一条**，
+     * 气泡上的图标因此能变成「停止」，用户不用猜"怎么停"。
+     */
+    val readingId: Long? = null,
     val agentRun: AgentRunUiState? = null, // [操作手机:…] 触发的执行卡（null = 不显示）
 )
 
@@ -366,6 +373,9 @@ class ChatViewModel(
 
     override fun onCleared() {
         viewModelCleared = true
+        // v0.59.0：离开会话就把正在念的停掉并释放 MediaPlayer。
+        // 生成可以留在后台继续跑（v0.57），但**声音不该跟着用户跑到别的页面去**。
+        runCatching { stopReading() }
         super.onCleared()
     }
 
@@ -780,15 +790,51 @@ class ChatViewModel(
         }
     }
 
-    /** 删除单条已落库消息（长按气泡菜单）；观察者流会实时重发，UI 自动更新 */
+    /**
+     * 删除单条已落库消息（长按气泡菜单）：
+     * v0.60 起**先本地摘掉、再落库**——Room 的重发要等一轮查询，删除类操作必须当场见效
+     * （用户点名"删了通话记录条要退出去重进才消失"）。落库失败会**把这条放回原位**并报错，
+     * 不许出现"界面上没了、库里还在"的假删除（异步失败必须能看到）。
+     */
     fun deleteMessage(message: ChatMessage) = viewModelScope.launch {
         if (message.id <= 0) return@launch // 种子演示消息不在 DB，不可删
-        runCatching { db.messageDao().delete(message.id) }
+        removeLocal(listOf(message.id))
+        val ok = runCatching { db.messageDao().delete(message.id) }.isSuccess
+        if (!ok) {
+            restoreLocal(message)
+            setError("删除失败，这条消息还在（存储异常）", ErrorBar.KIND_INFO)
+        }
     }
 
-    /** 批量删除（v0.54.3 多选）：逐条删已落库消息，观察者流会实时重发 */
+    /** 批量删除（v0.54.3 多选）：逐条删已落库消息；v0.60 起同样先本地摘掉再落库 */
     fun deleteMessages(messages: List<ChatMessage>) = viewModelScope.launch {
-        messages.filter { it.id > 0 }.forEach { runCatching { db.messageDao().delete(it.id) } }
+        val targets = messages.filter { it.id > 0 }
+        if (targets.isEmpty()) return@launch
+        removeLocal(targets.map { it.id })
+        var failed = false
+        targets.forEach { m ->
+            if (runCatching { db.messageDao().delete(m.id) }.isFailure) {
+                failed = true
+                restoreLocal(m)
+            }
+        }
+        if (failed) setError("有消息没删掉（存储异常），已放回列表", ErrorBar.KIND_INFO)
+    }
+
+    /** 本地摘掉若干条（按 id）——删除的"立刻见效"就靠这一步，不等 Room 重发 */
+    private fun removeLocal(ids: List<Long>) {
+        val gone = ids.toSet()
+        _uiState.update { it.copy(messages = it.messages.filterNot { m -> m.id in gone }) }
+    }
+
+    /** 落库失败（以 Room 为准）：把没删掉的那条按时间戳插回原位 */
+    private fun restoreLocal(message: ChatMessage) {
+        _uiState.update { state ->
+            if (state.messages.any { it.id == message.id }) state
+            else state.copy(
+                messages = (state.messages + message).sortedBy { it.timestamp },
+            )
+        }
     }
 
     /**
@@ -950,8 +996,16 @@ class ChatViewModel(
                     } catch (e: Exception) {
                         com.menghuan.app.data.SEARCH_BOCHA
                     }
+                    // v0.59.0：Key 与接口地址都按**当前生效那一家**取——
+                    // 自定义家有独立的一份 Key 和一个用户自填的地址，
+                    // 拿内置那家去取会串成"切到自定义就查不了"
                     val searchKey = try {
-                        settingsRepository.searchApiKey.first()
+                        settingsRepository.searchKeyFor(provider)
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    val customEndpoint = try {
+                        settingsRepository.searchEndpointFor(provider)
                     } catch (e: Exception) {
                         ""
                     }
@@ -963,7 +1017,9 @@ class ChatViewModel(
                         append("被问到最新信息时请**如实说明暂时查不了**，不要凭记忆编。")
                     } else {
                         val hits = runCatching {
-                            com.menghuan.app.data.WebSearchClient.search(provider, searchKey, query)
+                            com.menghuan.app.data.WebSearchClient.search(
+                                provider, searchKey, query, customEndpoint = customEndpoint,
+                            )
                         }.getOrDefault(emptyList())
                         val block = com.menghuan.app.data.WebSearchClient
                             .toPromptBlock(hits, com.menghuan.app.data.WebSearchClient.labelOf(provider))
@@ -1135,6 +1191,14 @@ class ChatViewModel(
         ChatGenerationBus.endText(personaId)
         // AI 语音条（v0.50.0）：回复里带 【语音条】 标记 → 合成语音，把刚落库那条文字原地升级成语音条
         maybeGenerateVoiceNote(rawReply, replyId)
+        // v0.59.0：「自动朗读 AI 的回复」**按角色各开各的**（开关在会话设置第一组最后那行），默认全关。
+        // AI 自己已经发了语音条的情况**跳过**——那条本来就是念出来的，再读一遍就是两遍同样的话。
+        if (!VoiceNoteMarker.parse(rawReply).wantsVoice &&
+            runCatching { settingsRepository.chatReadAloud.first()[personaId] == true }
+                .getOrDefault(false)
+        ) {
+            readAloud(replyId, rawReply)
+        }
         // 生图（v0.35.0）：模型按 system prompt 约定输出 [生图:提示词] 标记时，
         // 文字已剥掉标记落库，这里再把图生出来落盘并挂成一条图片消息
         maybeGenerateImage(rawReply)
@@ -1194,6 +1258,97 @@ class ChatViewModel(
      * 再插入一条 imagePath 消息（气泡渲染图片，content 存提示词）。
      * 生图接口未配置或调用失败：只提示，不影响已落库的文字。
      */
+    // ===== v0.59.0：朗读（长按菜单单条 + 自动朗读开关）=====
+    //
+    // 合成链**复用语音条那一条**（TtsClients + 人设音色三级回落），不另起一套；
+    // 播放用一个临时文件交给 MediaPlayer，念完/切走/离开页面都释放。
+    //
+    // ⚠️ 复位不只靠 `onCompletion`：MP3 尾部有 padding 时那个回调可能整场不来，
+    // 气泡就会永远停在"正在念"的样式（语音条那边踩过，见 ChatScreen 的看门狗）。
+    // 所以这里另挂一个按音频时长算的兜底定时。
+    //
+    // [readToken] 是"这一轮朗读"的序号：任何一次打断（再点一条、手动停、发新消息）
+    // 都会 ++，旧协程回来发现自己过期就直接放弃，不会把新的状态覆盖掉。
+
+    private var readToken = 0
+    private var readPlayer: android.media.MediaPlayer? = null
+
+    /** 长按菜单：念这一条；再点同一条 = 停 */
+    fun readAloud(messageId: Long, text: String) {
+        if (_uiState.value.readingId == messageId) {
+            stopReading()
+            return
+        }
+        stopReading()
+        val token = ++readToken
+        _uiState.update { it.copy(readingId = messageId) }
+        viewModelScope.launch {
+            val spoken = cleanForTts(text)
+            if (spoken.isBlank()) {
+                finishReading(token, "这条没有可念的文字")
+                return@launch
+            }
+            val config = ttsConfig()
+            if (!config.isComplete) {
+                finishReading(token, "语音合成未配置（设置 → 语音模型）")
+                return@launch
+            }
+            val client = TtsClients.from(config, appContext)
+            val audio = client.synthesize(spoken, voiceRefFor(config))
+            if (audio == null) {
+                finishReading(token, "朗读失败：${client.lastFailure ?: "未知原因"}")
+                return@launch
+            }
+            if (token != readToken) return@launch   // 等合成这段时间里用户已经切走了
+            // appContext 是可空的（VM 允许不带 context 构造）：没了就直接放弃，不硬解引用
+            val ctx = appContext ?: run { finishReading(token, "无法播放"); return@launch }
+            val file = java.io.File(ctx.cacheDir, "read_${token}.${audio.format.extension}")
+            val started = runCatching {
+                file.writeBytes(audio.bytes)
+                android.media.MediaPlayer().apply {
+                    setDataSource(file.absolutePath)
+                    setOnCompletionListener { if (token == readToken) stopReading() }
+                    // onError 的回调**必须回 true**（表示"错误我接了，别再往上报"），
+                    // 不然 MediaPlayer 会把错误继续抛到未捕获异常
+                    setOnErrorListener { _, _, _ ->
+                        if (token == readToken) stopReading()
+                        true
+                    }
+                    prepare()
+                    start()
+                }
+            }.getOrNull()
+            if (started == null) {
+                runCatching { file.delete() }
+                finishReading(token, "音频播放起不来")
+                return@launch
+            }
+            readPlayer = started
+            // 兜底：按**真实音频时长**+4 秒收状态。onCompletion 不来的情况真机上出现过
+            // （MP3 尾部 padding），不能拿文件大小猜时长——各家码率不同，猜了会提前停或迟迟不停。
+            launch {
+                val ms = probeDurationMs(file)
+                delay(if (ms > 0L) ms + 4_000L else 60_000L)
+                if (token == readToken) stopReading()
+            }
+        }
+    }
+
+    /** 停掉正在念的（幂等：没在念时调用也安全） */
+    fun stopReading() {
+        readToken++
+        runCatching { readPlayer?.takeIf { it.isPlaying }?.stop() }
+        runCatching { readPlayer?.release() }
+        readPlayer = null
+        _uiState.update { if (it.readingId == null) it else it.copy(readingId = null) }
+    }
+
+    private suspend fun finishReading(token: Int, reason: String?) {
+        if (token != readToken) return
+        stopReading()
+        if (!reason.isNullOrBlank()) setError(reason, ErrorBar.KIND_RETRY)
+    }
+
     private suspend fun ttsConfig(): TtsConfig =
         runCatching { settingsRepository.ttsConfig.first() }.getOrDefault(TtsConfig())
 
@@ -1281,11 +1436,21 @@ class ChatViewModel(
         // 每个模型失败的原因都收集起来（v0.56.17）：以前全部失败只回一句"模型未配置或调用失败"，
         // 服务端明明说了原因（如豆包"size 至少 3686400 像素"、模型未开通…）却看不到
         val failures = mutableListOf<String>()
+        // v0.58.1：TA 有立绘就把立绘当**参考图**发过去（图生图），让"AI 画自己"时
+        // 发色 / 瞳色 / 服装 / 画风对得上。没立绘就一个字都不多发，行为和以前完全一致。
+        val artFile = runCatching {
+            db.personaDao().getById(personaId)?.artImagePath
+                ?.takeIf { it.isNotBlank() }
+                ?.let { java.io.File(it) }
+                ?.takeIf { it.isFile && it.length() > 0L }
+        }.getOrNull()
         for (c in clients) {
-            val r = c.generate(prompt, ImageGenerationClient.imagesDir(imagesDir))
+            val r = c.generate(prompt, ImageGenerationClient.imagesDir(imagesDir), artFile)
             if (r.path != null) {
                 path = r.path
                 usedClient = c
+                // 图出来了但参考图没生效（这家不认）：必须说，否则用户以为那张像 TA
+                r.note?.let { setError(it, ErrorBar.KIND_API) }
                 break
             }
             failures += "${c.model}：${r.error ?: "未知原因"}"

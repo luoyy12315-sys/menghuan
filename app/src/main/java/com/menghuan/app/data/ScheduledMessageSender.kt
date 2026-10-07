@@ -48,11 +48,15 @@ object ScheduledMessageSender {
         // 需要联网时先搜（Key 没配就当作没搜到，由下面的措辞如实说明）
         val searchBlock: String = if (message.withSearch) {
             val provider = runCatching { settings.searchProvider.first() }.getOrDefault(SEARCH_BOCHA)
-            val key = runCatching { settings.searchApiKey.first() }.getOrDefault("")
+            // v0.59.0：按当前生效那一家取 Key/地址（自定义家有独立的一份）
+            val key = runCatching { settings.searchKeyFor(provider) }.getOrDefault("")
+            val customEndpoint = runCatching { settings.searchEndpointFor(provider) }.getOrDefault("")
             if (key.isBlank()) {
                 ""
             } else {
-                val hits = runCatching { WebSearchClient.search(provider, key, message.instruction) }
+                val hits = runCatching {
+                    WebSearchClient.search(provider, key, message.instruction, customEndpoint = customEndpoint)
+                }
                     .getOrDefault(emptyList())
                 WebSearchClient.toPromptBlock(hits, WebSearchClient.labelOf(provider))
             }

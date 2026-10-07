@@ -25,9 +25,23 @@ const val DEFAULT_THEME_MODE = "SYSTEM"
 /** AI 主动打电话的默认定时时刻（v0.53.5，用户可在设置里改） */
 const val DEFAULT_AI_CALL_TIME = "21:00"
 
-/** 联网搜索服务商（v0.53.5）：博查（国内）/ Tavily（国际） */
+/**
+ * 联网搜索服务商（v0.53.5）：博查（国内）/ Tavily（国际）
+ * / 自定义（v0.59.0：用户自己填接口地址 + Key，走通用请求形状与兜底解析）
+ */
 const val SEARCH_BOCHA = "bocha"
 const val SEARCH_TAVILY = "tavily"
+const val SEARCH_CUSTOM = "custom"
+
+/**
+ * 语音识别引擎（v0.59.0）：**手动切换，不做自动回退**。
+ *
+ * 当年云端 Whisper 就是作为"自动回退的第二级"挂着的，用户配的端点实测都不支持那个接口，
+ * 于是每次白等一轮超时、"识别为空"到底哪一级出的问题谁也说不清（AGENTS §零.4）。
+ * 这次把它做成一个明示的选择：选在线就只走在线，失败把原因原样报出来。
+ */
+const val ASR_OFFLINE = "offline"
+const val ASR_ONLINE = "online"
 
 // internal：单测（同模块）需要直接预置旧版明文数据来验证迁移
 internal val Context.settingsStore by preferencesDataStore(name = "settings")
@@ -423,6 +437,18 @@ class SettingsRepository(
     private val keySearchProvider = stringPreferencesKey("search_provider")
     private val keySearchKeyEnc = stringPreferencesKey("search_key_enc")
     private val keySearchKeyPlain = stringPreferencesKey("search_key_plain")
+    // v0.59.0：自定义联网搜索服务商（接口地址 + 独立一份 Key）
+    private val keySearchCustomUrl = stringPreferencesKey("search_custom_url")
+    private val keySearchCustomKeyEnc = stringPreferencesKey("search_custom_key_enc")
+    private val keySearchCustomKeyPlain = stringPreferencesKey("search_custom_key_plain")
+    // v0.59.0：在线语音识别（引擎切换 + 三家共用的通用 OpenAI 兼容形状）
+    private val keyAsrEngine = stringPreferencesKey("asr_engine")
+    private val keyAsrOnlineUrl = stringPreferencesKey("asr_online_url")
+    private val keyAsrOnlineKeyEnc = stringPreferencesKey("asr_online_key_enc")
+    private val keyAsrOnlineKeyPlain = stringPreferencesKey("asr_online_key_plain")
+    private val keyAsrOnlineModel = stringPreferencesKey("asr_online_model")
+    /** v0.59.0：自动朗读 AI 回复（按角色一条 `id\t1|0`，默认全关；长按菜单的单条朗读不受它管） */
+    private val keyChatReadAloudPersona = stringPreferencesKey("chat_read_aloud_personas")
     // v0.53.6：会话级资产（`id\t值` 行式小表）
     private val keyPersonaArt = stringPreferencesKey("persona_art")
     private val keyPersonaLive2d = stringPreferencesKey("persona_live2d")
@@ -1195,25 +1221,150 @@ class SettingsRepository(
         }
     }
 
-    // ===== 会话级资产（v0.53.6：立绘 / Live 2D / 聊天背景 / 会话联网）=====
+    // ===== v0.59.0：自定义联网搜索服务商 =====
+    //
+    // 自定义这一家**接口地址和 Key 都是用户自己填的**，App 不猜任何域名（AGENTS §零.6）。
+    // Key 单独一份、不与前两家共用：v0.52.0 语音合成那边踩过——多家共用一个键，
+    // 保存 A 家会把 B 家填好的 Key 抹掉，切回来就"未配置"。
+
+    /** 自定义服务商的接口地址（完整 URL，直接 POST） */
+    val searchCustomUrl: Flow<String> = store.data.map { it[keySearchCustomUrl] ?: "" }
+
+    suspend fun setSearchCustomUrl(url: String) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            if (url.isBlank()) prefs.remove(keySearchCustomUrl)
+            else prefs[keySearchCustomUrl] = url.trim()
+        }
+    }
+
+    /** 自定义服务商的 Key（密文优先，规矩与上面那条一模一样） */
+    val searchCustomApiKey: Flow<String> = store.data.map { prefs ->
+        val sealed = prefs[keySearchCustomKeyEnc]
+        if (sealed.isNullOrBlank()) {
+            prefs[keySearchCustomKeyPlain] ?: ""
+        } else {
+            resolveSealed(sealed) ?: (prefs[keySearchCustomKeyPlain] ?: "")
+        }
+    }
+
+    suspend fun setSearchCustomApiKey(key: String) = withContext(Dispatchers.IO) {
+        val sealed = if (key.isEmpty()) null else ApiKeyCipher.encrypt(key)
+        store.edit { prefs ->
+            when {
+                sealed != null -> {
+                    prefs[keySearchCustomKeyEnc] = sealed; prefs.remove(keySearchCustomKeyPlain)
+                }
+                key.isNotEmpty() -> {
+                    prefs[keySearchCustomKeyPlain] = key; prefs.remove(keySearchCustomKeyEnc)
+                }
+                else -> {
+                    prefs.remove(keySearchCustomKeyEnc); prefs.remove(keySearchCustomKeyPlain)
+                }
+            }
+        }
+    }
+
+    /** 当前生效服务商该用哪份 Key（自定义家有自己的一份） */
+    suspend fun searchKeyFor(provider: String): String =
+        if (provider == SEARCH_CUSTOM) searchCustomApiKey.first() else searchApiKey.first()
+
+    /** 自定义才返回用户填的地址；内置两家仍用写死的官方端点（返回空串表示"用内置的"） */
+    suspend fun searchEndpointFor(provider: String): String =
+        if (provider == SEARCH_CUSTOM) searchCustomUrl.first() else ""
+
+    // ===== v0.59.0：在线语音识别 =====
+    //
+    // 与离线 SenseVoice 是**并列的两条路**，靠 [asrEngine] 手动切；
+    // 在线这一路的地址/Key/模型都由用户自己填（不猜服务商，AGENTS §零.6）。
+
+    /** 当前识别引擎：[ASR_OFFLINE]（默认，端侧 SenseVoice）/ [ASR_ONLINE] */
+    val asrEngine: Flow<String> = store.data.map { it[keyAsrEngine] ?: ASR_OFFLINE }
+
+    suspend fun setAsrEngine(engine: String) = withContext(Dispatchers.IO) {
+        store.edit { it[keyAsrEngine] = if (engine == ASR_ONLINE) ASR_ONLINE else ASR_OFFLINE }
+    }
+
+    val asrOnlineUrl: Flow<String> = store.data.map { it[keyAsrOnlineUrl] ?: "" }
+
+    suspend fun setAsrOnlineUrl(url: String) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            if (url.isBlank()) prefs.remove(keyAsrOnlineUrl) else prefs[keyAsrOnlineUrl] = url.trim()
+        }
+    }
+
+    val asrOnlineModel: Flow<String> = store.data.map { it[keyAsrOnlineModel] ?: "" }
+
+    suspend fun setAsrOnlineModel(model: String) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            if (model.isBlank()) prefs.remove(keyAsrOnlineModel) else prefs[keyAsrOnlineModel] = model.trim()
+        }
+    }
+
+    /** 在线识别的 Key（密文优先，规矩与其余 Key 一致） */
+    val asrOnlineApiKey: Flow<String> = store.data.map { prefs ->
+        val sealed = prefs[keyAsrOnlineKeyEnc]
+        if (sealed.isNullOrBlank()) {
+            prefs[keyAsrOnlineKeyPlain] ?: ""
+        } else {
+            resolveSealed(sealed) ?: (prefs[keyAsrOnlineKeyPlain] ?: "")
+        }
+    }
+
+    suspend fun setAsrOnlineApiKey(key: String) = withContext(Dispatchers.IO) {
+        val sealed = if (key.isEmpty()) null else ApiKeyCipher.encrypt(key)
+        store.edit { prefs ->
+            when {
+                sealed != null -> {
+                    prefs[keyAsrOnlineKeyEnc] = sealed; prefs.remove(keyAsrOnlineKeyPlain)
+                }
+                key.isNotEmpty() -> {
+                    prefs[keyAsrOnlineKeyPlain] = key; prefs.remove(keyAsrOnlineKeyEnc)
+                }
+                else -> {
+                    prefs.remove(keyAsrOnlineKeyEnc); prefs.remove(keyAsrOnlineKeyPlain)
+                }
+            }
+        }
+    }
+
+    /**
+     * 自动朗读 AI 的回复（v0.59.0，**按角色各开各的**，默认全关）。
+     *
+     * 为什么按角色而不是全局一条：每个角色的音色、说话长短都不一样，
+     * 陪伴型角色想听着念，工具型角色只想看字；开着它每条回复都会发一次合成请求，
+     * 那是真花额度的，所以默认关、且只影响你打开的那一个角色。
+     *
+     * 存法与「会话联网搜索」同一套（`id\t1|0` 行式小表）。
+     * ⚠️ 这与 v0.50.0 删掉的"右上角喇叭自动朗读"不是一回事，**不要把那颗喇叭复活**；
+     * 长按菜单里的「朗读」是另一条入口，随时可点、不占这个开关。
+     */
+    val chatReadAloud: Flow<Map<Long, Boolean>> = store.data.map { prefs ->
+        readIdTable(prefs[keyChatReadAloudPersona]).mapValues { it.value == "1" }
+    }
+
+    suspend fun setChatReadAloudEnabled(personaId: Long, enabled: Boolean) =
+        writeIdTable(keyChatReadAloudPersona, personaId, if (enabled) "1" else "0")
+
+
+    // ===== 会话级资产（聊天背景 / 会话联网 …）=====
     //
     // 都按 personaId 存成 `id\t值` 的行式小表（与 cloneVoiceNames 同一套做法，条目少、不建表）。
-    // 立绘与 Live 2D **只存不显**：用户明确说"以后打电话的时候展示"，展示方式还没定，
-    // 所以这里只保证"能选、能存、能清、能换"，不接任何渲染。
+    //
+    // v0.58.0：**「角色立绘」和「Live 2D」这两个键连同读取口一起删掉。**
+    // 它们以前的形态是"把一个文件复制到 filesDir/persona_art|persona_live2d/，只存路径不显示"，
+    // 而视频通话要的是**完整资源包**（Live2D 要有 model3.json+moc3+贴图，伪视频要按状态分素材），
+    // 单个文件既渲染不了也没法指认。新实现在 CallVisualStore（filesDir/call_visuals/<id>/），
+    // 所以下面这两个键不再有任何读取方，只在启动时清一次老键，避免留下没人读的数据。
 
-    /** 角色立绘图片路径（该人设） */
-    val personaArt: Flow<Map<Long, String>> = store.data.map { prefs ->
-        readIdTable(prefs[keyPersonaArt])
+    /** 启动时清掉已废弃的两个老键（幂等；文件目录由 MenghuanApp 一起清） */
+    suspend fun clearDeprecatedPersonaAssetKeys() {
+        store.edit { prefs ->
+            if (prefs.contains(keyPersonaArt) || prefs.contains(keyPersonaLive2d)) {
+                prefs.remove(keyPersonaArt)
+                prefs.remove(keyPersonaLive2d)
+            }
+        }
     }
-
-    suspend fun setPersonaArt(personaId: Long, path: String) = writeIdTable(keyPersonaArt, personaId, path)
-
-    /** 角色 Live 2D 资源路径（该人设，可能是一个文件或一个目录） */
-    val personaLive2d: Flow<Map<Long, String>> = store.data.map { prefs ->
-        readIdTable(prefs[keyPersonaLive2d])
-    }
-
-    suspend fun setPersonaLive2d(personaId: Long, path: String) = writeIdTable(keyPersonaLive2d, personaId, path)
 
     /** 该会话的聊天背景图路径 */
     val chatBackground: Flow<Map<Long, String>> = store.data.map { prefs ->

@@ -9,3 +9,5 @@ logs/
 # 产物 APK（版本交付物保留在根目录但不入库历史）
 *.apk
 ui-screenshots/
+# 官方 Live2D SDK 全量解压（含 Sample 源码与示例模型），只作本地参考，不入库
+_sdkfull/
