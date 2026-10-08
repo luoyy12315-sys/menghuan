@@ -58,14 +58,21 @@ fun ModelConfigScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
         .collectAsState(initial = DEFAULT_IMAGE_PROFILE_ID)
     val ttsConfig by app.settingsRepository.ttsConfig.collectAsState(initial = TtsConfig())
     val searchProvider by app.settingsRepository.searchProvider.collectAsState(initial = SEARCH_BOCHA)
-    val searchKey by app.settingsRepository.searchApiKey.collectAsState(initial = "")
-    // v0.59.0：自定义这一家的 Key 是独立的一份，副标题要跟着当前生效那家取
-    val customSearchKey by app.settingsRepository.searchCustomApiKey.collectAsState(initial = "")
+    // v0.66.0：三家各一份 Key（博查与 Tavily 过去共用一把，切服务商看到的还是同一串）
+    val bochaKey by app.settingsRepository.searchApiKeyOf(SEARCH_BOCHA).collectAsState(initial = "")
+    val tavilyKey by app.settingsRepository.searchApiKeyOf(SEARCH_TAVILY).collectAsState(initial = "")
+    val customSearchKey by app.settingsRepository.searchApiKeyOf(SEARCH_CUSTOM).collectAsState(initial = "")
     // 模型状态只在进页时读一次：磁盘 stat 不贵，但也不该每帧重组都去碰
     val asrReady = remember { AsrModelManager.isReady(app) }
 
     val activeProfileName = profiles.firstOrNull { it.id == activeProfileId }?.name
     val imageActiveName = imageProfiles.firstOrNull { it.id == imageActiveId }?.name
+    // 副标题只说**当前生效那一家**配没配 Key，别拿别家的 Key 撑门面
+    val activeSearchKey = when (searchProvider) {
+        SEARCH_TAVILY -> tavilyKey
+        SEARCH_CUSTOM -> customSearchKey
+        else -> bochaKey
+    }
     val asrSubtitle = if (asrReady) {
         "已就绪 · SenseVoice 离线"
     } else {
@@ -108,7 +115,7 @@ fun ModelConfigScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
             title = "联网搜索",
             subtitle = searchSubtitle(
                 searchProvider,
-                if (searchProvider == SEARCH_CUSTOM) customSearchKey else searchKey,
+                activeSearchKey,
             ),
             onClick = { onOpen(SettingsRoutes.SEARCH_CONFIG) },
         )
@@ -258,20 +265,29 @@ fun WebSearchConfigScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
 
     val provider by app.settingsRepository.searchProvider.collectAsState(initial = SEARCH_BOCHA)
-    val searchKey by app.settingsRepository.searchApiKey.collectAsState(initial = "")
-    // v0.59.0：自定义这一家有**独立的 Key 和一个用户自填的地址**
-    val customKey by app.settingsRepository.searchCustomApiKey.collectAsState(initial = "")
+    // v0.66.0（用户点名"切换国内国外 key 都不变"）：**每家读自己那一份**。
+    // 博查与 Tavily 过去共用一把 `search_key_*`，切服务商时看到和写进去的都是同一串，
+    // 拿博查的 Key 去打 Tavily 就永远"搜不到"——和 v0.52.0 语音合成踩过的是同一个坑。
+    val bochaKey by app.settingsRepository.searchApiKeyOf(SEARCH_BOCHA).collectAsState(initial = "")
+    val tavilyKey by app.settingsRepository.searchApiKeyOf(SEARCH_TAVILY).collectAsState(initial = "")
+    val customKey by app.settingsRepository.searchApiKeyOf(SEARCH_CUSTOM).collectAsState(initial = "")
     val customUrl by app.settingsRepository.searchCustomUrl.collectAsState(initial = "")
 
     // 草稿跟着已存值走：DataStore 首次读到真实值时会刷新一次，之后用户编辑不再被覆盖
     var providerDraft by remember(provider) { mutableStateOf(provider) }
-    var keyDraft by remember(searchKey) { mutableStateOf(searchKey) }
-    var customKeyDraft by remember(customKey) { mutableStateOf(customKey) }
+    val storedKey = when (providerDraft) {
+        SEARCH_TAVILY -> tavilyKey
+        SEARCH_CUSTOM -> customKey
+        else -> bochaKey
+    }
+    // 切服务商 = 换一份草稿（key 里带 providerDraft，所以切过去看到的是那一家自己填过的 Key；
+    // 在这一家里打字不会改动 storedKey，草稿不会被自己写的字打断）
+    var keyDraft by remember(providerDraft, storedKey) { mutableStateOf(storedKey) }
     var urlDraft by remember(customUrl) { mutableStateOf(customUrl) }
 
     val isCustom = providerDraft == SEARCH_CUSTOM
     // 当前这一家正在用的 Key（测试按钮和"配没配 Key"的判断都走它）
-    val activeKey = if (isCustom) customKeyDraft.trim() else keyDraft.trim()
+    val activeKey = keyDraft.trim()
 
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
@@ -326,11 +342,11 @@ fun WebSearchConfigScreen(onBack: () -> Unit) {
         }
         Spacer(Modifier.height(12.dp))
         NeuTextField(
-            value = if (isCustom) customKeyDraft else keyDraft,
+            value = keyDraft,
             onValueChange = {
-                // **只写当前这一家的草稿**：三家共用一个 state 的话，
-                // 切到家就把自己那份填过的 Key 覆盖掉了（v0.52.0 语音合成踩过的坑）
-                if (isCustom) customKeyDraft = it else keyDraft = it
+                // 草稿就是"当前这一家"那一份：切走再切回来看到的是它自己填过的，
+                // 三家共用一个 state 的话会把另一家填好的 Key 覆盖掉（v0.52.0 语音合成踩过的坑）
+                keyDraft = it
                 testResult = null
             },
             label = "API Key",
@@ -393,18 +409,19 @@ fun WebSearchConfigScreen(onBack: () -> Unit) {
             kind = NeuButtonKind.Primary,
             modifier = Modifier.fillMaxWidth(),
             onClick = {
+                // ⚠️ **写完再返回**：`rememberCoroutineScope` 的协程挂在"这一页"的组合上，
+                // 先 onBack() 会把这页拆掉，正在写 DataStore 的协程跟着被取消——
+                // 表现就是"点了保存、切回来还是原来那一家"（用户说的"切换不了"有这一半）。
                 scope.launch {
-                    app.settingsRepository.setSearchProvider(providerDraft)
-                    // 只写**当前这一家**的 Key：一把全写会把另一家填好的 Key 抹掉
-                    //（v0.52.0 语音合成三家就是这么互相覆盖的，测试抓出来过）
-                    if (isCustom) {
-                        app.settingsRepository.setSearchCustomApiKey(customKeyDraft.trim())
-                        app.settingsRepository.setSearchCustomUrl(urlDraft.trim())
-                    } else {
-                        app.settingsRepository.setSearchApiKey(keyDraft.trim())
+                    runCatching {
+                        app.settingsRepository.saveSearchConfig(
+                            provider = providerDraft,
+                            key = keyDraft.trim(),
+                            customUrl = if (isCustom) urlDraft.trim() else "",
+                        )
                     }
+                    onBack()
                 }
-                onBack()
             },
         )
         Spacer(Modifier.height(10.dp))

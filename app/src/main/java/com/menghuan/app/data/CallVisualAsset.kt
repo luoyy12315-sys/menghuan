@@ -217,12 +217,18 @@ object ZipEntryGuard {
     /**
      * 条目名 → 可安全拼到 root 下的相对路径；**不可信就返回 null**。
      *
-     * 这里对 `..` 是直接拒绝而不是"弹一层"：解压工具常见的消解写法在恶意包下
+     * ⚠️ **绝对路径一律拒绝**（开头的 `/`、以及带盘符的 `C:/...`）。
+     * 以前这里对开头的 `/` 是 `trimStart` 掉放行的，而对 `C:` 是拒绝的 ——
+     * 同一类东西两种待遇，而且 trim 之后 `//etc/passwd` 会变成一条"合法"的相对路径。
+     * 现在统一成"绝对路径不要"，与 `ZipEntryGuardTest` 的口径一致。
+     *
+     * 对 `..` 也是直接拒绝而不是"弹一层"：解压工具常见的消解写法在恶意包下
      * 仍能拼出奇怪落点，而对用户传来的东西我们只需要"要么规规矩矩在里面、要么不要"。
      */
     fun safeRelativePath(entryName: String): String? {
-        val name = entryName.replace('\\', '/').trimStart('/')
+        val name = entryName.replace('\\', '/').trim()
         if (name.isBlank()) return null
+        if (name.startsWith("/")) return null
         val parts = name.split('/').filter { it.isNotEmpty() && it != "." }
         if (parts.isEmpty()) return null
         if (parts.any { it == ".." }) return null

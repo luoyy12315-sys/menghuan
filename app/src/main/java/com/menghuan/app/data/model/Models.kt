@@ -291,6 +291,58 @@ object LedgerSource {
 }
 
 /**
+ * 备忘（v0.62.0 建，v0.63.0 按用户拍板收敛成"一句话 + 自动时间"）。
+ *
+ * 与任务的分工：任务是「要去做的事」，有完成态、有提醒、进打卡口径；
+ * 备忘是「先记下来」的一句话，**没有完成态、没有提醒**。
+ *
+ * ⚠️ v0.63.0 删掉了手填的 `markedAt` / `place` 两列（迁移见 MIGRATION_17_18）：
+ * 用户要的是**自动标注**，而自动能做到的就是"记下的那一刻"（[createdAt]）。
+ * 地点不做自动——手机定位在国内 ROM 上拿 `Geocoder` 基本翻不出地名，
+ * 要翻就得申请定位权限 + 让用户另外填一个高德/腾讯 Key，为一个字段不值当（用户已确认删掉）。
+ * 排序口径统一为「置顶优先，其次新建优先」，见 [MemoMath.sorted]。
+ */
+@Entity(tableName = "memos")
+data class MemoEntry(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val content: String,
+    @ColumnInfo(defaultValue = "0")
+    val pinned: Boolean = false,
+    /** 记下的那一刻（毫秒），也是行上显示的那个时间 */
+    @ColumnInfo(defaultValue = "0")
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * 备忘的纯函数口径（排序 / 时间文案），JVM 可单测。
+ */
+object MemoMath {
+    /** 置顶优先，其次新记录在前 */
+    fun sorted(memos: List<MemoEntry>): List<MemoEntry> =
+        memos.sortedWith(compareByDescending<MemoEntry> { it.pinned }.thenByDescending { it.createdAt })
+
+    /** 记下的那一刻：今天/昨天只给钟点，跨天带上日期 */
+    fun timeLabel(
+        memo: MemoEntry,
+        now: java.time.LocalDate = java.time.LocalDate.now(),
+    ): String {
+        val zoned = java.time.Instant.ofEpochMilli(memo.createdAt)
+            .atZone(java.time.ZoneId.systemDefault())
+        val d = zoned.toLocalDate()
+        val t = zoned.toLocalTime()
+        val clock = "${"%02d".format(t.hour)}:${"%02d".format(t.minute)}"
+        return when (d) {
+            now -> "今天 $clock"
+            now.minusDays(1) -> "昨天 $clock"
+            else -> "${d.monthValue}月${d.dayOfMonth}日 $clock"
+        }
+    }
+
+    /** 长按「发给 AI」时带过去的正文：连"什么时候记的"一起给，否则 AI 只拿到半句话 */
+    fun toChatText(memo: MemoEntry): String = "${memo.content}（${timeLabel(memo)}记的）"
+}
+
+/**
  * 每日建议（v0.42.0）：独立于「AI 洞察 / AI 周报」的第三条 AI 产出链路。
  *
  * 与洞察的区别：洞察是「回看过去」的行为模式总结（长期累积，不删）；

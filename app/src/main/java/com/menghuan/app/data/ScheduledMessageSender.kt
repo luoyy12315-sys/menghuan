@@ -1,6 +1,5 @@
 package com.menghuan.app.data
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -14,6 +13,7 @@ import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.llm.OpenAiClient
+import com.menghuan.app.notify.NotifyAlert
 import kotlinx.coroutines.flow.first
 
 /**
@@ -30,7 +30,9 @@ import kotlinx.coroutines.flow.first
  */
 object ScheduledMessageSender {
 
-    private const val CHANNEL_ID = "scheduled_message"
+    // v0.62.0 换代（_v2）：渠道声音创建即锁死，不换 id 老装机永远补不上提示音
+    private const val CHANNEL_ID = "scheduled_message_v2"
+    private const val LEGACY_CHANNEL_ID = "scheduled_message"
     private const val NOTIFICATION_ID_BASE = 2_000_000_100
 
     suspend fun send(
@@ -134,10 +136,13 @@ object ScheduledMessageSender {
         ) {
             return
         }
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "定时主动消息", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "你设好的定时消息到点送达时的提醒"
-            },
+        // v0.62.0：提示音显式设上，系统勿扰时自动改走"仅震动"那条渠道
+        val channelId = NotifyAlert.channel(
+            context,
+            CHANNEL_ID,
+            "定时主动消息",
+            "你设好的定时消息到点送达时的提醒",
+            legacyIds = listOf(LEGACY_CHANNEL_ID),
         )
         val home = Intent(Intent.ACTION_VIEW, Uri.parse("menghuan://open/chatList"), context, MainActivity::class.java)
         val chat = Intent(Intent.ACTION_VIEW, Uri.parse("menghuan://chat/$personaId"), context, MainActivity::class.java)
@@ -147,7 +152,7 @@ object ScheduledMessageSender {
             arrayOf(home, chat),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(personaName)
             .setContentText(preview.take(80))

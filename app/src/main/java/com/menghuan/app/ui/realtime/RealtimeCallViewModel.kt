@@ -23,6 +23,7 @@ import com.menghuan.app.realtime.VoiceCallEngine
 import com.menghuan.app.data.CallVisualStore
 import com.menghuan.app.realtime.visual.CallVisualEngine
 import com.menghuan.app.realtime.visual.CallVisualEngines
+import com.menghuan.app.realtime.visual.Live2dStage
 import com.menghuan.app.realtime.visual.VisualRuntime
 import com.menghuan.app.realtime.visual.toVisualState
 import kotlinx.coroutines.Dispatchers
@@ -222,6 +223,23 @@ class RealtimeCallViewModel(
         viewModelScope.launch { v.runtime.collect { r -> _ui.update { it.copy(visualRuntime = r) } } }
         runCatching { v.load(personaId, asset) }.onFailure {
             _ui.update { it.copy(visualRuntime = VisualRuntime.Degraded("形象加载失败，本次通话只用头像")) }
+        }
+
+        // v0.64.0：动作系统接线。**只有 Live2D 形象才有动作**（伪视频是一组循环短片，
+        // 没有可驱动的参数），所以这段只在 Live2dStage 上做。
+        if (v is Live2dStage) {
+            // 模型加载完成后会从 GL 线程回调一次"自带动作 / 表情"的清单。
+            // ⚠️ 回调里**只许转手**：磁盘与数据库操作一律丢到 viewModelScope，
+            // 在 GL 线程上碰 Room 会把整条渲染线程堵住（表现为通话里画面卡住）。
+            v.onCatalogReady { catalog ->
+                viewModelScope.launch {
+                    runCatching { app.live2dActions.syncModelActions(personaId, catalog) }
+                }
+            }
+            // 四个状态的绑定在这里解析好再交给引擎 —— 引擎不认识数据库，
+            // 通话页也不认识动作库（用户第 2 条：通话只负责调用动作）。
+            val actions = withContext(Dispatchers.IO) { app.live2dActions.resolveAllSlots(personaId) }
+            v.setStateActions(actions)
         }
     }
 

@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -20,8 +21,9 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -61,7 +63,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -75,11 +79,13 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menghuan.app.realtime.RealtimeCallState
 import com.menghuan.app.realtime.visual.VisualRuntime
+import com.menghuan.app.data.CallBackgroundStore
 import com.menghuan.app.data.CallRingtone
 import com.menghuan.app.ui.common.AdaptiveScreen
 import com.menghuan.app.ui.common.EaseOutQuart
 import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.common.NeuCircleButton
+import com.menghuan.app.ui.common.StageBackgroundLayer
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
 import com.menghuan.app.ui.common.staggerEnter
@@ -88,6 +94,7 @@ import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuBackground
 import com.menghuan.app.ui.theme.NeuDanger
+import com.menghuan.app.ui.theme.NeuHairline
 import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
@@ -101,14 +108,41 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * 实时语音通话页（v0.47.0 重构）：无顶栏（用户反馈与中部头像重复），主视觉 =
-* 中部大头像（说话时呼吸脉动）+ 名字 + 状态；字幕做成歌词式——贴底、最新一两句
-* 清晰突出、越旧的越淡，顶部用背景色渐变收束；底部静音/挂断大圆钮。
+ * 实时通话页（v0.47.0 重构 · v0.60 全屏铺满 · **v0.64.0 改分区 + 右滑纯净态**）。
  *
- * v0.60：**视频通话改为全屏铺满**（用户要求 9:16 竖屏全屏铺满、不黑边不拉伸）——
- * 画面是垫在最底层的背景（cover 排布，见 [CallVisualSlot]），名字/状态/字幕/操作钮叠在它上面，
- * 上下各补一层暗色渐变托底保证白字可读。以前画面是按素材比例排的一张卡片、夹在名字与字幕之间，
- * 竖屏素材一进来整列就比屏幕还高，把字幕与静音/挂断整个挤出屏幕——真机上的"视频通话没法用"。
+ * ## 这一版的布局（用户拍板）
+ *
+ * ```
+ * ┌──────────────────────────────┐
+ * │  ● 说话中           01:23     │ ← 顶栏：状态胶囊 + 计时，**常驻**
+ * │                              │
+ * │         [角色区]              │ ← 角色完整落在这里；
+ * │      Live2D / 伪视频          │    任何 UI 都不进入这一块
+ * │                              │
+ * ├──────────────────────────────┤ ← 对话台（页面底色）
+ * │  你 今天想聊点什么呀           │
+ * │  阿布 我在听呢，你慢慢说       │ ← 字幕最多 3 行，上滑看历史
+ * │      ( 🎤 )    ( 📞 )        │ ← 静音 / 挂断
+ * └──────────────────────────────┘
+ *      ← 右滑：整块对话台滑到右边去，角色铺满全屏，顶栏仍在
+ * ```
+ *
+ * ## 三条设计决定（都跟"不遮挡人物"有关）
+ *
+ * 1. **字幕与按钮不压在角色身上，是结构性的，不是靠蒙版救的。**
+ *    v0.61.1 删掉三层暗色蒙层之后，字幕压在浅色角色上就时常读不清（灰字压灰面）。
+ *    现在角色被投影完整收进上方那块（`setViewportBottomInset`），
+ *    下面那块本来就是"画面里没有角色"的地方 —— 于是字幕用正常灰阶、按钮不用任何托底，
+ *    既清晰又不脏。**不要再加渐变蒙版**：那是把上一个版本的问题原样搬回来。
+ * 2. **画面层始终铺满整屏、尺寸恒定**。分区只改引擎的投影/矩阵，**不改视图尺寸** ——
+ *    否则右滑那 320ms 里 GL 表面要重新量几十次，`setRenderTargetSize` 每次重建离屏缓冲，
+ *    观感是"滑动时画面抖"（v0.60 那轮把画面改成全屏时踩过尺寸反复变的坑）。
+ * 3. **右滑进纯净态、左滑唤回**。用户点名要的表现是"下面的 UI 都不见、好像是移到了右边"，
+ *    所以这里是**横移出场**（不是淡出），并且用 [Animatable] 跟手 —— 手指走多远就移多远，
+ *    松手按位置与方向弹簧归位。**顶栏在纯净态里保留**（用户点名"顶部栏的 UI 还要"）。
+ *
+ * 语音通话（没有形象）走的还是原来的居中大头像那一套，只是底下同样挂了对话台；
+ * 两条路共用同一套字幕与操作钮。
  */
 @Composable
 fun RealtimeCallScreen(
@@ -187,6 +221,14 @@ fun RealtimeCallScreen(
     // 从进页的"连接中"一直响到真正接通；一旦 AI 开始说话就停，别盖住它。
     // 用的是该角色的专属铃声（角色专属 → 设置里的默认铃声 → 系统默认铃声），来电去电同一套规则。
     val appContainer = context.applicationContext as com.menghuan.app.MenghuanApp
+    // v0.66.0：这一角色的**视频通话背景**档位（`preset` / `file:<名字>`；没配过=按预设画）。
+    // 表很小（每个角色一行），整表收集一次不贵；文件 stat 放在 keyed remember 里，
+    // 档位没变就不碰磁盘（同一个角色反复重组不该反复 stat）。
+    val callBgMap by appContainer.settingsRepository.callBackground.collectAsState(initial = emptyMap())
+    val callBg = callBgMap[personaId].orEmpty()
+    val callBgFile = remember(personaId, callBg) {
+        runCatching { CallBackgroundStore.backgroundFile(context, personaId, callBg) }.getOrNull()
+    }
     var dialPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     var dialFallback by remember { mutableStateOf<android.media.Ringtone?>(null) }
     LaunchedEffect(ui.state) {
@@ -228,10 +270,8 @@ fun RealtimeCallScreen(
         RealtimeCallState.AI_THINKING, RealtimeCallState.AI_SPEAKING, RealtimeCallState.INTERRUPTED,
     )
     val pulsing = ui.state == RealtimeCallState.AI_SPEAKING || ui.state == RealtimeCallState.USER_SPEAKING
-    // 头像呼吸（v0.55.0 加；**v0.56.5 改成恒定跑**）：原来只有 pulsing 时才呼吸、其余状态钉在 1.0，
-    // 于是"角色思考"和"角色听我说话"两态下头像**大小就不一样**（用户点名的第二处差异）。
-    // 现在全程同一套 0.985 ↔ 1.035 呼吸 → 两态大小完全一致；"谁在说话"仍由脉冲环表达。
-    // 值只在 graphicsLayer 的 lambda 里读（延迟读），每帧只刷渲染层，**不触发重组、不重新布局**。
+    // 头像呼吸（v0.56.5 起恒定跑）：全程同一套 0.985 ↔ 1.035 呼吸，两态大小完全一致；
+    // "谁在说话"由脉冲环表达。值只在 graphicsLayer 的 lambda 里读（延迟读），不触发重组。
     val breath = rememberInfiniteTransition(label = "breath").animateFloat(
         initialValue = 0.985f,
         targetValue = 1.035f,
@@ -240,8 +280,7 @@ fun RealtimeCallScreen(
     )
     val ringInk = TextPrimary
 
-    // v0.55.0：通话计时。UiState 里没有 startedAt，所以页面自己从"进入活动态"起算 ——
-    // 不碰引擎、不改仓库，纯 UI 层；状态切回准备/结束就停表，再回来接着走。
+    // 通话计时（v0.55.0）：页面自己从"进入活动态"起算，不碰引擎、不改仓库。
     val timingStates = remember {
         setOf(
             RealtimeCallState.CONNECTED, RealtimeCallState.LISTENING,
@@ -260,35 +299,93 @@ fun RealtimeCallScreen(
         }
     }
 
-    // v0.60：视频通话的主视觉层。本页是视频模式 + 视觉引擎已创建 + runtime 是 Ready → 挂画面层。
-    // v0.61.1（用户点名）：**"挂上画面层"和"切到视频布局"必须分开**。
-    // Ready 只代表视图挂上了、模型开始加载；`Ready.drawn` 才代表真的画出了一帧。
-    // 以前两者是同一个条件，于是用户先看到几秒"空画面 + 顶栏"、角色才蹦出来 ——
-    // 那几秒页面长得和修复前一模一样，等于白等。现在加载期间保持居中大头像那一套。
     val videoVisual = if (!videoMode) null else
         vm.visualEngine?.let { e -> (ui.visualRuntime as? VisualRuntime.Ready)?.let { r -> e to r } }
     val videoVisualOn = videoVisual != null
     val videoPictureOn = videoVisual?.second?.drawn == true
 
-    // v0.60.1（用户点名照参考图改）：**语音通话的头像按屏幕比例放大、并挪到屏高上三分之一处**。
-    // 参考图量出来是：圆头像直径 ≈ 屏宽 59%，中心 ≈ 屏高 38.7%（含状态栏那条）。
-    // 这里用屏幕比例而不是写死 dp（AGENTS 布局规矩：等比例元素一律走比例，换机型才不会走形）。
-    // ⚠️ 只有"画面还没画出来"的这一支（语音通话 + 视频通话加载中/回落头像）走这个尺寸；
-    //    视频通话真的出画面时走另一支的居中顶栏，两者互不影响。
+    // 纯净态进度：0 = 正常分区，1 = 对话台完全滑到右边、角色铺满全屏。
+    // 用 Animatable 是为了"跟手"—— 手指走多远就移多远（见下面的手势）。
+    // ⚠️ 这两个必须声明在 BoxWithConstraints **之外**：手势挂在 BoxWithConstraints 自己的
+    // modifier 上，那个位置的 lambda 还没进 BoxWithConstraintsScope，读不到里面声明的状态。
+    val spread = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+
     BoxWithConstraints(
-        // v0.61.1：恢复恒定铺 NeuBackground。以前"有画面就透明"是给 SurfaceView 挖洞用的，
-        // TextureView 走正常绘制，角色透明处本来就该透出主题底色，不需要再留窗口白边
-        Modifier.fillMaxSize().background(NeuBackground),
+        Modifier
+            .fillMaxSize()
+            .background(NeuBackground)
+            // 右滑进纯净态 / 左滑唤回。**挂在整页**而不是只挂在对话台上：
+            // 用户想收起 UI 时，手会落在画面中间那块（角色身上），
+            // 只让底下那条窄面板响应等于让他们猜"要从哪儿滑"。
+            // ⚠️ 与字幕的上下滚动不冲突：水平拖动要跨过 touchSlop 才成立，
+            // 竖直手势仍然被 LazyColumn 拿走（手势竞技场自己判方向）。
+            .pointerInput(videoPictureOn) {
+                if (!videoPictureOn) return@pointerInput
+                // PointerInputScope 自己就是 Density 且带 size，所以这里不需要外层的屏宽
+                val widthPx = size.width.toFloat().coerceAtLeast(1f)
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        // 松手归位：过了一半就往那个方向去，否则弹回原处。
+                        // 用弹簧而不是 tween —— 与全项目"状态走弹簧"的语言一致，
+                        // 也与底栏横滑切页那套手感同源。
+                        val target = if (spread.value >= 0.5f) 1f else 0f
+                        scope.launch {
+                            spread.animateTo(
+                                target,
+                                androidx.compose.animation.core.spring(
+                                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
+                                    stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
+                                ),
+                            )
+                        }
+                    },
+                    onDragCancel = {
+                        scope.launch { spread.animateTo(if (spread.value >= 0.5f) 1f else 0f) }
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        // 手指走多远就移多远 —— "跟手"感全靠这一句
+                        change.consume()
+                        scope.launch {
+                            spread.snapTo((spread.value + dragAmount / widthPx).coerceIn(0f, 1f))
+                        }
+                    },
+                )
+            },
     ) {
         val avatarSize = maxWidth * 0.59f
         val avatarCanvasSize = avatarSize * CallAvatarCanvasRatio
         // 0.37 而不是 0.387：AdaptiveScreen 已经吃掉状态栏那一条，
         // 从内容区顶部算起要扣掉它，落回全屏才是参考图那个位置
         val avatarTopGap = (maxHeight * 0.37f - avatarCanvasSize / 2f).coerceAtLeast(0.dp)
-        // ① 画面层：垫在最底下、铺满整屏（v0.60 用户要求 9:16 竖屏全屏铺满）。
-        //    画面层自己按 cover 铺满整块（伪视频在 VideoVisualEngine 里给 TextureView 设变换矩阵，
-        //    Live2D 由 fitProjection 自己居中适配）：不拉伸、不留边、居中裁掉溢出的一边。
-        //    v0.61.1：**首帧之前整块是透明的，画出来才淡入** —— 省得角色"啪"地出现。
+
+        // 对话台占屏幕的比例。它是"角色区让出来的那一块"，也就是引擎要留的底部可视余量。
+        val consoleFraction = (CallConsoleHeight / maxHeight).coerceIn(0f, 0.72f)
+        val screenWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
+
+        // 每帧把"角色可用区"推给引擎。走 snapshotFlow 而不是在组合里读 spread.value：
+        // 后者会让整页每帧重组一次（320ms ≈ 20 帧），而这里只是把矩阵算对，
+        // 不需要重新组合任何东西。
+        LaunchedEffect(videoVisualOn, consoleFraction) {
+            val engine = videoVisual?.first ?: return@LaunchedEffect
+            snapshotFlow { spread.value }.collect { p ->
+                engine.setViewportBottomInset(consoleFraction * (1f - p))
+            }
+        }
+
+        // ⓪ 背景层（v0.66.0 用户点名"视频通话加个通话背景选择"）：**只有视频通话铺**。
+        //    语音通话维持现在的页面底色（用户口径），所以这一层挂在 videoMode 那一支里。
+        //    它在最底下：Live2D 那层是透出的 GL，画在它背后才看得见；伪视频自己满屏盖住，不受影响。
+        //    画法与角色空间共用一份（没选过背景 / 图读不出来 → 都画系统预设，不会"选了却没变化"）。
+        if (videoMode) {
+            StageBackgroundLayer(
+                custom = CallBackgroundStore.isCustom(callBg),
+                filePath = callBgFile?.absolutePath.orEmpty(),
+            )
+        }
+
+        // ① 画面层：垫在最底下、铺满整屏（尺寸恒定，右滑时也不变，见类注释）。
+        //    v0.61.1：首帧之前整块是透明的，画出来才淡入 —— 省得角色"啪"地出现。
         if (videoVisualOn) {
             val slotAlpha by animateFloatAsState(
                 targetValue = if (videoPictureOn) 1f else 0f,
@@ -300,93 +397,68 @@ fun RealtimeCallScreen(
             }
         }
 
-        Column(
-            Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            // 主视觉：大头像 + 名字 + 状态。**高度由内容决定**（不放 weight）——
-            // 矮屏上「缺模型」提示按钮跟着长时不能被裁掉，剩余高度全给字幕区。
+        // ② 顶栏：状态 + 计时。**纯净态里也保留**（用户点名"顶部栏的 UI 还要"）。
+        //    只有"画面真的出来了"才浮在画面上；没有画面时状态与计时跟着头像走（下面那一支），
+        //    免得同一条信息出现两遍。
+        val statusLabelNow = if (!answerDelayDone && hasPermission) "正在呼叫…" else stateLabel(ui)
+        if (videoPictureOn) {
+            Row(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp, vertical = 14.dp)
+                    .staggerEnter(0, stepMs = 60, slideDp = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Crossfade(targetState = statusLabelNow, label = "stateLabelTop") { label ->
+                    CallStatusChip(label = label, live = active)
+                }
+                Spacer(Modifier.weight(1f))
+                if (elapsedSec > 0) {
+                    CallTimeChip("%02d:%02d".format(elapsedSec / 60, elapsedSec % 60))
+                }
+            }
+        }
+
+        // ③ 居中的大头像那一套 —— 只在**没有画面**时出现：
+        //    语音通话，以及视频通话加载中 / 形象坏了回落的那些情况（方案文档 §二十四）。
+        if (!videoPictureOn) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    // v0.55.0 进场编排：头像块 → 字幕区 → 操作钮，三块依次抬起，
-                    // 与路由的横向滑入叠成"页面铺开"，而不是整屏内容同一帧出现。
-                    // v0.61.1：**恢复无条件生效**。以前"有画面时不加"是因为画面是 SurfaceView，
-                    // post-layout 变换可能与曲面对不上合成；现在 Live2D 也走 TextureView
-                    // （正常 View 绘制），这个顾虑不存在了，两条通话共用同一套进场节奏。
                     .staggerEnter(0, stepMs = 60, slideDp = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // v0.60.1（用户点名）：**视频通话出画面时改顶栏形状** ——
-                // 名字换成头像、贴最上方，状态挂在头像右边、时间在下面。
-                // 判据是 videoPictureOn（真的画出一帧了），不是"视图挂上了"：
-                // 加载那几秒仍走 else 那一套居中大头像，两颗头像也不会同时出现。
-                // ⚠️ else 那条还兜着"没有形象 / 视觉坏了"的回落（方案文档 §二十四：视觉失败 ≠ 通话失败）。
-                val statusLabelNow =
-                    if (!answerDelayDone && hasPermission) "正在呼叫…" else stateLabel(ui)
-                if (videoPictureOn) {
-                    Spacer(Modifier.height(12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        NeuAvatar(
-                            emoji = persona?.avatarEmoji ?: "🙂",
-                            imagePath = persona?.avatarImagePath.orEmpty(),
-                            size = 42.dp,
-                            ringBrush = personaBrush(personaId),
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Crossfade(targetState = statusLabelNow, label = "stateLabel") { label ->
-                            CallStatusChip(label = label, live = active)
-                        }
-                    }
-                } else {
-                    Spacer(Modifier.height(avatarTopGap))
-                    // 说话时头像外扩两圈同心环（v0.55.0）：原来只有头像自己 0.985↔1.035 缩放，
-                    // 在整屏留白的通话页里几乎看不出"谁在说话"。加两圈缓慢外扩、边扩边淡的环，
-                    // 声源的方向感才立得住。环走 Canvas 单节点，开着整通电话也不产生重组。
-                    //
-                    // ⚠️ v0.56.5 修「角色思考 / 角色听我说话头像位置不一样」：
-                    // 根因是这个容器原来**尺寸跟着环走**——`CallPulseRings` 在 !active 时直接 return
-                    // （连节点都不占），active 时才带尺寸进来；于是整块被撑高，
-                    // 居中的头像被整体往下推（上面一行名字、下面状态胶囊也跟着挪）。
-                    // 现在把尺寸钉在**画布本身**（恒等于头像边长 × [CallAvatarCanvasRatio]），
-                    // 环只在这个画布内画或不画，头像的位置就与状态无关了。
-                    Box(Modifier.size(avatarCanvasSize), contentAlignment = Alignment.Center) {
-                        CallPulseRings(
-                            active = pulsing,
-                            color = ringInk,
-                            modifier = Modifier.fillMaxSize(),
-                        )
-                        NeuAvatar(
-                            emoji = persona?.avatarEmoji ?: "🙂",
-                            imagePath = persona?.avatarImagePath.orEmpty(),
-                            size = avatarSize,
-                            ringBrush = personaBrush(personaId),
-                            modifier = Modifier.graphicsLayer {
-                                scaleX = breath.value
-                                scaleY = breath.value
-                            },
-                        )
-                    }
-                    Spacer(Modifier.height(18.dp))
-                    // v0.60.1（用户点名）：**这一套不再显示名字** —— 头像就是身份，
-                    // 大圆头像 + 渐变环已经足够认出是谁，那行 20sp 的名字反而抢位置。
-                    Crossfade(targetState = statusLabelNow, label = "stateLabel") { label ->
-                        CallStatusChip(label = label, live = active)
-                    }
+                Spacer(Modifier.height(avatarTopGap))
+                // 尺寸钉在**画布本身**（恒等于头像边长 × CallAvatarCanvasRatio），环只在这个画布内画或不画，
+                // 头像位置就与状态无关了（v0.56.5 修"两态头像位置不一样"）
+                Box(Modifier.size(avatarCanvasSize), contentAlignment = Alignment.Center) {
+                    CallPulseRings(active = pulsing, color = ringInk, modifier = Modifier.fillMaxSize())
+                    NeuAvatar(
+                        emoji = persona?.avatarEmoji ?: "🙂",
+                        imagePath = persona?.avatarImagePath.orEmpty(),
+                        size = avatarSize,
+                        ringBrush = personaBrush(personaId),
+                        modifier = Modifier.graphicsLayer {
+                            scaleX = breath.value
+                            scaleY = breath.value
+                        },
+                    )
                 }
-                // 打通之后才走字：0 秒不显示，免得刚接通就挂个 00:00
+                Spacer(Modifier.height(18.dp))
+                Crossfade(targetState = statusLabelNow, label = "stateLabel") { label ->
+                    CallStatusChip(label = label, live = active)
+                }
                 if (elapsedSec > 0) {
                     Spacer(Modifier.height(5.dp))
                     Text(
                         "%02d:%02d".format(elapsedSec / 60, elapsedSec % 60),
                         fontSize = 12.sp,
-                        // v0.61.1：不再为"压在画面上"改白色 —— 用户点名去掉蒙层，
-                        // 底色就是主题色，用回正常的灰阶才读得清
                         color = MutedText,
                         letterSpacing = 0.8.sp,
                     )
                 }
-                // v0.58.0：形象坏了要说一句（静默降级是这个项目排查最久的一类问题）。
+                // 形象坏了要说一句（静默降级是这个项目排查最久的一类问题）。
                 // 只说现象与后果，不教操作——电话正在讲，这时候不该让用户读段落。
                 (ui.visualRuntime as? VisualRuntime.Degraded)?.let { d ->
                     Spacer(Modifier.height(6.dp))
@@ -429,44 +501,50 @@ fun RealtimeCallScreen(
                     }
                 }
             }
+        }
 
-            // 字幕区（v0.54.0；v0.54.1 限高 + 每段最多两行）：
-            // 最多露出最近约 4 段，更早的历史默认被挡在可视区上方，向上翻才看得到；
-            // 贴着底部时新句自动跟随，用户一向上翻就**不再被拽回**，
-            // 右下角给一颗「回到底部」按钮，随时一键回到最新。
-            Box(
-                Modifier
-                    .weight(1f)
+        // ④ 对话台：字幕 + 操作钮。右滑时整块横移出场。
+        //
+        //    为什么会遮不住角色：角色已经被 ③/① 的 bottomInset 收进上方那块了，
+        //    这块面板覆盖的**本来就是画面里没有角色的地方**（类注释第 1 条）。
+        //    所以这里不需要蒙版、不需要半透明。
+        //
+        //    ⚠️ v0.65.0（用户点名"下面 UI 的背景白膜换成透明的"）：**有画面时这块不再铺底色**，
+        //    伪视频那一路尤其明显 —— 铺了底色就等于在视频上盖了一条白带。
+        //    没有画面（语音通话 / 形象坏了回落头像）时才铺 [NeuBackground]：
+        //    那一支底下本来就是页面底色，铺与不铺是同一个颜色，但大头像那套要靠它托住字幕。
+        Column(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .graphicsLayer {
+                    // 延迟读：滑动期间只刷渲染层，不重组这张面板（一重组就要重排字幕列表）
+                    translationX = spread.value * screenWidthPx
+                    alpha = 1f - spread.value * 0.35f
+                }
+                .then(if (videoPictureOn) Modifier else Modifier.background(NeuBackground))
+                .staggerEnter(1, stepMs = 60, slideDp = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            CallSubtitlePanel(
+                lines = remember(ui.turns, ui.userPartial, ui.aiPartial) { buildLines(ui) },
+                name = name,
+                modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 10.dp)
-                    .staggerEnter(1, stepMs = 60, slideDp = 16.dp),
-                contentAlignment = Alignment.BottomCenter,
-            ) {
-                // v0.61.1（用户点名）：**三层暗色蒙层全部删掉**，字幕不再压暗色托底，
-                // 字色回到主题灰阶（蒙层没了之后白字压在浅色角色上根本看不见）。
-                CallSubtitlePanel(
-                    lines = remember(ui.turns, ui.userPartial, ui.aiPartial) { buildLines(ui) },
-                    name = name,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = SubtitleViewportHeight)
-                        .padding(horizontal = 30.dp),
-                )
-            }
-
-            // 底部操作：静音 + 挂断。
-            // v0.61.1（用户点名）：整行不再铺那条从透明到黑的渐变托底 ——
-            // 两颗钮本来就有自己的圆底（白面 / 危险色），要的是"各自悬浮"的效果。
+                    .heightIn(max = CallSubtitleViewportHeight)
+                    .padding(horizontal = 26.dp)
+                    .padding(top = 10.dp),
+            )
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 40.dp)
+                    .padding(top = 8.dp, bottom = 30.dp)
                     .staggerEnter(2, stepMs = 60, slideDp = 18.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 CallActionButton(
-                    size = 60.dp,
+                    size = 58.dp,
                     container = if (ui.muted) NeuAccent else NeuSurface,
                     tint = if (ui.muted) AccentInk else TextPrimary,
                     icon = if (ui.muted) MIcons.MicOff else MIcons.Mic,
@@ -478,7 +556,7 @@ fun RealtimeCallScreen(
                 )
                 Spacer(Modifier.width(30.dp))
                 CallActionButton(
-                    size = 68.dp,
+                    size = 66.dp,
                     container = NeuDanger,
                     tint = AccentInk,
                     icon = MIcons.PhoneOff,
@@ -489,15 +567,28 @@ fun RealtimeCallScreen(
             }
         }
     }
-
 }
 
 /**
- * 字幕可视高度 = **一屏最多 6 行文字**（v0.54.3 用户拍板，非"6 段"）。
- * 按 20sp 行高：6 行 ≈ 120dp，加每段上下各 3dp 内边距与列表两端 24dp contentPadding，
- * 取 150dp。行数由可视高度天然封顶 —— 长句再长也只会占满这一屏。
+ * 对话台的总高度（v0.64.0）。**它必须是一个常数**：
+ *
+ * 同一个数要用在两个地方 —— 面板自己的排版高度，以及"角色区占多少"的那个比例
+ * （`consoleFraction = 这个数 / 屏高`）。两处各自算一遍的话，
+ * 一旦有一边改了字号或内边距，角色就会被对话台压住一条边（真机上表现为"下巴被切掉"）。
+ *
+ * 构成：字幕可视区 96 + 间距 8 + 按钮 66 + 底边距 30 ≈ 200，留 8dp 余量。
  */
-private val SubtitleViewportHeight = 150.dp
+private val CallConsoleHeight = 208.dp
+
+/**
+ * 字幕可视高度 = **最多 3 行**（v0.64.0 用户拍板）。
+ *
+ * 上一版是"一屏 6 行 / 150dp"，那是在字幕**压在角色身上**的前提下做的（越少越不遮）。
+ * 现在字幕有自己的台面，3 行（≈ 66dp）配上下内边距正好是 96dp ——
+ * 再多会把角色区压小，而底部这块同时还要放两颗钮。
+ * 更早的历史仍然**翻得回去**：上滑就是完整记录，右下角有「回到底部」。
+ */
+private val CallSubtitleViewportHeight = 96.dp
 
 /**
  * 通话页头像**画布**与头像本体的边长比（v0.56.5 钉死的是 196 : 124，同一个比值）。
@@ -516,12 +607,11 @@ private const val CallAvatarCanvasRatio = 196f / 124f
  * ② **只要用户自己向上翻过，就停止自动滚动**，流式增量不再打断翻阅；
  * ③ 离开底部时右下角浮出「↓ 回到底部」，点一下立刻回到最新并恢复跟随。
  *
- * 显示规则（v0.54.3）：面板可视高度只放得下**一屏 6 行文字**（每段最多占满这 6 行），
- * 更早的历史默认藏在可视区上方，向上翻才看得到。
+ * 渐隐是"歌词式"的：**最新一句最亮、最大**，越往上越**淡且越小**，
+ * 都设了可读下限（alpha≥0.6、scale≥0.82），翻到通话开头时不会整屏都是"看不清的灰字"。
  *
- * 渐隐是"歌词式"的（v0.54.3 加强）：**最新一句最亮、最大**，越往上越**淡且越小**，
- * 像"远离了"一样缩小后退；淡/小都设了可读下限（alpha≥0.6、scale≥0.82），
- * 翻到通话开头时不会整屏都是"看不清的灰字"。
+ * ⚠️ v0.64.0：这里**不再有任何蒙版或渐变托底**。字幕现在压在页面底色上（见对话台的说明），
+ * 正常灰阶就够清晰 —— 把蒙版加回来只会把 v0.61.1 删掉的那三层重新请回来。
  */
 @Composable
 private fun CallSubtitlePanel(
@@ -573,7 +663,7 @@ private fun CallSubtitlePanel(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(top = 10.dp, bottom = 14.dp),
+            contentPadding = PaddingValues(top = 6.dp, bottom = 6.dp),
             verticalArrangement = Arrangement.Bottom,
         ) {
             itemsIndexed(
@@ -584,31 +674,27 @@ private fun CallSubtitlePanel(
                 val fromEnd = lines.lastIndex - i
                 val isNewest = fromEnd == 0
                 // 渐隐阶梯：**最新一句最亮，越旧越淡**（歌词式）。
-                // v0.54.1 修正方向 —— 原来这排数反着取了（最新的 fromEnd=0 拿到 0.3f），
-                // 导致正在说的那句被压成灰、整屏像蒙了一层；现在改成线性递减 + 可读下限，
-                // 翻出去的历史不会淡到看不清。
+                // 线性递减 + 可读下限，翻出去的历史不会淡到看不清。
                 val fade = (1f - fromEnd * 0.13f).coerceAtLeast(0.6f)
-                // v0.54.3：越旧的字还要**越小**（"远离了"的观感），同样是线性递减 + 下限，
-                // 免得翻出去的历史缩成看不清的小字。
+                // 越旧的字还要**越小**（"远离了"的观感），同样有下限
                 val recede = (1f - fromEnd * 0.045f).coerceAtLeast(0.82f)
                 Text(
                     subtitleText(line, name, MutedText),
                     fontSize = if (isNewest) 15.sp else 14.sp,
-                    lineHeight = if (isNewest) 22.sp else 20.sp,
+                    lineHeight = if (isNewest) 21.sp else 20.sp,
                     fontWeight = if (isNewest) FontWeight.SemiBold else FontWeight.Normal,
                     color = when {
                         isNewest -> TextPrimary
                         fromEnd < 5 -> TextSecondary
                         else -> MutedText
                     },
-                    // v0.54.3：每段最多占满一屏 6 行（超了截断省略号）——
-                    // 配合可视高度封顶，一屏最多只露 6 行文字。
-                    maxLines = 6,
+                    // 每段最多 3 行（超了截断省略号）—— 配合可视高度封顶，一屏最多只露 3 行
+                    maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Start,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 3.dp)
+                        .padding(vertical = 2.dp)
                         .scale(recede)
                         .alpha(fade),
                 )
@@ -630,13 +716,13 @@ private fun CallSubtitlePanel(
                     }
                 },
                 accent = true,
-                size = 38.dp,
+                size = 34.dp,
             ) {
                 Icon(
                     MIcons.ChevronDown,
                     contentDescription = "回到底部",
                     tint = AccentInk,
-                    modifier = Modifier.size(19.dp),
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
@@ -751,11 +837,29 @@ private fun CallStatusChip(label: String, live: Boolean) {
 }
 
 /**
+ * 计时胶囊（v0.64.0）。与状态胶囊同一套几何、同一套色，只是右边对齐 ——
+ * 顶栏上两颗并列的胶囊读起来才像一组信息，而不是"一个控件 + 一行散字"。
+ */
+@Composable
+private fun CallTimeChip(text: String) {
+    Box(
+        Modifier
+            .neuSurface(999.dp, color = NeuTrack, inset = true)
+            .padding(horizontal = 13.dp, vertical = 6.dp),
+    ) {
+        Text(text, fontSize = 12.5.sp, color = TextSecondary, letterSpacing = 0.6.sp)
+    }
+}
+
+/**
  * 大号圆形操作钮（静音/挂断）：无涟漪缩放反馈，容器色调用方指定。
  *
  * v0.55.0：补两处以前没有的反馈 ——
  * - **禁用态淡出**（原来 enable=false 时按钮还是全亮，看不出"现在点不动"）；
  * - **生效态内圈**（静音开着时加一圈发丝环，表示"这个状态正生效"）。
+ *
+ * v0.64.0：v0.61.1 删掉的"外圈描边"在 [ringed] 上**保持删除状态**——
+ * 现在它画在按钮**内部**（往外画会被父节点裁掉，也和"发丝线是界面唯一分隔手段"的语言不一致）。
  */
 @Composable
 private fun CallActionButton(
@@ -765,7 +869,7 @@ private fun CallActionButton(
     icon: ImageVector,
     description: String,
     enabled: Boolean,
-    /** 是否画一圈外环（表示"这个开关正生效"，如静音中） */
+    /** 是否画一圈内环（表示"这个开关正生效"，如静音中） */
     ringed: Boolean = false,
     onClick: () -> Unit,
 ) {
@@ -775,6 +879,7 @@ private fun CallActionButton(
         animationSpec = tween(200),
         label = "callBtnAlpha",
     )
+    val hairline = NeuHairline
     Box(
         Modifier
             .scale(press.scale)
@@ -789,15 +894,12 @@ private fun CallActionButton(
             ),
         contentAlignment = Alignment.Center,
     ) {
-        // 生效环画在按钮**内部**（不往外扩）：往外画会被父节点裁掉，
-        // 而且和"发丝线描边 = 界面唯一分隔手段"的语言一致 —— 不用第二套装饰。
         if (ringed) {
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .padding(5.dp)
-                    .neuSurface(999.dp, color = Color.Transparent),
-            )
+            // 生效环画在按钮**内部**（往外画会被父节点裁掉，也和"发丝线是界面唯一分隔手段"
+            // 的语言一致 —— 不用第二套装饰）。就是一个 Canvas 圆，不加第二层描边。
+            Canvas(Modifier.fillMaxSize().padding(4.dp)) {
+                drawCircle(color = hairline, style = Stroke(width = 1.4.dp.toPx()))
+            }
         }
         Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(size * 0.44f))
     }

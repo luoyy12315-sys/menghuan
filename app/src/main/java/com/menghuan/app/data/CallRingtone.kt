@@ -148,19 +148,39 @@ object CallRingtone {
     /**
      * 开一个**循环播放**的 MediaPlayer（来电响铃与设置页试听都用它）。失败返回 null，
      * 调用方负责在不用时 `stop()` + `release()`。
+     *
+     * @param ringThroughDnd v0.62.0：true = 把铃声放到 **`USAGE_ALARM`（闹钟音轨）**。
+     *   这是闹钟 App 在系统勿扰/静音下还能响的标准做法，**不需要任何权限**；
+     *   代价是它吃的是「闹钟音量」那条滑杆，不是铃声音量（音量调到底就听不见，属正常）。
+     *   只有 **AI 主动打来的那一通**传 true；用户自己打给 AI 的回铃、设置页试听都传 false。
      */
-    fun loopPlayer(path: String): MediaPlayer? = runCatching {
+    fun loopPlayer(path: String, ringThroughDnd: Boolean = false): MediaPlayer? = runCatching {
         MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build(),
-            )
+            setAudioAttributes(audioAttributes(ringThroughDnd))
             setDataSource(path)
             isLooping = true
             prepare()
             start()
         }
     }.getOrNull()
+
+    /**
+     * 同上，但播的是**内容 Uri**（系统默认铃声就是 `content://media/...` 而不是文件路径）。
+     * `android.media.Ringtone` 也能设音轨，但 `setAudioAttributes` 要 API 28，
+     * 本工程 minSdk 26 —— 统一走 MediaPlayer 才不会在 26/27 上悄悄不响。
+     */
+    fun loopPlayer(context: Context, uri: Uri, ringThroughDnd: Boolean = false): MediaPlayer? = runCatching {
+        MediaPlayer().apply {
+            setAudioAttributes(audioAttributes(ringThroughDnd))
+            setDataSource(context, uri)
+            isLooping = true
+            prepare()
+            start()
+        }
+    }.getOrNull()
+
+    private fun audioAttributes(ringThroughDnd: Boolean) = AudioAttributes.Builder()
+        .setUsage(if (ringThroughDnd) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+        .build()
 }

@@ -371,11 +371,115 @@ class DataViewModel(
         }
     }
 
+    /**
+     * 改一笔（v0.63.0：流水长按 → 编辑）。
+     *
+     * 只换方向/金额/备注，**发生时间与录入来源保住不动**——写错的通常是数字，
+     * 不是"这笔什么时候发生的"；来源（手动/语音/识图）是留痕，改它等于抹掉证据。
+     */
+    fun editLedgerEntry(
+        entry: com.menghuan.app.data.model.LedgerEntry,
+        isIncome: Boolean,
+        amountCents: Long,
+        note: String,
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                db.ledgerDao().upsert(entry.copy(isIncome = isIncome, amountCents = amountCents, note = note))
+            }
+            _ledgerMessage.value = "这笔已更新"
+        }
+    }
+
     fun deleteLedgerEntry(id: Long) {
         viewModelScope.launch {
             runCatching { db.ledgerDao().deleteById(id) }
             _ledgerMessage.value = "已删除该笔记录"
         }
+    }
+
+    // ===== v0.62.0 备忘本 =====
+
+    /** 全部备忘（置顶优先，其次新建优先）——排序口径只在 MemoMath 里定一次 */
+    val memos: StateFlow<List<com.menghuan.app.data.model.MemoEntry>> =
+        db.memoDao().observeAll()
+            .map { com.menghuan.app.data.model.MemoMath.sorted(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private val _memoMessage = MutableStateFlow<String?>(null)
+    val memoMessage: StateFlow<String?> = _memoMessage.asStateFlow()
+
+    /** 人设名单：备忘「发给 AI」时选给谁（数据页卡片和全屏页共用这一份观察） */
+    val personas: StateFlow<List<com.menghuan.app.data.model.Persona>> =
+        db.personaDao().observeAll()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun clearMemoMessage() {
+        _memoMessage.value = null
+    }
+
+    /**
+     * 新增 / 编辑共用。v0.63.0 起只剩正文与置顶：时间就是 `createdAt`（自动标注），
+     * 没有可填字段了，所以也不再有弹层表单。
+     * id=0 由 Room 自动生成；编辑时保住原 `createdAt`，别让改一次文字就把时间刷到最新。
+     */
+    fun saveMemo(id: Long, content: String, pinned: Boolean) {
+        val text = content.trim()
+        if (text.isEmpty()) {
+            _memoMessage.value = "内容不能为空"
+            return
+        }
+        viewModelScope.launch {
+            val existing = if (id > 0L) db.memoDao().getById(id) else null
+            runCatching {
+                db.memoDao().upsert(
+                    com.menghuan.app.data.model.MemoEntry(
+                        id = if (id > 0L) id else 0L,
+                        content = text,
+                        pinned = pinned,
+                        createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                    )
+                )
+            }
+            _memoMessage.value = if (existing == null) "已记下" else "备忘已更新"
+        }
+    }
+
+    /** 卡内那一行「＋ 记点什么…」：只要正文 */
+    fun quickAddMemo(content: String) {
+        saveMemo(id = 0L, content = content, pinned = false)
+    }
+
+    fun toggleMemoPin(id: Long, pinned: Boolean) {
+        viewModelScope.launch {
+            runCatching { db.memoDao().setPinned(id, pinned) }
+            _memoMessage.value = if (pinned) "已置顶" else "已取消置顶"
+        }
+    }
+
+    fun deleteMemo(id: Long) {
+        viewModelScope.launch {
+            runCatching { db.memoDao().deleteById(id) }
+        }
+    }
+
+    /**
+     * 发给 AI：只在这一次把这条备忘带进 TA 的输入框（填草稿、不自动发）。
+     *
+     * 刻意**不做**"备忘常驻注入 system prompt"——那会让 AI 满嘴备忘，
+     * 和当年档案注入被删是同一个毛病；用户点哪条、发给谁，才带哪条过去。
+     * 发法沿用会话草稿：写 [com.menghuan.app.ui.chat.ChatDrafts]，
+     * 导航到 `chat/{personaId}` 时 ChatViewModel 用它当输入框初值（见其 _uiState 初始化）。
+     * 原草稿非空时**接在后面**，不顶掉用户还没发出去的话。
+     */
+    fun sendMemoToPersona(personaId: Long, memo: com.menghuan.app.data.model.MemoEntry) {
+        val text = com.menghuan.app.data.model.MemoMath.toChatText(memo)
+        val draft = com.menghuan.app.ui.chat.ChatDrafts.get(personaId)
+        com.menghuan.app.ui.chat.ChatDrafts.set(
+            personaId,
+            if (draft.isBlank()) text else draft.trimEnd() + "\n" + text,
+        )
+        _memoMessage.value = "已放进 TA 的输入框"
     }
 
     private val _extracting = MutableStateFlow(false)

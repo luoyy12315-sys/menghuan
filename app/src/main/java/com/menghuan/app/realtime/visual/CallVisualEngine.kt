@@ -4,6 +4,8 @@ import android.content.Context
 import android.view.View
 import com.menghuan.app.data.CallVisualAsset
 import com.menghuan.app.data.CallVisualType
+import com.menghuan.app.live2d.ActionSlot
+import com.menghuan.app.live2d.Live2dAction
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -64,6 +66,24 @@ interface CallVisualEngine {
 
     /** 通话状态变化（[CallVisualState]，由引擎状态映射而来） */
     fun setCallState(state: CallVisualState)
+
+    /**
+     * 四个通话状态各自该播哪条动作（v0.64.0）。
+     *
+     * 解析（查库、回落、判兼容）全在 VM 里做完再交进来 —— 引擎**不认识数据库**，
+     * 也**不认识动作库**，它只知道"状态 X 到了，播这张表里 X 那一行"。
+     * 这就是用户第 2 条要的"通话只负责调用动作，不负责制作与编辑"。
+     */
+    fun setStateActions(actions: Map<ActionSlot, Live2dAction>) = Unit
+
+    /**
+     * 底部要留给 UI 的高度（画面高度的比例，0 = 不留，v0.64.0）。
+     *
+     * 通话页现在是"角色区 + 对话台"上下分区，角色必须完整落在上方那块里 ——
+     * 靠这个把可视区告诉引擎。实现里只改投影/矩阵计算，**不重建渲染目标**，
+     * 所以布局动画期间可以每帧调。
+     */
+    fun setViewportBottomInset(fraction: Float) = Unit
 
     /**
      * AI 实时语音的音量电平（0f–1f）。

@@ -238,12 +238,18 @@ class AiPromptsTest {
         assertTrue(manual.contains("还有 N 项没开启"))
     }
 
-    /** v0.53.9：铃声试听 / 播不出来明说 / 免打扰静音不响 进手册。 */
+    /**
+     * v0.53.9：铃声试听 / 播不出来明说 进手册。
+     *
+     * ⚠️ 第三条断言在 v0.62.0 **翻了方向**：那句"手机开免打扰 / 静音 / 振动时铃声一律不响"
+     * 已经不成立——AI 主动打来的那通现在把铃声放到闹钟音轨上，勿扰下照样响。
+     * 留着旧措辞就是让助手教用户"没声音是正常的"，所以改成 assertFalse（见 `v0620 AI 来电穿勿扰 进手册`）。
+     */
     @Test
     fun `v0539 铃声试听与播不出来明说进手册`() {
         assertTrue(manual.contains("页面上点「试听」随时能听"))
         assertTrue(manual.contains("播不出来时页面会标红说明"))
-        assertTrue(manual.contains("手机开免打扰 / 静音 / 振动时铃声一律不响"))
+        assertFalse(manual.contains("手机开免打扰 / 静音 / 振动时铃声一律不响"))
         // 旧措辞必须消失：搜"不设就用系统默认铃声。"（带句号）才守得住这次 replace
         assertFalse(manual.contains("不设就用系统默认铃声。"))
     }
@@ -799,7 +805,9 @@ class AiPromptsTest {
     fun `v058_1 视频通话形象合并与立绘进手册`() {
         assertTrue(manual.contains("会话设置 → 「视频通话形象」** 里配"))
         assertTrue(manual.contains("不再是 Live 2D / 伪视频 两行"))
-        assertTrue(manual.contains("- **角色立绘**（v0.58.1，入口 **编辑人设** 页）"))
+        // ⚠️ v0.60.1 把这一段的措辞改成了"（入口 **编辑人设** 页，位置在**「身份」下面那一栏**）"，
+        // 而这条断言当时没跟着改 —— 于是它从 v0.60.1 起一直是红的（v0.64.0 顺手修正）。
+        assertTrue(manual.contains("- **角色立绘**（入口 **编辑人设** 页，位置在**「身份」下面那一栏**）"))
         assertTrue(manual.contains("把它当参考图一并发给生图服务（图生图）"))
         // 不认参考图的家要能说出来，否则用户以为那张一定像 TA
         assertTrue(manual.contains("这张没按立绘生成"))
@@ -829,7 +837,11 @@ class AiPromptsTest {
         assertTrue(manual.contains("**实时语音通话始终用端侧离线识别**"))
         assertTrue(manual.contains("选了在线就只走在线，失败会把原因原样说出来"))
         assertTrue(manual.contains("- **联网搜索加了「自定义」**（v0.59.0）"))
-        assertTrue(manual.contains("自定义家有**独立的一份 Key**"))
+        // ⚠️ 这句当年只对了一半（自定义那一家确实独立，博查与 Tavily 之间是共用的），
+        // v0.66.0 整段改写成"三家各有一份"，所以旧句必须消失、新句必须在了 ——
+        // 见 `v0660 联网搜索每家一份 Key 与通话背景 进手册`。
+        assertFalse(manual.contains("自定义家有**独立的一份 Key**"))
+        assertTrue(manual.contains("**三家各有一份 Key**"))
     }
 
     /**
@@ -865,5 +877,167 @@ class AiPromptsTest {
         assertTrue(manual.contains("进去一次这个会话就回到消息列表了"))
         assertTrue(manual.contains("**每张卡右边那颗气泡图标 = 直接进 TA 的会话**"))
         assertFalse(manual.contains("人设保留，发新消息即恢复"))
+    }
+
+    /**
+     * v0.62.0 建备忘本 → v0.63.0 按用户拍板定形：时间**自动**（记下的那一刻）、**地点删掉**、
+     * **全程不弹窗**、卡里**只摊一条**。
+     *
+     * 双向断言在这里特别重要：v0.62.0 那一版写的是"可标的时间 + 可标的地点 + 点某条打开编辑弹层"，
+     * 这句要是还留在手册里，用户问"怎么标地点"时助手会教一套已经不存在的手填表单。
+     */
+    @Test
+    fun `v0620 备忘本 进手册`() {
+        assertTrue(manual.contains("**备忘本**（v0.62.0 建，v0.63.0 定形）"))
+        assertTrue(manual.contains("**没有弹窗、也没有要填的表单**"))
+        assertTrue(manual.contains("时间**自动记成你按下回车的那一刻**"))
+        assertTrue(manual.contains("**没有地点这一项**"))
+        assertTrue(manual.contains("AI 平时**读不到**你的备忘"))
+        // v0.63.0 记账本流水长按编辑（同一段 replace 里补的，锚点句丢了就是整段没换上）
+        assertTrue(manual.contains("「编辑这笔」改收支方向/金额/备注"))
+        // 旧形状必须整段消失
+        assertFalse(manual.contains("一条备忘 = 正文 + 可标的时间 + 可标的地点 + 可置顶"))
+        assertFalse(manual.contains("点某条 = 打开编辑"))
+        assertFalse(manual.contains("卡片只显示最近 3 条"))
+        assertFalse(manual.contains("**标了时间不会到点提醒**"))
+        // ⚠️ v0.65.0 又改了形态（数据页那张卡不再打字、条目改成一张张卡片）：
+        // 那几句旧措辞的 assertFalse 在 `v0650 备忘本入口卡与通话台透明与背景两档 进手册` 里，别搬回来。
+    }
+
+    /**
+     * v0.62.0（用户点名"任务页长按要像消息页那样呼出菜单，有编辑和删除"）：
+     * 底稿那句「长按任务行可编辑或删除」太含糊——用户照着做会以为长按直接改任务，
+     * 而现行形状是**长按弹菜单、点删除才真删且不叠确认框**。双向断言都上。
+     */
+    @Test
+    fun `v0620 任务长按菜单 进手册`() {
+        assertTrue(manual.contains("长按任务行**会震一下并弹出菜单**（编辑 / 删除"))
+        assertTrue(manual.contains("**点菜单里的「删除」就直接删，不再叠一层确认框**"))
+        assertFalse(manual.contains("长按任务行可编辑或删除"))
+    }
+
+    /**
+     * v0.62.0（用户点名"未读不要黑点要红点""AI 发的消息要有提示音、勿扰时只震动"）。
+     *
+     * 两条都必须双向断言：
+     * - 未读点：底稿只写"出现未读点"，那颗点原本是强调色（浅色下=纯黑），
+     *   手册不写"红"，用户问"我没收到提醒啊"时助手会答不上来。
+     * - 通知声音：普通聊天的 AI 回复**根本不发系统通知**，这是必须写清的事实，
+     *   否则助手会让用户去等一条永远不会响的通知。
+     */
+    @Test
+    fun `v0620 未读红点与消息提示音 进手册`() {
+        assertTrue(manual.contains("AI 有新回复时行尾亮一颗**红点**"))
+        assertTrue(manual.contains("底栏「消息」图标右上角那颗也一样是红的"))
+        assertTrue(manual.contains("到点会**响提示音并震动**"))
+        assertTrue(manual.contains("自动降成**只震动、不响铃**"))
+        assertTrue(manual.contains("普通聊天里 AI 的回复**不发系统通知**"))
+        assertFalse(manual.contains("AI 有新回复时出现未读点。"))
+    }
+
+    /**
+     * v0.62.0（用户点名"主动打电话的时候就算是免打扰也要有铃声"）：
+     * v0.53.9 写下的「免打扰时铃声一律不响」到这一版**对 AI 来电已经不成立**
+     * （铃声改放闹钟音轨）。这条旧措辞留在手册里 = 助手会教用户"勿扰下没声音是正常的"，
+     * 属于错答案，所以旧句必须整段消失、新句必须分清是哪一路。
+     */
+    @Test
+    fun `v0620 AI 来电穿勿扰 进手册`() {
+        assertTrue(manual.contains("**AI 主动打来的那一通不吃勿扰**"))
+        assertTrue(manual.contains("它吃的是系统的**闹钟音量**那条滑杆"))
+        assertTrue(manual.contains("你自己打给 AI 的回铃、以及铃声页的「试听」仍走铃声音量"))
+        assertFalse(manual.contains("**手机开免打扰 / 静音 / 振动时铃声一律不响**"))
+    }
+
+    /**
+     * v0.64.0：Live2D 动作系统上线（角色空间 / 通话动作 / 动作库 / 自己做 / AI 生成）。
+     *
+     * 这一条 replace 的**锚点是链里更早那条 replace 的产出**（v0.50.0 写进去的收尾句 +
+     * 数据与隐私标题），所以它天然脆弱：谁改了那条的收尾措辞，这一整章就会静默落空。
+     * 因此这里的断言必须把**每一小节**都点到 —— 只断言一个词的话，
+     * 锚点被改坏时测试仍然是绿的，而手册已经少了整章（正是 v0.56.8 那两条的翻版）。
+     */
+    @Test
+    fun `v0640 角色与动作整章 进手册`() {
+        // 章节本身
+        assertTrue(manual.contains("═══ 角色与动作（v0.64.0）═══"))
+        assertTrue(manual.contains("看形象、做动作、眨眼呼吸、拖动、点击全部在本机跑，不联网、不花 token"))
+        // 视频通话的形状变了：分区 + 右滑纯净态
+        assertTrue(manual.contains("字幕与按钮**不会压到角色身上**"))
+        assertTrue(manual.contains("**向右滑**：下面那块对话台整个滑到右边去"))
+        assertTrue(manual.contains("**向左滑**把它叫回来"))
+        // 通话动作（四态绑定）
+        assertTrue(manual.contains("**会话设置 → 「通话动作」**"))
+        assertTrue(manual.contains("默认那四套是**系统自带的动作**"))
+        assertTrue(manual.contains("这一页**只做绑定**，不能编辑动作"))
+        // 角色空间
+        assertTrue(manual.contains("**会话设置 → 「角色空间」**"))
+        assertTrue(manual.contains("点头部 → 摇头；点身体 → 摆手；点到旁边空白 → 随机播一个趣味动作"))
+        // 动作库
+        assertTrue(manual.contains("（四态默认 + 摆手 / 摇头 / 劈叉 / 翻跟斗）"))
+        assertTrue(manual.contains("内置动作与模型自带动作**不能删**"))
+        // 自己做
+        assertTrue(manual.contains("角色空间底部「自己做」"))
+        assertTrue(manual.contains("基于内置动作改的会**另存成一条新动作**"))
+        // AI 生成
+        assertTrue(manual.contains("角色空间底部「AI 生成」"))
+        assertTrue(manual.contains("**播放完全在本机**，不会因为反复播放而继续花 token"))
+        // 兼容性
+        assertTrue(manual.contains("动作**不绑在具体模型上**"))
+        assertTrue(manual.contains("**任何模型都演得出来**"))
+    }
+
+    /**
+     * v0.65.0（用户点名四件事）：备忘本入口卡 / 视频通话对话台透明 / 角色空间背景两档 /
+     * 会话设置行右侧显示当前选择。
+     *
+     * 这里的**旧措辞断言一条都不许省**：这四段全是"改掉旧形状"，
+     * 旧句子留在手册里 = 助手会继续教用户点已经不存在的「全部」文字、
+     * 或者在数据页卡里找那行根本搬走了的输入框。
+     */
+    @Test
+    fun `v0650 备忘本入口卡与通话台透明与背景两档 进手册`() {
+        // ① 备忘本：数据页只剩入口卡，打字与条目都在全屏页
+        assertTrue(manual.contains("**一样大小**、**表面不显示任何内容**（不摊条目、不写条数），**点卡片本体才进全屏页**"))
+        assertTrue(manual.contains("下面**一条备忘一张卡片**"))
+        assertTrue(manual.contains("进页面时卡片**逐条错峰展开**"))
+        assertTrue(manual.contains("**点某张备忘卡 = 那张卡原地变成可编辑的文字**"))
+        assertFalse(manual.contains("点卡里那行「记点什么…」**就在卡里直接打字**"))
+        assertFalse(manual.contains("卡片上**只显示一条**（有置顶就显示置顶那条，没有就显示最新那条）"))
+        assertFalse(manual.contains("**点某条备忘 = 那一行原地变成可编辑的文字**"))
+        // ② 视频通话：有画面时对话台不再铺白底（旧手册没写过这块的颜色，只需断言新句在）
+        assertTrue(manual.contains("**有画面时下面这块对话台不再有白底**"))
+        assertTrue(manual.contains("字幕与两颗钮直接浮在画面上"))
+        // ③ 角色空间背景只剩两档
+        assertTrue(manual.contains("**只有两档**：**系统预设**（App 给的那张渐变）与**自定义背景**"))
+        assertFalse(manual.contains("跟随主题底色 / 四张内置渐变 / 从相册选一张"))
+        // ④ 会话设置行：音色 / 铃声 右侧写当前选择
+        assertTrue(manual.contains("「音色」「铃声」两行的**右边直接写着当前用的是哪一个**"))
+        // ⚠️ 这句到 v0.66.0 又被改写（新增「通话背景」一行，"四行"不再成立）：
+        // 旧句必须消失，新句由 `v0660 联网搜索每家一份 Key 与通话背景 进手册` 断言。
+        assertFalse(manual.contains("「视频通话形象」「角色空间」「通话动作」「聊天背景」四行都是**一行高的纯入口**"))
+        // ⑤ 动作幅度放大这一条要说得出口（用户问"动作太小"时助手不能答"去调代码里的常数"）
+        assertTrue(manual.contains("整体幅度又放大了一档"))
+    }
+
+    /**
+     * v0.66.0（用户点名两件事）：联网搜索"切换国内国外 key 都不变"的真相要写进手册，
+     * 以及视频通话新加的那行「通话背景」。
+     *
+     * 旧那句"自定义家有独立的一份 Key，切回博查 / Tavily 不会互相覆盖掉"**必须整段消失**：
+     * 它当时只说了自定义那一家，博查与 Tavily 之间一直是共用的——用户照着这句会以为
+     * "两家各填各的早就好了"，然后卡在同一个问题上找不到原因。
+     */
+    @Test
+    fun `v0660 联网搜索每家一份 Key 与通话背景 进手册`() {
+        assertTrue(manual.contains("**三家各有一份 Key**（v0.66.0 补齐：博查与 Tavily 过去**共用一把**"))
+        assertTrue(manual.contains("自动算在**当时生效的那一家**名下，**不用重填**"))
+        assertTrue(manual.contains("清空一家也不碰另外两家"))
+        assertTrue(manual.contains("**通话背景**（v0.66.0）：入口在会话设置页那行「通话背景」，点开只有两档"))
+        assertTrue(manual.contains("**只有视频通话铺背景**，语音通话维持现在的页面底色"))
+        assertTrue(manual.contains("「视频通话形象」「通话背景」「角色空间」「通话动作」「聊天背景」这几行"))
+        // 旧措辞（只给自定义那一家发过保证）
+        assertFalse(manual.contains("自定义家有**独立的一份 Key**，切回博查 / Tavily 不会互相覆盖掉。"))
+        assertFalse(manual.contains("「视频通话形象」「角色空间」「通话动作」「聊天背景」四行都是**一行高的纯入口**"))
     }
 }

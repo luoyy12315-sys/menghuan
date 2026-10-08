@@ -3,6 +3,7 @@ package com.menghuan.app
 import android.app.Application
 import androidx.room.Room
 import com.menghuan.app.data.ExtractionEngine
+import com.menghuan.app.data.Live2dActionRepository
 import com.menghuan.app.data.PersonaRepository
 import com.menghuan.app.data.ProfileRepository
 import com.menghuan.app.data.SettingsRepository
@@ -23,6 +24,16 @@ class MenghuanApp : Application() {
     lateinit var profileRepository: ProfileRepository
         private set
     lateinit var settingsRepository: SettingsRepository
+        private set
+
+    /**
+     * Live2D 动作库（v0.64.0）。
+     *
+     * 放在 Application 上而不是每个页面各建一个：动作库是**全机共享**的
+     * （内置动作 + 用户自己建的 + AI 生成的），每个角色都要读同一份，
+     * 而且内置动作的播种要做成"进程内只跑一次"。
+     */
+    lateinit var live2dActions: Live2dActionRepository
         private set
     /** 提炼等后台工作的作用域：不随页面退出而取消（监督者作业，单个失败不拖垮其他） */
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -66,6 +77,9 @@ class MenghuanApp : Application() {
                 AppDatabase.MIGRATION_13_14,
                 AppDatabase.MIGRATION_14_15,
                 AppDatabase.MIGRATION_15_16,
+                AppDatabase.MIGRATION_16_17,
+                AppDatabase.MIGRATION_17_18,
+                AppDatabase.MIGRATION_18_19,
             )
             .build()
         settingsRepository = SettingsRepository(this)
@@ -86,6 +100,20 @@ class MenghuanApp : Application() {
         personaRepository = PersonaRepository(db, settingsRepository) { id ->
             // 人设删除时连通话视觉素材一起清（几百 MB 的文件不能变孤儿）
             com.menghuan.app.data.CallVisualStore.deletePersona(this, id)
+            // v0.64.0：角色空间（背景图 + 配置）同样级联
+            com.menghuan.app.data.Live2dSpaceStore.deletePersona(this, id)
+            // v0.66.0：视频通话背景那张图也一样（档位行在 PersonaRepository.delete 里摘掉）
+            com.menghuan.app.data.CallBackgroundStore.deletePersona(this, id)
+            // v0.64.0：该角色所属的"模型自带动作"与四态绑定一起收掉；
+            // 用户自己建的动作是全机共享的，**不删**
+            applicationScope.launch {
+                runCatching { live2dActions.clearModelActions(id) }
+            }
+        }
+        live2dActions = Live2dActionRepository(db)
+        // 内置动作的播种：进聊天页之前就该在库里（通话页第一次解析绑定时才不需要兜底两档）
+        applicationScope.launch {
+            runCatching { live2dActions.ensureBuiltins() }
         }
         profileRepository = ProfileRepository(db)
         extractionEngine = ExtractionEngine(db, settingsRepository, taskSuggestionHub, applicationScope)

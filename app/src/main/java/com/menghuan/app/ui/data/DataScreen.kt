@@ -62,6 +62,7 @@ import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
 import com.menghuan.app.ui.ledger.LedgerRow
+import com.menghuan.app.ui.memo.MemoEntryCard
 import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.theme.FaintText
@@ -110,7 +111,8 @@ internal fun dateLabelOf(epochMillis: Long): String {
  * 1. **本周回顾条**（置顶）：打卡与完成度合并成单一指标，点格子展开当日明细
  * 2. **今日建议**：独立生成链路产出的一条建议，长按转任务
  * 3. **最近流水**：记账本摘要 + 现金余额，点击进记账本全屏页（入口在页面底部区域）
- * 4. **AI 洞察 / 周报**：合并成一张入口卡 → 全屏详情页
+ * 4. **备忘本**（v0.65.0 起）：与记账本同尺寸的入口卡，表面不显示任何内容，点进去才是卡片式列表
+ * 5. **AI 洞察 / 周报**：合并成一张入口卡 → 全屏详情页
  *
  * 页面底部 = 记账本入口行（用户要求"入口放在数据页底部"）。
  * 布局用 LazyColumn 之外的普通 Column + verticalScroll：本周回顾的展开明细是局部状态，
@@ -129,6 +131,8 @@ fun DataScreen(
      * 必须由外部喂"我现在可见了"这个信号。默认 true 是为了单页预览/测试不需要传。
      */
     visible: Boolean = true,
+    /** 进备忘本全屏页（v0.62.0；v0.65.0 起本页只剩入口卡） */
+    onOpenMemo: () -> Unit = {},
 ) {
     val weekReview by vm.weekReview.collectAsState()
     val todaySuggestion by vm.todaySuggestion.collectAsState()
@@ -202,7 +206,11 @@ fun DataScreen(
                 onClick = onOpenLedger,
             )
 
-            // ④ AI 洞察 / 周报合并入口
+            // ④ 备忘本入口卡（v0.65.0 用户点名：与记账本一样大小、表面不显示任何内容）
+            // 条目、条数、打字全部收进「备忘本」全屏页——这张卡只负责进门。
+            MemoEntryCard(onOpenAll = onOpenMemo)
+
+            // ⑤ AI 洞察 / 周报合并入口
             AiEntryCard(
                 insightCount = insights.size,
                 reportCount = weeklyReports.size,

@@ -85,12 +85,16 @@ fun LedgerEntrySheet(
     onClearImageMessage: () -> Unit,
     initialDraft: LedgerParser.LedgerDraft? = null,
     initialSource: String = LedgerSource.MANUAL,
+    /** 编辑已有的一笔（v0.63.0：流水长按 → 编辑）；非空时表单原样回填、标题与按钮换成"编辑这笔/保存" */
+    initial: LedgerEntry? = null,
 ) {
-    var isIncome by remember { mutableStateOf(initialDraft?.isIncome ?: false) }
+    var isIncome by remember { mutableStateOf(initial?.isIncome ?: initialDraft?.isIncome ?: false) }
     var amountText by remember {
-        mutableStateOf(initialDraft?.amountCents?.let { LedgerMath.formatCents(it) } ?: "")
+        mutableStateOf(
+            (initial?.amountCents ?: initialDraft?.amountCents)?.let { LedgerMath.formatCents(it) } ?: "",
+        )
     }
-    var note by remember { mutableStateOf(initialDraft?.note.orEmpty()) }
+    var note by remember { mutableStateOf(initial?.note ?: initialDraft?.note.orEmpty()) }
     var source by remember { mutableStateOf(initialSource) }
     var hint by remember { mutableStateOf<String?>(null) }
 
@@ -116,7 +120,7 @@ fun LedgerEntrySheet(
     // v0.56.14：端侧离线识别**没有逐字 partial**（语音条/通话同款），
     // 识别完一次性经 onResult 灌表单，不再有"边说边上屏"。
 
-    NeuSheetScaffold(title = "记一笔", onDismiss = onDismiss) {
+    NeuSheetScaffold(title = if (initial == null) "记一笔" else "编辑这笔", onDismiss = onDismiss) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             NeuChip("支出", !isIncome, Modifier.weight(1f)) { isIncome = false }
             NeuChip("收入", isIncome, Modifier.weight(1f)) { isIncome = true }

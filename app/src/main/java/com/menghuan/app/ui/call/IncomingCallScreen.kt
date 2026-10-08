@@ -173,23 +173,28 @@ private fun IncomingCallScreen(
     }
 
     // 响铃（v0.53.7；v0.54.4 起按角色）：角色专属铃声 → 设置里的默认铃声 → 系统默认铃声
-    var customPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
-    val systemRingtone = remember {
-        runCatching {
-            RingtoneManager.getRingtone(context, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
-        }.getOrNull()
-    }
+    //
+    // v0.62.0（用户点名"AI 主动打电话时就算免打扰也要有铃声"）：**三档一律放到闹钟音轨**。
+    // 原来系统默认铃声走 `Ringtone.play()` = RINGTONE 音轨，系统勿扰下被直接静音 ——
+    // 这就是真机上"开了勿扰，AI 打过来一点声音都没有"的根因（不是没弹通知，是没声）。
+    // `USAGE_ALARM` 是闹钟 App 穿勿扰的标准做法，不需要任何权限；
+    // 代价：吃的是**闹钟音量**那条滑杆，闹钟音量被拉到 0 就真的听不见（界面上没法替用户判断）。
+    var ringPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     LaunchedEffect(Unit) {
         val custom = runCatching { app.settingsRepository.ringtoneForPersona(personaId) }
             .getOrDefault("")
-        val player = custom.takeIf { it.isNotBlank() }?.let { CallRingtone.loopPlayer(it) }
-        if (player != null) customPlayer = player else runCatching { systemRingtone?.play() }
+        ringPlayer = if (custom.isNotBlank()) {
+            CallRingtone.loopPlayer(custom, ringThroughDnd = true)
+        } else {
+            val uri = RingtoneManager.getActualDefaultRingtoneUri(context, RingtoneManager.TYPE_RINGTONE)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            CallRingtone.loopPlayer(context, uri, ringThroughDnd = true)
+        }
     }
     DisposableEffect(Unit) {
         onDispose {
-            runCatching { customPlayer?.stop() }
-            runCatching { customPlayer?.release() }
-            runCatching { systemRingtone?.stop() }
+            runCatching { ringPlayer?.stop() }
+            runCatching { ringPlayer?.release() }
         }
     }
     LaunchedEffect(Unit) {

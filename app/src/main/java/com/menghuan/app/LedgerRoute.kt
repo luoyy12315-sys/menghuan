@@ -17,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.menghuan.app.data.model.LedgerEntry
 import com.menghuan.app.data.model.LedgerMath
 import com.menghuan.app.data.model.LedgerSource
 import com.menghuan.app.ui.data.AiDetailScreen
@@ -54,6 +55,8 @@ fun LedgerRoute(onBack: () -> Unit) {
     val message by vm.ledgerMessage.collectAsState()
 
     var showSheet by remember { mutableStateOf(false) }
+    // 正在编辑的那一笔（null = 新记一笔）。v0.63.0：流水长按 →「编辑这笔」
+    var editingEntry by remember { mutableStateOf<LedgerEntry?>(null) }
     var imageDraft by remember { mutableStateOf<LedgerParser.LedgerDraft?>(null) }
     var imageParsing by remember { mutableStateOf(false) }
     var imageMessage by remember { mutableStateOf<String?>(null) }
@@ -130,7 +133,14 @@ fun LedgerRoute(onBack: () -> Unit) {
         onShiftPeriod = { vm.shiftLedgerPeriod(it) },
         onBack = onBack,
         onDelete = { vm.deleteLedgerEntry(it) },
+        onEdit = { entry ->
+            editingEntry = entry
+            imageDraft = null
+            imageMessage = null
+            showSheet = true
+        },
         onAdd = {
+            editingEntry = null
             imageDraft = null
             imageMessage = null
             showSheet = true
@@ -142,10 +152,13 @@ fun LedgerRoute(onBack: () -> Unit) {
             cashCents = cash,
             onDismiss = {
                 showSheet = false
+                editingEntry = null
                 voice.stop()
             },
             onSave = { isIncome, cents, note, source ->
-                vm.addLedgerEntry(isIncome, cents, note, source)
+                val target = editingEntry
+                if (target != null) vm.editLedgerEntry(target, isIncome, cents, note)
+                else vm.addLedgerEntry(isIncome, cents, note, source)
             },
             voice = voice,
             // 录音权限未授权时先申请（点语音才弹权限框，不在进页面时突袭用户）
@@ -166,6 +179,7 @@ fun LedgerRoute(onBack: () -> Unit) {
             onClearImageMessage = { imageMessage = null },
             initialDraft = imageDraft,
             initialSource = if (imageDraft != null) LedgerSource.IMAGE else LedgerSource.MANUAL,
+            initial = editingEntry,
         )
     }
 }

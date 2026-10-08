@@ -1,6 +1,5 @@
 package com.menghuan.app.data
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -13,6 +12,7 @@ import com.menghuan.app.MainActivity
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.llm.OpenAiClient
+import com.menghuan.app.notify.NotifyAlert
 import kotlinx.coroutines.flow.first
 
 /** 主动关心的默认随机时间段（v0.56.8）：20:00–23:00 */
@@ -46,7 +46,9 @@ object ProactiveChat {
             "不要出现「我注意到系统显示」这类出戏措辞。"
 
     /** 通知渠道（低打扰） */
-    private const val CHANNEL_ID = "proactive_greeting"
+    // v0.62.0 换代（_v2）：渠道声音创建即锁死，不换 id 老装机永远补不上提示音
+    private const val CHANNEL_ID = "proactive_greeting_v2"
+    private const val LEGACY_CHANNEL_ID = "proactive_greeting"
     private const val NOTIFICATION_ID = 2_000_000_006
 
     private const val DAY_MS = 24 * 60 * 60 * 1000L
@@ -225,10 +227,14 @@ object ProactiveChat {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "人设主动关心", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "人设在随机时间发来的主动问候（每天条数可在角色的「主动关心」里设）"
-            }
+        // v0.62.0：提示音显式设上（原来吃渠道默认值，真机上容易被 ROM 判成静音），
+        // 并且**系统勿扰时自动改走"仅震动"那条渠道**
+        val channelId = NotifyAlert.channel(
+            context,
+            CHANNEL_ID,
+            "人设主动关心",
+            "人设在随机时间发来的主动问候（每天条数可在角色的「主动关心」里设）",
+            legacyIds = listOf(LEGACY_CHANNEL_ID),
         )
         val home = Intent(Intent.ACTION_VIEW, Uri.parse("menghuan://open/chatList"), context, MainActivity::class.java)
         val chat = Intent(Intent.ACTION_VIEW, Uri.parse("menghuan://chat/$personaId"), context, MainActivity::class.java)
@@ -238,7 +244,7 @@ object ProactiveChat {
             arrayOf(home, chat),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_email)
             .setContentTitle(personaName)
             .setContentText(preview.take(80))

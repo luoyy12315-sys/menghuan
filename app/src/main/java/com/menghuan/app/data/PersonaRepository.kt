@@ -48,6 +48,8 @@ class PersonaRepository(
         // v0.54.4：专属铃声与「主动关心」开关一并清掉（不留孤儿键）
         settingsRepository?.setPersonaRingtone(id, "")
         settingsRepository?.setPersonaProactive(id, false)
+        // v0.66.0：视频通话背景的档位行一并摘掉（图片目录由 visualFilesCleaner 清）
+        settingsRepository?.setCallBackground(id, "")
         // v0.58.0：视觉素材是几百 MB 的文件，人设没了就必须跟着没
         runCatching { visualFilesCleaner?.invoke(id) }
     }

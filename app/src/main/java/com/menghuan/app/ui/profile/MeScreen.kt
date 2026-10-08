@@ -187,6 +187,7 @@ class MeViewModel(
                 db.profileFactDao().deleteAll()
                 db.taskCompletionDao().deleteAll()
                 db.taskDao().deleteAll()
+                db.memoDao().deleteAll()
                 // 聊天发图与 AI 生成图一并删掉：消息表清了，图留着就是孤儿文件（v0.38.0）
                 runCatching { java.io.File(app.filesDir, "chat_images").deleteRecursively() }
                 runCatching { java.io.File(app.filesDir, "images").deleteRecursively() }

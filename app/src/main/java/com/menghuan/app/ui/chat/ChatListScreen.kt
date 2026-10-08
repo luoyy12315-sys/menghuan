@@ -90,6 +90,7 @@ import com.menghuan.app.ui.common.NeuPressSpec
 import com.menghuan.app.ui.common.figmaSelection
 import com.menghuan.app.ui.common.neuRowPress
 import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.theme.BrandSalmon
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
@@ -631,7 +632,9 @@ private fun ConversationRow(
                 fontSize = 11.sp,
                 color = if (persona.pinned) NeuAccent else FaintText,
             )
-            // 未读点 = 实心圆 + 淡光晕（与预览 box-shadow 0 0 0 3px 一致）
+            // 未读点 = 实心红点 + 淡红光晕（v0.62.0 用户点名：**黑点看着像"选中/已读"的记号，
+            // 未读要的就是那一点红**）。用的是品牌点缀色 BrandSalmon，不是 NeuDanger ——
+            // 那个色在 App 里是"删除/危险"语义，拿来当未读会让人以为出了事。
             Box(
                 Modifier.size(9.dp),
                 contentAlignment = Alignment.Center,
@@ -641,13 +644,13 @@ private fun ConversationRow(
                         Modifier
                             .scale(dotScale)
                             .size(15.dp)
-                            .background(NeuAccent.copy(alpha = 0.18f), CircleShape),
+                            .background(BrandSalmon.copy(alpha = 0.18f), CircleShape),
                     )
                     Box(
                         Modifier
                             .scale(dotScale)
                             .size(9.dp)
-                            .background(NeuAccent, CircleShape),
+                            .background(BrandSalmon, CircleShape),
                     )
                 }
             }

@@ -14,6 +14,12 @@ import com.live2d.sdk.cubism.framework.rendering.android.CubismOffscreenManagerA
 import com.live2d.sdk.cubism.framework.rendering.android.CubismShaderAndroid
 import com.menghuan.app.data.CallVisualAsset
 import com.menghuan.app.data.CallVisualStore
+import com.menghuan.app.live2d.ActionSlot
+import com.menghuan.app.live2d.BuiltinActions
+import com.menghuan.app.live2d.InteractionRegion
+import com.menghuan.app.live2d.Live2dAction
+import com.menghuan.app.live2d.ModelActionCatalog
+import com.menghuan.app.live2d.ModelCapability
 import com.menghuan.app.realtime.visual.live2d.GlTextureView
 import com.menghuan.app.realtime.visual.live2d.Live2dCharacter
 import javax.microedition.khronos.egl.EGLConfig
@@ -40,7 +46,7 @@ import kotlinx.coroutines.flow.asStateFlow
 class Live2dVisualEngine(
     private val appContext: Context,
     private var asset: CallVisualAsset,
-) : CallVisualEngine {
+) : CallVisualEngine, Live2dStage {
 
     private val _runtime = MutableStateFlow<VisualRuntime>(VisualRuntime.Loading)
     override val runtime: StateFlow<VisualRuntime> = _runtime.asStateFlow()
@@ -63,6 +69,34 @@ class Live2dVisualEngine(
     @Volatile
     private var callState = CallVisualState.IDLE
 
+    // ---- v0.64.0：动作系统 ----
+
+    /**
+     * 四个通话状态各自绑的动作。
+     *
+     * **由 VM 解析好再交进来**（它才认识数据库）。引擎这边只做一件事：
+     * 状态一到就播表里对应的那条。这样"通话页"与"动作库"之间就没有任何直接依赖 ——
+     * 用户第 2 条要的正是这个（通话只调用动作，不制作也不编辑动作）。
+     */
+    @Volatile
+    private var stateActions: Map<ActionSlot, Live2dAction> = emptyMap()
+
+    /** 底部 UI 占比与角色位移（都是画面比例，v0.64.0）。跨线程写、GL 线程读 */
+    @Volatile
+    private var bottomInset = 0f
+
+    @Volatile
+    private var offsetX = 0f
+
+    @Volatile
+    private var offsetY = 0f
+
+    /** 模型自带素材清单的对外出口（角色空间用它同步进动作库） */
+    private val catalogFlow = MutableStateFlow(ModelActionCatalog.EMPTY)
+
+    @Volatile
+    private var catalogCallback: ((ModelActionCatalog) -> Unit)? = null
+
     override suspend fun load(personaId: Long, asset: CallVisualAsset) {
         this.asset = asset
         val modelFile = CallVisualStore.live2dModelFile(appContext, personaId, asset)
@@ -72,10 +106,17 @@ class Live2dVisualEngine(
             return
         }
         Live2dBootstrap.ensureStarted(appContext)
-        character = Live2dCharacter(
+        val c = Live2dCharacter(
             baseDir = CallVisualStore.live2dRoot(appContext, personaId),
             modelJsonRelPath = asset.live2dModelJson,
         )
+        // v0.64.0：模型加载完成后会把"自带动作组 + 表情"的清单发出来（在 GL 线程调）。
+        // 这里只做转手 —— 磁盘与数据库操作一律不许进这个回调，会卡住整条渲染线程。
+        c.onCatalogReady = { catalog ->
+            catalogFlow.value = catalog
+            catalogCallback?.invoke(catalog)
+        }
+        character = c
         // ⚠️ **必须在这里就发布 Ready**，不能等 GL 的 onSurfaceCreated 再说：
         // 页面只在 Ready 时才把 onCreateView 出来的那块视图挂上去，
         // 而 Ready 又只能由那块视图的 GL 回调发出 —— 两个条件互相等，
@@ -154,9 +195,9 @@ class Live2dVisualEngine(
                 val offscreen = CubismOffscreenManagerAndroid.getInstance()
                 offscreen.beginFrameProcess()
 
-                // 画布比例适配（算法在 Live2dCharacter 里，同官方 onUpdate）
-                c.fitProjection(projection, viewWidth, viewHeight)
-                c.applyPendingState()
+                // 画布比例适配（算法在 Live2dCharacter 里，同官方 onUpdate）。
+                // v0.64.0：多传两个东西 —— 底部要留给 UI 的高度（分区布局）、角色位移（空间拖动）
+                c.fitProjection(projection, viewWidth, viewHeight, bottomInset, offsetX, offsetY)
                 c.update()
                 c.draw(projection)
 
@@ -227,10 +268,52 @@ class Live2dVisualEngine(
     override fun setCallState(state: CallVisualState) {
         callState = state
         val c = character ?: return
-        c.requestState(Live2dCharacter.groupFor(state))
+        // v0.64.0：状态 → 动作。解析好的绑定优先；**绑定还没到就用内置默认**，
+        // 而不是"什么都不做"——后者在刚接通的头几百毫秒里表现为角色僵住不动。
+        val slot = state.toActionSlot()
+        c.playAction(stateActions[slot] ?: BuiltinActions.stateDefault(slot))
         // 用户打断后口型要立刻闭上：状态一离开 SPEAKING 就把目标电平归零，
         // 平滑会在几十毫秒内收合（不会突然合嘴）
         if (state != CallVisualState.SPEAKING) c.setMouthLevel(0f)
+    }
+
+    override fun setStateActions(actions: Map<ActionSlot, Live2dAction>) {
+        stateActions = actions
+        // 立刻按当前状态对齐一次：不然用户改完绑定回到通话里会发现"还是旧动作"，
+        // 得等 AI 说一句话才换过来 —— 那看起来就像改动没保存。
+        val c = character ?: return
+        val slot = callState.toActionSlot()
+        c.playAction(actions[slot] ?: BuiltinActions.stateDefault(slot))
+    }
+
+    override fun setViewportBottomInset(fraction: Float) {
+        bottomInset = fraction.coerceIn(0f, 0.8f)
+    }
+
+    override fun playAction(action: Live2dAction) {
+        character?.playAction(action)
+    }
+
+    override fun stopAction() {
+        character?.stopAction()
+    }
+
+    override fun setOffset(x: Float, y: Float) {
+        offsetX = x
+        offsetY = y
+    }
+
+    override fun hit(ndcX: Float, ndcY: Float): InteractionRegion =
+        character?.hitRegion(ndcX, ndcY) ?: InteractionRegion.OTHER
+
+    override fun capability(): ModelCapability = character?.capability ?: ModelCapability.EMPTY
+
+    override fun onCatalogReady(callback: (ModelActionCatalog) -> Unit) {
+        catalogCallback = callback
+        // 已经加载完的话补发一次：页面可能是"先订阅、模型后加载完"，
+        // 也可能是反过来（进页面 → 建引擎 → 模型很快好了 → 页面才订阅），两种顺序都真实存在。
+        val current = catalogFlow.value
+        if (current != ModelActionCatalog.EMPTY) callback(current)
     }
 
     override fun setAiMouthLevel(level: Float) {
@@ -242,9 +325,11 @@ class Live2dVisualEngine(
     }
 
     override fun resume() {
-        // 只把渲染节拍接回来 + 重新订阅当前状态，**绝不重建通话会话**（方案文档 §二十三）
+        // 只把渲染节拍接回来 + 重新对齐当前状态的动作，**绝不重建通话会话**（方案文档 §二十三）
         glView?.resumeRendering()
-        character?.requestState(Live2dCharacter.groupFor(callState))
+        val c = character ?: return
+        val slot = callState.toActionSlot()
+        c.playAction(stateActions[slot] ?: BuiltinActions.stateDefault(slot))
     }
 
     override fun release() {
@@ -259,6 +344,8 @@ class Live2dVisualEngine(
         runCatching { character?.destroy() }
         character = null
         glView = null
+        catalogCallback = null
+        stateActions = emptyMap()
         _runtime.value = VisualRuntime.Empty
     }
 

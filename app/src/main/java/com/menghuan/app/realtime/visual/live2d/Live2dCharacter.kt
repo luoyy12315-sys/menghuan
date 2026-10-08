@@ -10,9 +10,12 @@ import com.live2d.sdk.cubism.framework.effect.CubismBreath
 import com.live2d.sdk.cubism.framework.effect.CubismEyeBlink
 import com.live2d.sdk.cubism.framework.id.CubismId
 import com.live2d.sdk.cubism.framework.math.CubismMatrix44
+import com.live2d.sdk.cubism.framework.model.CubismModel
 import com.live2d.sdk.cubism.framework.model.CubismUserModel
 import com.live2d.sdk.cubism.framework.motion.ACubismMotion
 import com.live2d.sdk.cubism.framework.motion.CubismBreathUpdater
+import com.live2d.sdk.cubism.framework.motion.CubismExpressionMotion
+import com.live2d.sdk.cubism.framework.motion.CubismExpressionUpdater
 import com.live2d.sdk.cubism.framework.motion.CubismEyeBlinkUpdater
 import com.live2d.sdk.cubism.framework.motion.CubismLipSyncUpdater
 import com.live2d.sdk.cubism.framework.motion.CubismPhysicsUpdater
@@ -20,9 +23,20 @@ import com.live2d.sdk.cubism.framework.motion.CubismPoseUpdater
 import com.live2d.sdk.cubism.framework.motion.IBooleanSupplier
 import com.live2d.sdk.cubism.framework.motion.IParameterProvider
 import com.live2d.sdk.cubism.framework.rendering.android.CubismRendererAndroid
-import com.menghuan.app.realtime.visual.CallVisualState
+import com.menghuan.app.live2d.ActionPlayer
+import com.menghuan.app.live2d.ActionType
+import com.menghuan.app.live2d.InteractionRegion
+import com.menghuan.app.live2d.InteractionRules
+import com.menghuan.app.live2d.Live2dAction
+import com.menghuan.app.live2d.ModelActionCatalog
+import com.menghuan.app.live2d.ModelCapability
+import com.menghuan.app.live2d.StagePose
 import java.io.File
+import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 
 /**
  * 一个 Live2D 角色（v0.58.0）。
@@ -39,7 +53,7 @@ import kotlin.math.exp
  *    它每帧把 [IParameterProvider.getParameter] 的值以 0.8 权重加到 `ParamMouthOpenY` 上，
  *    所以我们只负责把"电平"算准（平滑在这里，见 [MouthProvider]）。
  *
- * ⚠️ 除 [setMouthLevel] 与 [requestState] 是跨线程写（volatile 语义）之外，
+ * ⚠️ 除 [setMouthLevel] 与 [playAction] / [stopAction] 是跨线程写（volatile 语义）之外，
  * 其余方法都**必须在 GL 线程**调用（纹路与渲染器的创建/销毁都绑 EGL 上下文）。
  */
 class Live2dCharacter(
@@ -68,6 +82,80 @@ class Live2dCharacter(
     var ready = false
         private set
 
+    // ---- v0.64.0：动作系统 ----
+
+    /**
+     * 动作播放器。通话页与角色空间都只跟它说话 ——
+     * 上层拿到一个 [Live2dAction] 就 `player.play(action)`，不关心参数怎么写。
+     */
+    val player = ActionPlayer()
+
+    /** 这张模型有哪些通用通道（加载后填）。UI 上"这张模型支持 N 项动作能力"读的就是它 */
+    @Volatile
+    var capability: ModelCapability = ModelCapability.EMPTY
+        private set
+
+    /** 这张模型自带的动作组与表情清单；加载完成后经 [onCatalogReady] 发出去，由仓库同步进动作库 */
+    @Volatile
+    var catalog: ModelActionCatalog = ModelActionCatalog.EMPTY
+        private set
+
+    /**
+     * 清单就绪回调。**在 GL 线程调**，实现里只许做"把值转手给别处"这件事，
+     * 不许做磁盘或数据库操作（会卡住整条渲染线程）。
+     */
+    @Volatile
+    var onCatalogReady: ((ModelActionCatalog) -> Unit)? = null
+
+    /** 表情名 → 表情动作（`.exp3.json`，v0.64.0） */
+    private val expressions = HashMap<String, CubismExpressionMotion>()
+
+    /** 待播的原生动作组 / 序号（跨线程意图，GL 线程下一帧取用） */
+    @Volatile
+    private var wantMotion: Pair<String, Int>? = null
+
+    /** 待播的表情名（同上） */
+    @Volatile
+    private var wantExpression: String? = null
+
+    /** 待停表情（同上） */
+    @Volatile
+    private var wantExpressionStop = false
+
+    /** 上一帧算出来的舞台姿态，画的时候叠加（v0.64.0） */
+    private var stagePose = StagePose.NONE
+
+    /**
+     * 命中检测用的投影矩阵（**不含舞台姿态**）。
+     *
+     * 为什么要专门留一份：翻跟斗那类动作会把整张画布转起来，
+     * 而命中检测必须按"角色静止时画在哪"来算 —— 用转过的矩阵去反算触点，
+     * 结果会跟着转，用户点脸可能判成点身体。用基础投影算，位置永远对得上静止姿态。
+     */
+    private val hitMvpArray = FloatArray(16)
+    private val hitMvp = CubismMatrix44.create()
+
+    /** 舞台姿态的矩阵（复用一个实例，别每帧 new —— 动作播放是每帧都在跑的） */
+    private val stageMatrix = CubismMatrix44.create()
+
+    /** 模型自带 HitArea（`Head` / `Body`）的 CubismId；模型没写 `HitAreas` 时是 null */
+    private var headHitId: CubismId? = null
+    private var bodyHitId: CubismId? = null
+
+    /**
+     * 是否需要几何兜底命中检测：**只有当模型没定义 `Head`/`Body` 两个 HitArea 时才开**。
+     * 开着就意味着每帧多走一遍全部顶点求包围盒（几千次数组读），
+     * 而绝大多数正规模型都有 HitArea，不该为它们白付这份开销。
+     */
+    private var needsGeometricHitTest = false
+
+    /** 几何兜底用的模型包围盒（模型坐标系，GL 线程每帧刷，UI 线程读） */
+    @Volatile private var boundLeft = 0f
+    @Volatile private var boundRight = 0f
+    @Volatile private var boundTop = 0f
+    @Volatile private var boundBottom = 0f
+    @Volatile private var boundsReady = false
+
     // ---- 加载 ----
 
     /**
@@ -83,6 +171,36 @@ class Live2dCharacter(
             val mocRel = setting.modelFileName ?: error("model3.json 里没有 Moc 引用")
             loadModel(readRef(mocRel), true)   // 一致性校验：损坏的 moc 宁可拒绝也不要在通话里崩
             val model = this.model ?: error("模型创建失败")
+
+            val idm = CubismFramework.getIdManager()
+            fun std(name: CubismDefaultParameterId.ParameterId) = idm.getId(name.getId())
+
+            // 1.5) v0.64.0 动作系统接上：探测这张模型有哪些通用通道，然后让播放器认住它。
+            //
+            // ⚠️ 顺序不能挪到 loadModel 之后之外的任何地方：`bindModel` 要读每个参数的
+            // **静止值**（模型自己的默认姿态），而那条值只在"还没播过任何动作与原生 motion"
+            // 的这一刻是准的。放到第一帧 update 之后，读到的就是 motion 摆过的位置，
+            // 之后每次播动作都会从那里"跳"回来。
+            val capability = ModelCapability.detect { name -> model.getParameterIndex(idm.getId(name)) >= 0 }
+            this.capability = capability
+            this.player.bindModel(model, capability) { name -> model.getParameterIndex(idm.getId(name)) }
+
+            // 1.6) 互动区域：优先用模型自带的 HitArea（`HitAreas` 段里 Name = Head / Body，
+            // 这是 Live2D 官方约定的名字，配合 TapBody / Tap 那套动作组）。
+            // 免费模型这块十有八九是空的，那就退回几何分区 —— 两条都要有，
+            // 只留一条会在另一半模型上完全点不动。
+            headHitId = null
+            bodyHitId = null
+            for (i in 0 until setting.hitAreasCount) {
+                val name = runCatching { setting.getHitAreaName(i) }.getOrNull() ?: continue
+                val id = runCatching { setting.getHitAreaId(i) }.getOrNull() ?: continue
+                when {
+                    name.equals(InteractionRules.HIT_AREA_HEAD, ignoreCase = true) -> headHitId = id
+                    name.equals(InteractionRules.HIT_AREA_BODY, ignoreCase = true) -> bodyHitId = id
+                }
+            }
+            needsGeometricHitTest = headHitId == null && bodyHitId == null
+            boundsReady = false
 
             // 2) 物理与摇摆：引用了才加载，缺文件不算错（导入阶段已校验过）
             setting.physicsFileName?.takeIf { it.isNotBlank() }?.let {
@@ -106,8 +224,6 @@ class Live2dCharacter(
             // 只按清单走的话结果不是报错，而是**角色一动不动 / 嘴不张**（最难查的那种失败），
             // 所以清单空就回退标准参数 id，并且**只认这个模型里真存在的那个**：
             // 指一个不存在的参数，框架不会吭声，只会白跑。
-            val idm = CubismFramework.getIdManager()
-            fun std(name: CubismDefaultParameterId.ParameterId) = idm.getId(name.getId())
 
             val blinkIds = ArrayList<CubismId>()
             for (i in 0 until setting.eyeBlinkParameterCount) {
@@ -159,10 +275,12 @@ class Live2dCharacter(
                 updateScheduler.addUpdatableList(CubismLipSyncUpdater(lipSyncIds, mouth))
             }
 
-            // 6) 动作组（待机/思考/说话按组名找，见 [requestState]）
+            // 6) 动作组（"模型自带动作"那一档就是从这个循环里来的）
+            val groupCounts = LinkedHashMap<String, Int>()
             for (g in 0 until setting.motionGroupCount) {
                 val group = setting.getMotionGroupName(g) ?: continue
                 if (group !in motionGroups) motionGroups.add(group)
+                var loaded = 0
                 for (i in 0 until setting.getMotionCount(group)) {
                     val file = setting.getMotionFileName(group, i) ?: continue
                     if (file.isBlank()) continue
@@ -173,9 +291,37 @@ class Live2dCharacter(
                         .takeIf { it != -1.0f }?.let { motion.setFadeOutTime(it) }
                     motion.setEffectIds(eyeBlinkIds(), lipSyncIds)
                     motions["${group}_$i"] = motion
+                    loaded++
                 }
+                if (loaded > 0) groupCounts[group] = loaded
+            }
+
+            // 6.5) 表情（v0.64.0）：`Expressions` 段里的 `.exp3.json`，名字就是 model3.json
+            // 里写的 Name。加载失败只跳过这一条 —— 缺一个表情不该让整张模型降级。
+            val expressionNames = ArrayList<String>()
+            for (i in 0 until setting.expressionCount) {
+                val name = setting.getExpressionName(i)?.takeIf { it.isNotBlank() } ?: continue
+                val file = setting.getExpressionFileName(i)?.takeIf { it.isNotBlank() } ?: continue
+                val motion = runCatching { loadExpression(readRef(file)) }.getOrNull() ?: continue
+                expressions[name] = motion
+                expressionNames.add(name)
+            }
+            if (expressions.isNotEmpty()) {
+                // 与官方 Sample 同一个位置：表情也走 updateScheduler，在动作/物理之前叠到脸上
+                updateScheduler.addUpdatableList(CubismExpressionUpdater(expressionManager))
             }
             updateScheduler.sortUpdatableList()
+
+            // 6.6) 把"模型自带素材"的清单发出去，由仓库层同步进动作库。
+            // 只在**真有东西**时发：一张既没动作组也没表情的模型（免费包常见）
+            // 不该在库里留下一批空动作。
+            val catalog = ModelActionCatalog(
+                modelKey = modelJsonRelPath,
+                motionGroups = groupCounts,
+                expressions = expressionNames,
+            )
+            this.catalog = catalog
+            onCatalogReady?.invoke(catalog)
 
             // 7) 渲染器与纹理（都要 EGL 上下文）
             // CubismRendererAndroid.create 的返回类型是基类 CubismRenderer，Android 实现才有
@@ -273,6 +419,9 @@ class Live2dCharacter(
 
         motionUpdated = false
         model.loadParameters()
+        applyPendingRequests()
+        // 模型自己的 Idle 动作**一直在底下跑**：动作系统是叠在它上面的一层姿态，
+        // 不是把它换掉 —— 这样"用户没绑任何动作"时角色依然自然（有呼吸、有它自己的小动作）。
         if (motionManager.isFinished()) {
             playGroup(motionCandidates(IDLE_GROUP), PRIORITY_IDLE)
         } else {
@@ -280,20 +429,57 @@ class Live2dCharacter(
         }
         model.saveParameters()
 
+        // ⚠️ 动作轨道写在这一步的**位置是关键**（写在 saveParameters 之后、onLateUpdate 之前）：
+        // · 动作能盖住模型自带 motion 摆出来的姿态，否则摆手会被 idle 一把拽回去；
+        // · 眨眼 / 呼吸 / 口型在它之后跑 —— 口型是**加法**叠加，所以动作永远抢不走"说话时的嘴"；
+        // · 物理在它之后读身体角度，于是摆手时头发与裙摆会跟着甩 —— 白得一层的观感。
+        stagePose = player.applyTo(model, dt)
+
         // 口型平滑由框架的 CubismLipSyncUpdater 在它自己那一步调 update(dt) 时推进
         updateScheduler.onLateUpdate(model, dt)
 
         model.update()
+        if (needsGeometricHitTest) refreshModelBounds(model)
         isUpdated(true)
     }
 
-    /** 绘制（GL 线程）。矩阵算法照官方 `LAppMinimumModel.draw`：modelMatrix × projection */
+    /** 绘制（GL 线程）。矩阵算法照官方 `LAppMinimumModel.draw`：stage × modelMatrix × projection */
     fun draw(projection: CubismMatrix44) {
         val renderer = getRenderer<CubismRendererAndroid>() ?: return
         if (model == null) return
+        applyStagePose(projection)
         CubismMatrix44.multiply(modelMatrix.array, projection.array, projection.array)
         renderer.setMvpMatrix(projection)
         renderer.drawModel()
+    }
+
+    /**
+     * 把舞台姿态叠到投影上（v0.64.0，GL 线程）。
+     *
+     * 舞台通道**完全走矩阵**、不碰任何模型参数 —— 这是"翻跟斗在任何模型上都演得出来"的
+     * 实现方式（没有 `ParamBodyAngleY` 的模型照样能整体翻一圈）。
+     *
+     * 归一化值 → NDC 的换算：[StagePose.dx] 是"画面宽度的比例"，而 NDC 横跨 2 个单位，
+     * 所以乘 2。旋转是绕 NDC 原点（= 模型中心）转，缩放同理。
+     *
+     * ⚠️ 一定要**乘进投影**而不是改 modelMatrix：modelMatrix 在 `fitProjection` 每帧重置，
+     * 改它会被覆盖；投影同样是每帧新算的，所以在这里叠加不会累积。
+     */
+    private fun applyStagePose(projection: CubismMatrix44) {
+        val pose = stagePose
+        if (pose.isIdentity) return
+        val rad = Math.toRadians(pose.rotationDeg.toDouble())
+        val cs = cos(rad).toFloat() * pose.scale
+        val sn = sin(rad).toFloat() * pose.scale
+        stageMatrix.setMatrix(
+            floatArrayOf(
+                cs, sn, 0f, 0f,
+                -sn, cs, 0f, 0f,
+                0f, 0f, 1f, 0f,
+                pose.dx * 2f, pose.dy * 2f, 0f, 1f,
+            ),
+        )
+        CubismMatrix44.multiply(stageMatrix.array, projection.array, projection.array)
     }
 
     /**
@@ -303,20 +489,199 @@ class Live2dCharacter(
      * 横长模型按宽度铺满并压一下纵向比例，竖长模型按高度铺满——
      * 自己按比例缩放看着没问题，但半身模型会被拉成"长短腿"（真机上最扎眼的变形）。
      */
-    fun fitProjection(projection: CubismMatrix44, viewWidth: Int, viewHeight: Int) {
+    fun fitProjection(
+        projection: CubismMatrix44,
+        viewWidth: Int,
+        viewHeight: Int,
+        /**
+         * 底部留给 UI 的高度比例（0..0.8，v0.64.0）。角色会完整落在**剩下的那块**里。
+         *
+         * 通话页现在是"角色区在上、对话台在下"的分区布局，字幕与按钮都压在页面底色上、
+         * 永远不进入角色那块 —— 这个参数就是把"角色那块有多大"告诉渲染。
+         * **不重建渲染目标**，只改投影，所以布局动画期间每帧调也没有代价。
+         */
+        bottomInset: Float = 0f,
+        /** 角色额外位移（画面比例，v0.64.0 角色空间拖动用） */
+        offsetX: Float = 0f,
+        offsetY: Float = 0f,
+    ) {
         val model = model ?: return
+        val inset = bottomInset.coerceIn(0f, MAX_BOTTOM_INSET)
+        // 还剩多少比例的画面是"角色的地盘"。inset=0 时以下全部退化成原实现，
+        // 所以语音通话与不分区的那条老路径行为一个字都没变。
+        val shrink = 1f - inset
+        val availHeight = (viewHeight * shrink).coerceAtLeast(1f)
+
         projection.loadIdentity()
         val aspectRatio = if (viewHeight == 0) 1f else viewWidth.toFloat() / viewHeight.toFloat()
-        val displayRatio = if (viewWidth == 0) 1f else viewHeight.toFloat() / viewWidth.toFloat()
+        val displayRatio = availHeight / viewWidth.toFloat().coerceAtLeast(1f)
         val canvasWidth = model.canvasWidth
         val canvasRatio = if (canvasWidth <= 0f) 1f else model.canvasHeight / canvasWidth
         if (canvasRatio < displayRatio) {
+            // 横长的模型：按宽度铺满，纵向压一下比例（不压的话半身模型会变成"长短腿"）
             modelMatrix.setWidth(2.0f)
             projection.scale(1.0f, aspectRatio)
         } else {
+            // 竖长的模型：按高度铺满**可用区域**（乘 shrink），横向反压
             modelMatrix.setHeight(2.0f)
-            projection.scale(1.0f / aspectRatio, 1.0f)
+            projection.scale(shrink / aspectRatio, shrink)
         }
+        // 把角色摆到可用区域的中间：NDC 的 y 从 -1（底）到 +1（顶），
+        // 可用区域是 [2*inset-1, 1]，它的中点就是 inset。
+        projection.translate(offsetX * 2f, inset + offsetY * 2f)
+
+        // 命中检测要用完整变换（modelMatrix × projection），且必须是**不含舞台姿态**的那一份，
+        // 见 [hitMvpArray] 的说明。存成数组是因为它只在点击那一刻读。
+        CubismMatrix44.multiply(modelMatrix.array, projection.array, hitMvpArray)
+        hitMvp.setMatrix(hitMvpArray)
+    }
+
+    // ---- v0.64.0：动作与互动 ----
+
+    /**
+     * 播放一条动作（任意线程可调）。**通话页与角色空间唯一的入口。**
+     *
+     * 三种形态在这里分流，上层不需要知道：
+     * - `PROCEDURAL` → 交给 [player]（通用参数轨道 + 舞台姿态）
+     * - `NATIVE` → 交回模型自己的 motionManager（只在这张模型真有那个组时才生效）
+     * - `EXPRESSION` → 表情
+     *
+     * 顺带说明一条刻意的取舍：**动作与表情可以同时存在**。
+     * 用户绑"摆手"时如果那条动作还带一个表情，两层一起上才是想要的观感。
+     */
+    fun playAction(action: Live2dAction) {
+        // 切动作前先把上一轮的原生动作与表情收干净：
+        // 否则"摆动"绑到 NATIVE、下一句绑到 PROCEDURAL 时，原生动作会在后台继续播完，
+        // 表现为"角色一边摆手一边还在点头"。
+        wantMotion = null
+        when (action.type) {
+            ActionType.PROCEDURAL -> {
+                player.play(action)
+                if (action.expression.isNotBlank()) wantExpression = action.expression
+            }
+
+            ActionType.NATIVE -> {
+                player.stop()
+                if (action.motionGroup.isNotBlank()) wantMotion = action.motionGroup to action.motionIndex
+                if (action.expression.isNotBlank()) wantExpression = action.expression
+            }
+
+            ActionType.EXPRESSION -> {
+                player.stop()
+                if (action.expression.isNotBlank()) wantExpression = action.expression
+            }
+        }
+    }
+
+    /** 停掉一切动作，回到模型自己的待机（挂断、离开角色空间时调） */
+    fun stopAction() {
+        player.stop()
+        wantMotion = null
+        wantExpressionStop = true
+    }
+
+    /** 只播一个表情（角色空间的"表情"那一档用） */
+    fun playExpression(name: String) {
+        if (name.isBlank()) return
+        wantExpression = name
+    }
+
+    /** 待播意图的落实（GL 线程，在 update 的开头） */
+    private fun applyPendingRequests() {
+        if (wantExpressionStop) {
+            wantExpressionStop = false
+            runCatching { expressionManager.stopAllMotions() }
+        }
+        wantExpression?.let { name ->
+            wantExpression = null
+            expressions[name]?.let { runCatching { expressionManager.startMotionPriority(it, PRIORITY_FORCE) } }
+        }
+        wantMotion?.let { (group, index) ->
+            wantMotion = null
+            playMotion(group, index, PRIORITY_NORMAL)
+        }
+    }
+
+    /**
+     * 播放模型自带的某个动作组里的第 [index] 个动作（GL 线程）。
+     *
+     * 找法有两级：先按 `组名_序号` 精确取，取不到就退成"该组第一个动作"——
+     * 序号是导入时扫出来的，而模型包在别的版本里可能少一个动作文件，
+     * 这种情况不该表现为"点了没反应"。
+     *
+     * ⚠️ 只有"动作库里选了**模型自带**那一档"才会走到这里；
+     * 四个通话状态与内置趣味动作全是程序化轨道，与这张表无关。
+     */
+    private fun playMotion(group: String, index: Int, priority: Int): Boolean {
+        val motion = motions["${group}_$index"]
+            ?: motions.entries.firstOrNull { it.key.startsWith("${group}_") }?.value
+            ?: return false
+        if (priority == PRIORITY_FORCE) {
+            motionManager.setReservationPriority(priority)
+        } else if (!motionManager.reserveMotion(priority)) {
+            return false
+        }
+        motionManager.startMotionPriority(motion, priority)
+        return true
+    }
+
+    /** 点在某处该算哪个互动区域（**任意线程可调**）。
+     *
+     * 两级判定：模型自带的 `HitArea` 优先，没有就走几何分区（见 [InteractionRules]）。
+     * 传进来的是 **NDC 坐标**（-1..1，y 向上）—— 与 `fitProjection` 建立的投影一致。
+     */
+    fun hitRegion(ndcX: Float, ndcY: Float): InteractionRegion {
+        if (model == null) return InteractionRegion.OTHER
+        val mapped = runCatching {
+            hitMvp.invertTransformX(ndcX) to hitMvp.invertTransformY(ndcY)
+        }.getOrNull() ?: return InteractionRegion.OTHER
+        val mx = mapped.first
+        val my = mapped.second
+
+        val head = headHitId
+        val body = bodyHitId
+        if (head != null || body != null) {
+            val headHit = head?.let { runCatching { isHit(it, mx, my) }.getOrDefault(false) } ?: false
+            val bodyHit = body?.let { runCatching { isHit(it, mx, my) }.getOrDefault(false) } ?: false
+            return InteractionRules.fromHitAreas(headHit, bodyHit)
+        }
+
+        if (!boundsReady) return InteractionRegion.OTHER
+        val spanX = boundRight - boundLeft
+        val spanY = boundBottom - boundTop
+        if (spanX <= 1e-4f || spanY <= 1e-4f) return InteractionRegion.OTHER
+        val nx = (mx - boundLeft) / spanX
+        // 模型坐标 y 向上、屏幕 y 向下，所以这里要翻过来
+        val ny = (boundBottom - my) / spanY
+        if (nx < 0f || nx > 1f) return InteractionRegion.OTHER
+        return InteractionRules.fromBands(ny)
+    }
+
+    /** GL 线程：把整张模型所有顶点的包围盒算出来（只在没有 HitArea 的模型上跑） */
+    private fun refreshModelBounds(m: CubismModel) {
+        var l = Float.MAX_VALUE
+        var r = -Float.MAX_VALUE
+        var t = Float.MAX_VALUE
+        var b = -Float.MAX_VALUE
+        for (i in 0 until m.drawableCount) {
+            val v = runCatching { m.getDrawableVertexPositions(i) }.getOrNull() ?: continue
+            var k = 0
+            while (k + 1 < v.size) {
+                val x = v[k]
+                val y = v[k + 1]
+                if (x < l) l = x
+                if (x > r) r = x
+                if (y < t) t = y
+                if (y > b) b = y
+                k += 2
+            }
+        }
+        if (l > r || t > b) return
+        boundLeft = l
+        boundRight = r
+        boundTop = t
+        boundBottom = b
+        boundsReady = true
     }
 
     // ---- 状态与电平（跨线程安全） ----
@@ -341,34 +706,26 @@ class Live2dCharacter(
         return false
     }
 
-    /** 想要的动作组（volatile 跨线程传意图，GL 线程下一帧取用） */
-    @Volatile
-    private var wantGroup: String? = null
-
-    /** 主线程/VM 调：切换通话状态对应的动作 */
-    fun requestState(group: String?) {
-        wantGroup = group
-    }
-
-    /** GL 线程每帧检查有没有新意图 */
-    fun applyPendingState() {
-        val g = wantGroup ?: return
-        wantGroup = null
-        if (g.isNotEmpty()) playGroup(motionCandidates(g), PRIORITY_NORMAL)
-    }
-
     /** 主线程调：AI 播放电平（0..1） */
     fun setMouthLevel(level: Float) = mouth.setTarget(level)
 
     /** 挂断：释放 moc/model/渲染器。语义同官方 delegate.onDestroy */
     fun destroy() {
         ready = false
+        // 动作播放器要先松手：它攥着参数下标，模型一没这些下标就全成了野指针
+        runCatching { player.release() }
         runCatching { delete() }
         setting = null
         motions.clear()
         motionGroups.clear()
         lipSyncIds.clear()
         textureIds.clear()
+        expressions.clear()
+        headHitId = null
+        bodyHitId = null
+        needsGeometricHitTest = false
+        boundsReady = false
+        stagePose = StagePose.NONE
     }
 
     private fun motionCandidates(group: String): List<String> =
@@ -424,9 +781,6 @@ class Live2dCharacter(
 
     companion object {
         private const val IDLE_GROUP = "idle"
-        private const val THINK_GROUP = "think"
-        private const val SPEAK_GROUP = "speak"
-        private const val LISTEN_GROUP = "listen"
 
         /** 官方包里常见的待机组名（首字母大写最常见，全小写与带序号的都试） */
         private val IDLE_ALIASES = listOf("Idle", "idle", "Idle_01", "motion", "Motion")
@@ -436,12 +790,8 @@ class Live2dCharacter(
         private const val PRIORITY_NORMAL = 2
         private const val PRIORITY_FORCE = 3
 
-        /** 通话状态 → 期望的动作组名（找不到会回退待机，见 [motionCandidates]） */
-        fun groupFor(state: CallVisualState): String = when (state) {
-            CallVisualState.SPEAKING -> SPEAK_GROUP
-            CallVisualState.THINKING -> THINK_GROUP
-            CallVisualState.LISTENING -> LISTEN_GROUP
-            else -> IDLE_GROUP
-        }
+        /** 底部 UI 最多能占掉多少画面：超过这个数角色只剩一条缝，那是布局算错了，不是需求 */
+        private const val MAX_BOTTOM_INSET = 0.8f
+
     }
 }

@@ -95,6 +95,7 @@ import com.menghuan.app.ui.common.WideMaxContentWidth
 import com.menghuan.app.ui.common.isExpandedWindow
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.data.DataScreen
+import com.menghuan.app.ui.memo.MemoRoute
 import com.menghuan.app.ui.persona.PersonaEditorScreen
 import com.menghuan.app.ui.persona.PersonaManageScreen
 import com.menghuan.app.ui.profile.GalleryScreen
@@ -121,9 +122,12 @@ import com.menghuan.app.ui.settings.TtsConfigScreen
 import android.content.Intent
 import com.menghuan.app.ui.settings.VoiceLibraryScreen
 import com.menghuan.app.ui.settings.WebSearchConfigScreen
+import com.menghuan.app.ui.live2d.CallActionScreen
+import com.menghuan.app.ui.live2d.Live2dSpaceScreen
 import com.menghuan.app.ui.realtime.RealtimeCallScreen
 import com.menghuan.app.ui.tasks.TasksScreen
 import com.menghuan.app.ui.theme.AccentInk
+import com.menghuan.app.ui.theme.BrandSalmon
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MentorTheme
 import com.menghuan.app.ui.theme.MutedText
@@ -374,6 +378,7 @@ private fun MenghuanAppRoot(
                     onTwoPaneChatChange = { twoPaneChatId = it },
                     onOpenLedger = { navController.navigate("ledger") },
                     onOpenAiDetail = { navController.navigate("ai_detail") },
+                    onOpenMemo = { navController.navigate("memo") },
                 )
             }
             // 单聊页：标准 push 进出——从右侧滑入，返回滑出（平板双栏模式下不走此路由）。
@@ -476,6 +481,55 @@ private fun MenghuanAppRoot(
                     )
                 }
             }
+            // 角色 Live2D 空间（v0.64.0）：可以换背景、拖动、点击互动、玩动作库的独立场景。
+            // ⚠️ 它**不是**视频通话页的一部分（用户第 1 条要求两者解耦）：
+            // 底下不跑通话引擎，也不联网，就是跟角色玩的场景。
+            composable(
+                route = "live2d_space/{personaId}",
+                arguments = listOf(navArgument("personaId") { type = NavType.LongType }),
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                val spaceId = entry.arguments?.getLong("personaId") ?: 1L
+                // 这里刻意**不套 AdaptiveScreen**：空间是一块要铺满的舞台，
+                // 上层那个容器会加版心宽度与导航条 padding，角色会被夹窄。
+                // 顶部/底部 inset 由空间页自己处理（statusBarsPadding / navigationBarsPadding）。
+                Live2dSpaceScreen(
+                    personaId = spaceId,
+                    onBack = { navController.popBackStack() },
+                    onOpenSettings = { route -> navController.navigate(route) },
+                )
+            }
+            // 通话动作（v0.64.0）：四个状态各绑哪条动作。只做绑定，不做编辑 ——
+            // 想改动作去角色空间的动作库（用户第 2 条：通话只负责调用动作）。
+            composable(
+                route = "call_actions/{personaId}",
+                arguments = listOf(navArgument("personaId") { type = NavType.LongType }),
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                val actionPersonaId = entry.arguments?.getLong("personaId") ?: 1L
+                AdaptiveScreen {
+                    CallActionScreen(
+                        personaId = actionPersonaId,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+            }
             composable(
                 route = "personas",
                 deepLinks = listOf(navDeepLink { uriPattern = "menghuan://personas" }),
@@ -571,6 +625,26 @@ private fun MenghuanAppRoot(
                 },
             ) {
                 LedgerRoute(onBack = { navController.popBackStack() })
+            }
+            // 备忘本（v0.62.0）：数据页便签墙「全部」进入的全屏页
+            composable(
+                route = "memo",
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) {
+                AdaptiveScreen {
+                    MemoRoute(
+                        onBack = { navController.popBackStack() },
+                        onOpenChat = { id -> navController.navigate("chat/$id") },
+                    )
+                }
             }
             // AI 洞察 + 周报 详情（v0.42.0）：数据页合并入口进入的全屏页
             composable(
@@ -740,6 +814,7 @@ private fun HomePages(
     onTwoPaneChatChange: (Long) -> Unit,
     onOpenLedger: () -> Unit,
     onOpenAiDetail: () -> Unit,
+    onOpenMemo: () -> Unit,
 ) {
     val wide = isExpandedWindow()
     HorizontalPager(
@@ -790,6 +865,7 @@ private fun HomePages(
                 DataScreen(
                     onOpenLedger = onOpenLedger,
                     onOpenAiDetail = onOpenAiDetail,
+                    onOpenMemo = onOpenMemo,
                     visible = pagerState.settledPage == 1,
                 )
             }
@@ -969,14 +1045,16 @@ private fun HomeBottomBar(
                                         tint = if (selected) AccentInk else MutedText,
                                         modifier = Modifier.size(20.dp).scale(iconScale),
                                     )
-                                    // 消息 tab 未读点：非选中且有未读时叠在图标右上（强调点，与会话列表未读点同语言）
+                                    // 消息 tab 未读点：非选中且有未读时叠在图标右上。
+                                    // v0.62.0 与会话列表那颗一起换成品牌红（原来跟着强调色 = 浅色纯黑，
+                                    // 用户点名"黑点不像未读，要红点"）
                                     if (index == 0 && chatUnread && !selected) {
                                         Box(
                                             Modifier
                                                 .align(Alignment.TopEnd)
                                                 .offset(x = 4.dp, y = (-1).dp)
                                                 .size(7.dp)
-                                                .background(NeuAccent, RoundedCornerShape(999.dp)),
+                                                .background(BrandSalmon, RoundedCornerShape(999.dp)),
                                         )
                                     }
                                 }

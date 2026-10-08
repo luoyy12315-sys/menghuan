@@ -435,12 +435,12 @@ class SettingsRepository(
     // v0.53.5：定时主动消息 + 联网搜索
     private val keyScheduledMessages = stringPreferencesKey("scheduled_messages")
     private val keySearchProvider = stringPreferencesKey("search_provider")
+    // ⚠️ v0.66.0 起这两个是**只读的老单桶**（博查与 Tavily 当年共用一把 Key）。
+    // 现行写法是按服务商分桶；老键只虚拟归属到"当时生效的那一家"，任何一次保存都会把它搬进桶并清掉。
     private val keySearchKeyEnc = stringPreferencesKey("search_key_enc")
     private val keySearchKeyPlain = stringPreferencesKey("search_key_plain")
-    // v0.59.0：自定义联网搜索服务商（接口地址 + 独立一份 Key）
-    private val keySearchCustomUrl = stringPreferencesKey("search_custom_url")
-    private val keySearchCustomKeyEnc = stringPreferencesKey("search_custom_key_enc")
-    private val keySearchCustomKeyPlain = stringPreferencesKey("search_custom_key_plain")
+    // v0.66.0：视频通话背景（按角色，`id\t档位` 行式表；档位见 [CallBackgroundStore]）
+    private val keyCallBackground = stringPreferencesKey("call_background")
     // v0.59.0：在线语音识别（引擎切换 + 三家共用的通用 OpenAI 兼容形状）
     private val keyAsrEngine = stringPreferencesKey("asr_engine")
     private val keyAsrOnlineUrl = stringPreferencesKey("asr_online_url")
@@ -1193,80 +1193,98 @@ class SettingsRepository(
         }
     }
 
-    /** 联网搜索服务商：见 [SEARCH_BOCHA] / [SEARCH_TAVILY] */
+    /** 联网搜索服务商：见 [SEARCH_BOCHA] / [SEARCH_TAVILY] / [SEARCH_CUSTOM] */
     val searchProvider: Flow<String> = store.data.map { it[keySearchProvider] ?: SEARCH_BOCHA }
 
-    suspend fun setSearchProvider(provider: String) {
-        store.edit { it[keySearchProvider] = provider }
-    }
+    /**
+     * 每一家自己的键：`search_bocha_key_enc` / `search_tavily_key_plain` / `search_custom_url`……
+     *
+     * v0.66.0（用户点名"切换国内国外 key 都不变"）：博查与 Tavily 过去**共用一把** `search_key_*`，
+     * 切服务商时看到和写进去的都是同一串，拿博查的 Key 去打 Tavily 就是"搜不到、切换像没生效"。
+     * 这与 v0.52.0 语音合成踩过的是同一个坑，修法也照搬那一版（每家一桶）。
+     * 自定义那一家的键名本来就长这样（`search_custom_key_*`），所以三家统一到同一个拼法。
+     */
+    private fun searchKeyOf(provider: String, field: String) =
+        stringPreferencesKey("search_${provider}_$field")
 
-    /** 搜索服务的 Key（密文优先，整条规矩与 API Key 一致） */
-    val searchApiKey: Flow<String> = store.data.map { prefs ->
-        val sealed = prefs[keySearchKeyEnc]
-        if (sealed.isNullOrBlank()) {
-            prefs[keySearchKeyPlain] ?: ""
-        } else {
-            resolveSealed(sealed) ?: (prefs[keySearchKeyPlain] ?: "")
+    /**
+     * 读某一家的 Key。
+     *
+     * 老单桶只属于**当时生效的那一家**：这家从没写过自己的桶、且它就是老数据的主人 →
+     * 把老键**虚拟**当成它的内容读出来，升级后零操作。
+     * ⚠️ 只在"整桶没动过"时回退，不能逐字段混读——混读会让用户看到半新半旧的一屏；
+     * 用 `contains` 而不是判空：用户点「把 Key 清空」写的是空串，键在=写过，不能被老键复活。
+     */
+    private fun readSearchKey(prefs: Preferences, provider: String): String {
+        val untouched = !prefs.contains(searchKeyOf(provider, "key_enc")) &&
+            !prefs.contains(searchKeyOf(provider, "key_plain"))
+        val fromLegacy = untouched && provider != SEARCH_CUSTOM &&
+            provider == (prefs[keySearchProvider] ?: SEARCH_BOCHA)
+        val sealed = if (fromLegacy) prefs[keySearchKeyEnc] else prefs[searchKeyOf(provider, "key_enc")]
+        val plain = if (fromLegacy) prefs[keySearchKeyPlain] else prefs[searchKeyOf(provider, "key_plain")]
+        return when {
+            // Key 走 Keystore；不可用时回退明文（AGENTS §五.4，与对话/生图/语音接口同一套规矩）
+            !sealed.isNullOrBlank() -> resolveSealed(sealed) ?: plain.orEmpty()
+            else -> plain.orEmpty()
         }
     }
 
-    suspend fun setSearchApiKey(key: String) = withContext(Dispatchers.IO) {
-        val sealed = if (key.isEmpty()) null else ApiKeyCipher.encrypt(key)
-        store.edit { prefs ->
-            when {
-                sealed != null -> { prefs[keySearchKeyEnc] = sealed; prefs.remove(keySearchKeyPlain) }
-                key.isNotEmpty() -> { prefs[keySearchKeyPlain] = key; prefs.remove(keySearchKeyEnc) }
-                else -> { prefs.remove(keySearchKeyEnc); prefs.remove(keySearchKeyPlain) }
+    /** 指定那一家的 Key（设置页切服务商时，每家看到的都是自己那份） */
+    fun searchApiKeyOf(provider: String): Flow<String> =
+        store.data.map { readSearchKey(it, provider) }.distinctUntilChanged()
+
+    /** 自定义那一家的接口地址（内置两家不用它，端点写死在 [WebSearchClient.endpointOf]） */
+    val searchCustomUrl: Flow<String> =
+        store.data.map { it[searchKeyOf(SEARCH_CUSTOM, "url")] ?: "" }
+
+    /**
+     * 保存搜索配置：**一家一次写全**（当前生效服务商 + 这一家的 Key，自定义还带上地址）。
+     *
+     * ⚠️ 三件事必须在同一个 `edit` 块里，顺序也不许换：
+     * ① 先把老单桶**落到它那一家的桶**里——先清老键会把用户填过的 Key 凭空抹掉
+     *   （v0.52.0 语音合成保存别家时清老键，硅基那份 Key 就是这么丢的，测试当场抓到）；
+     * ② 只写**当前这一家**的桶，绝不碰对面那家；
+     * ③ 最后才把 `search_provider` 切过去——先切再搬，老数据就会记到新选那一家名下。
+     */
+    suspend fun saveSearchConfig(provider: String, key: String, customUrl: String = "") =
+        withContext(Dispatchers.IO) {
+            val sealed = if (key.isEmpty()) null else ApiKeyCipher.encrypt(key)
+            store.edit { prefs ->
+                val legacyOwner = prefs[keySearchProvider] ?: SEARCH_BOCHA
+                val ownerUntouched = !prefs.contains(searchKeyOf(legacyOwner, "key_enc")) &&
+                    !prefs.contains(searchKeyOf(legacyOwner, "key_plain"))
+                if (ownerUntouched && legacyOwner != SEARCH_CUSTOM) {
+                    prefs[keySearchKeyEnc]?.let { prefs[searchKeyOf(legacyOwner, "key_enc")] = it }
+                    prefs[keySearchKeyPlain]?.let { prefs[searchKeyOf(legacyOwner, "key_plain")] = it }
+                }
+                when {
+                    sealed != null -> {
+                        prefs[searchKeyOf(provider, "key_enc")] = sealed
+                        prefs.remove(searchKeyOf(provider, "key_plain"))
+                    }
+
+                    key.isNotEmpty() -> {
+                        prefs[searchKeyOf(provider, "key_plain")] = key
+                        prefs.remove(searchKeyOf(provider, "key_enc"))
+                    }
+
+                    else -> {
+                        prefs.remove(searchKeyOf(provider, "key_enc"))
+                        prefs.remove(searchKeyOf(provider, "key_plain"))
+                    }
+                }
+                if (provider == SEARCH_CUSTOM) {
+                    if (customUrl.isBlank()) prefs.remove(searchKeyOf(SEARCH_CUSTOM, "url"))
+                    else prefs[searchKeyOf(SEARCH_CUSTOM, "url")] = customUrl.trim()
+                }
+                prefs.remove(keySearchKeyEnc)
+                prefs.remove(keySearchKeyPlain)
+                prefs[keySearchProvider] = provider
             }
         }
-    }
 
-    // ===== v0.59.0：自定义联网搜索服务商 =====
-    //
-    // 自定义这一家**接口地址和 Key 都是用户自己填的**，App 不猜任何域名（AGENTS §零.6）。
-    // Key 单独一份、不与前两家共用：v0.52.0 语音合成那边踩过——多家共用一个键，
-    // 保存 A 家会把 B 家填好的 Key 抹掉，切回来就"未配置"。
-
-    /** 自定义服务商的接口地址（完整 URL，直接 POST） */
-    val searchCustomUrl: Flow<String> = store.data.map { it[keySearchCustomUrl] ?: "" }
-
-    suspend fun setSearchCustomUrl(url: String) = withContext(Dispatchers.IO) {
-        store.edit { prefs ->
-            if (url.isBlank()) prefs.remove(keySearchCustomUrl)
-            else prefs[keySearchCustomUrl] = url.trim()
-        }
-    }
-
-    /** 自定义服务商的 Key（密文优先，规矩与上面那条一模一样） */
-    val searchCustomApiKey: Flow<String> = store.data.map { prefs ->
-        val sealed = prefs[keySearchCustomKeyEnc]
-        if (sealed.isNullOrBlank()) {
-            prefs[keySearchCustomKeyPlain] ?: ""
-        } else {
-            resolveSealed(sealed) ?: (prefs[keySearchCustomKeyPlain] ?: "")
-        }
-    }
-
-    suspend fun setSearchCustomApiKey(key: String) = withContext(Dispatchers.IO) {
-        val sealed = if (key.isEmpty()) null else ApiKeyCipher.encrypt(key)
-        store.edit { prefs ->
-            when {
-                sealed != null -> {
-                    prefs[keySearchCustomKeyEnc] = sealed; prefs.remove(keySearchCustomKeyPlain)
-                }
-                key.isNotEmpty() -> {
-                    prefs[keySearchCustomKeyPlain] = key; prefs.remove(keySearchCustomKeyEnc)
-                }
-                else -> {
-                    prefs.remove(keySearchCustomKeyEnc); prefs.remove(keySearchCustomKeyPlain)
-                }
-            }
-        }
-    }
-
-    /** 当前生效服务商该用哪份 Key（自定义家有自己的一份） */
-    suspend fun searchKeyFor(provider: String): String =
-        if (provider == SEARCH_CUSTOM) searchCustomApiKey.first() else searchApiKey.first()
+    /** 某一家该用哪份 Key（通话/定时消息/聊天里真正发搜索请求前取它） */
+    suspend fun searchKeyFor(provider: String): String = searchApiKeyOf(provider).first()
 
     /** 自定义才返回用户填的地址；内置两家仍用写死的官方端点（返回空串表示"用内置的"） */
     suspend fun searchEndpointFor(provider: String): String =
@@ -1372,6 +1390,22 @@ class SettingsRepository(
     }
 
     suspend fun setChatBackground(personaId: Long, path: String) = writeIdTable(keyChatBackground, personaId, path)
+
+    /**
+     * 该角色的**视频通话背景档位**（v0.66.0，用户点名"视频通话加个通话背景选择"）。
+     *
+     * 存的是档位串而不是路径（`preset` / `file:<文件名>`），与 [Live2dSpaceStore.SpaceConfig] 同形状：
+     * 图片一律落在 `filesDir/call_background/<personaId>/background.jpg` 这个**固定名**上，
+     * 换一张就是覆盖——省下"每个用户图存一个时间戳名、删人设时留下一堆孤儿"那套账
+     *（口径同 AGENTS §三：库里只留必要的那一点状态，文件以目录为准）。
+     * 读的人拿档位判断要不要读文件、文件在不在，两边不一致时**以文件为准**（同通话形象）。
+     */
+    val callBackground: Flow<Map<Long, String>> = store.data.map { prefs ->
+        readIdTable(prefs[keyCallBackground])
+    }
+
+    suspend fun setCallBackground(personaId: Long, value: String) =
+        writeIdTable(keyCallBackground, personaId, value)
 
     /** 该会话是否允许 AI 联网查资料（配合「联网搜索」里配好的 Key） */
     val chatWebSearch: Flow<Map<Long, Boolean>> = store.data.map { prefs ->

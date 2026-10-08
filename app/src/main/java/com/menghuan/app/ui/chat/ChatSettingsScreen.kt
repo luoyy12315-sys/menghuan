@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.data.AiCallLogic
 import com.menghuan.app.data.AiCallRule
+import com.menghuan.app.data.CallBackgroundStore
 import com.menghuan.app.data.CallRingtone
 import com.menghuan.app.data.CallVisualStore
 import com.menghuan.app.data.CallVisualType
@@ -149,11 +150,21 @@ fun ChatSettingsScreen(
     // v0.58.0：persona_art / persona_live2d 这两张老表（DataStore 里的 id→单文件路径）已废弃，
     // 通话形象改走 CallVisualStore（完整模型包 + metadata.json），见 Live2dVisualSheet / VideoVisualSheet。
     val backgrounds by repo.chatBackground.collectAsState(initial = emptyMap())
+    // v0.66.0（用户点名"视频通话加个通话背景选择"）：档位串 `preset` / `file:<名字>`，没配过按预设画
+    val callBackgrounds by repo.callBackground.collectAsState(initial = emptyMap())
+    val callBg = callBackgrounds[personaId].orEmpty()
     // 铃声
     val library by repo.callRingtoneLibrary.collectAsState(initial = emptyList())
     val defaultRingtone by repo.callRingtonePath.collectAsState(initial = "")
     val personaRingtones by repo.personaRingtone.collectAsState(initial = emptyMap())
     val myRingtone = personaRingtones[personaId] ?: ""
+    // v0.65.0（用户点名）：行右侧直接写"现在响的是哪个"，口径与铃声弹层里那三档一致
+    //（角色专属 → 全局默认 → 系统默认），不要把"跟随默认"这种话写在行上。
+    val ringtoneLabel = when {
+        myRingtone.isNotBlank() -> CallRingtone.displayNameOf(myRingtone)
+        defaultRingtone.isNotBlank() -> CallRingtone.displayNameOf(defaultRingtone)
+        else -> "系统默认"
+    }
     // 定时消息（只列这个角色的；v0.56.6 起定时电话是同一条存储的另一种 kind，不混进这一串）
     val allScheduled by repo.scheduledMessages.collectAsState(initial = emptyList())
     val myScheduled = allScheduled.filter {
@@ -188,6 +199,8 @@ fun ChatSettingsScreen(
     var showRingtoneSheet by remember { mutableStateOf(false) }
     var showCallSheet by remember { mutableStateOf(false) }
     var showBackgroundSheet by remember { mutableStateOf(false) }
+    // v0.66.0：视频通话背景（系统预设 / 自定义图片，两档，形状与角色空间背景一致）
+    var showCallBgSheet by remember { mutableStateOf(false) }
     var showProactiveSheet by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ScheduledMessage?>(null) }
 
@@ -235,6 +248,11 @@ fun ChatSettingsScreen(
                 ?: boardDefaultId.ifBlank { TtsVoices.defaultVoiceId(config.provider) }
         }
     }
+    // v0.65.0（用户点名）：音色行右侧写"现在用的是谁"。
+    // 名字优先取候选名单里的显示名（克隆音色那串 ID 没法读）；名单里查不到（自定义端点手填的 ID）
+    // 就原样显示 ID —— 宁可写一串 ID，也比这行空着让用户以为没配。
+    val voiceLabel = voiceOptions.firstOrNull { it.first.voiceId == voiceEffectiveId }?.second
+        ?: voiceEffectiveId
 
     /**
      * 落盘这个角色的打电话规则，并按开关状态重排/撤销闹钟（只动这一个人设）。
@@ -284,6 +302,25 @@ fun ChatSettingsScreen(
         uri?.let {
             importAsset(it, "chat_background", "jpg", "聊天背景已保存") { p ->
                 scope.launch { repo.setChatBackground(personaId, p) }
+            }
+        }
+    }
+
+    // v0.66.0：通话背景的图**走 CallBackgroundStore**（固定一个角色一张、换图先删旧的），
+    // 不复用上面那个 importAsset —— 那个每次生成 `asset_<时间戳>.jpg`，换几次就留几个孤儿。
+    val callBgPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) { CallBackgroundStore.import(context, personaId, uri) }
+            when (outcome) {
+                is CallBackgroundStore.Import.Ok -> {
+                    repo.setCallBackground(personaId, outcome.value)
+                    Toast.makeText(context, "通话背景已保存", Toast.LENGTH_SHORT).show()
+                }
+                // 失败必须把原因说出来（超 24MB / 读不出来 / 空文件三种的处理动作完全不同），
+                // 不许糊成一句"设置失败"
+                is CallBackgroundStore.Import.Failed ->
+                    Toast.makeText(context, outcome.reason, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -347,10 +384,30 @@ fun ChatSettingsScreen(
             index = 4,
             onClick = { showVisualTypeSheet = true },
         )
+        // v0.66.0：**视频通话背景**（用户点名加）。只有视频通话读它，语音通话维持现在的底色。
+        // 行右侧照「音色」「铃声」的口径直接写当前选的是哪一档。
+        SettingsLineRow(
+            "通话背景",
+            titleSize = 17.sp,
+            index = 5,
+            trailingText = CallBackgroundStore.labelOf(callBg),
+        ) { showCallBgSheet = true }
+        // v0.64.0：**角色空间**——可以拖动、点击互动、换背景、玩动作库的地方。
+        // 它是独立场景，不是视频通话页（两者解耦），所以入口也独立。
+        // v0.65.0（用户点名）：**小标题去掉**，与「聊天背景」一样是一行高的单行入口。
+        SettingsLineRow("角色空间", titleSize = 17.sp, index = 6) {
+            onOpen("live2d_space/$personaId")
+        }
+        // v0.64.0：**通话动作**——四个状态各自播什么，可以换成动作库里的任意动作。
+        // v0.65.0（用户点名）：同样**不带小标题**（"已自定义几个"这类状态在这行看不重要，
+        // 进页面四个槽各写着当前播哪条，那儿才是说清楚的地方）。
+        SettingsLineRow("通话动作", titleSize = 17.sp, index = 7) {
+            onOpen("call_actions/$personaId")
+        }
         SettingsLineRow(
             "聊天背景",
             titleSize = 17.sp,
-            index = 5,
+            index = 8,
             divider = false,
             onClick = { showBackgroundSheet = true },
         )
@@ -358,11 +415,23 @@ fun ChatSettingsScreen(
         GroupSeam()
 
         // ③ 音频与通话设置（声音类聚合）
-        SettingsLineRow("音色", titleSize = 17.sp, index = 6) { showVoiceSheet = true }
+        // v0.65.0（用户点名）：音色与铃声**把当前选择写在行的右边**（小标题字号，不撑高行）。
+        // 原来是空行，要点进弹层才知道现在用的是哪个。
+        SettingsLineRow(
+            "音色",
+            titleSize = 17.sp,
+            index = 9,
+            trailingText = voiceLabel,
+        ) { showVoiceSheet = true }
         // 铃声：点开是底部弹层里的铃声列表
-        SettingsLineRow("铃声", titleSize = 17.sp, index = 7) { showRingtoneSheet = true }
+        SettingsLineRow(
+            "铃声",
+            titleSize = 17.sp,
+            index = 10,
+            trailingText = ringtoneLabel,
+        ) { showRingtoneSheet = true }
         // 电话：开关、来电时刻、阈值都在底部弹层里
-        SettingsLineRow("电话", titleSize = 17.sp, index = 8, divider = false) { showCallSheet = true }
+        SettingsLineRow("电话", titleSize = 17.sp, index = 11, divider = false) { showCallSheet = true }
 
         GroupSeam()
 
@@ -371,18 +440,18 @@ fun ChatSettingsScreen(
         SettingsLineRow(
             "人设主动关心",
             titleSize = 17.sp,
-            index = 9,
+            index = 12,
             onClick = { showProactiveSheet = true },
         )
         // v0.58.1：定时消息的**条目不再摊在页面上**，全部收进这个弹层（点一条改它）
-        SettingsLineRow("定时消息", titleSize = 17.sp, index = 10, divider = false) {
+        SettingsLineRow("定时消息", titleSize = 17.sp, index = 13, divider = false) {
             showScheduledSheet = true
         }
 
         GroupSeam()
 
         // ⑤ 辅助工具（最低频，行业通用放底部）
-        SettingsLineRow("查看聊天记录", titleSize = 17.sp, index = 11, divider = false) {
+        SettingsLineRow("查看聊天记录", titleSize = 17.sp, index = 14, divider = false) {
             onOpen("chat_history/$personaId")
         }
 
@@ -741,6 +810,39 @@ fun ChatSettingsScreen(
                     backgroundPicker.launch("image/*")
                 },
                 selected = !custom.isNullOrBlank(),
+            )
+            Spacer(Modifier.height(10.dp))
+        }
+    }
+
+    // ===== 视频通话背景（底部弹层，v0.66.0）：系统预设 / 自定义图片 两档 =====
+    //
+    // 形状刻意与「聊天背景」「角色空间背景」同款：两行、点一行即定，不叠第二层弹层。
+    // 只有视频通话读这个档位（语音通话维持现在的页面底色 —— 用户口径）。
+    if (showCallBgSheet) {
+        val custom = CallBackgroundStore.isCustom(callBg)
+        NeuSheetScaffold(title = "通话背景", onDismiss = { showCallBgSheet = false }) {
+            Spacer(Modifier.height(6.dp))
+            NeuSheetRow(
+                icon = MIcons.Palette,
+                title = "系统预设",
+                subtitle = "App 给的那张渐变",
+                selected = !custom,
+                onClick = {
+                    scope.launch { repo.setCallBackground(personaId, CallBackgroundStore.PRESET) }
+                    showCallBgSheet = false
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            NeuSheetRow(
+                icon = MIcons.ImageIcon,
+                title = "自定义背景",
+                subtitle = if (custom) "已设置 · 点此换一张" else "从相册选一张图",
+                selected = custom,
+                onClick = {
+                    showCallBgSheet = false
+                    callBgPicker.launch("image/*")
+                },
             )
             Spacer(Modifier.height(10.dp))
         }

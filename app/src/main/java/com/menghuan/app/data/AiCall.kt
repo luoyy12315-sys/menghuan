@@ -6,12 +6,15 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.llm.OpenAiClient
+import com.menghuan.app.notify.NotifyAlert
 import com.menghuan.app.ui.call.IncomingCallActivity
 import kotlinx.coroutines.flow.first
 
@@ -32,7 +35,10 @@ enum class AiCallReason { SCHEDULED, SMART, REQUESTED }
  */
 object AiCall {
 
-    private const val CHANNEL_ID = "ai_call"
+    // v0.62.0 换代（_v2）：这条渠道补了铃声与震动，而渠道配置创建即锁死——
+    // 不换 id，已经装过机的用户拿到的还是老那条（可能连声音都被系统档压着）
+    private const val CHANNEL_ID = "ai_call_v2"
+    private const val LEGACY_CHANNEL_ID = "ai_call"
     private const val NOTIFICATION_ID = 2_000_000_009
 
     /** 来电页要的三个 extra */
@@ -215,9 +221,25 @@ object AiCall {
             return
         }
 
+        // 来电渠道**不跟着勿扰降级**（打电话就是要叫得人），v0.62.0 起显式设上铃声与震动；
+        // 真正"穿勿扰响"靠的是来电页把铃声放到**闹钟音轨**上（见 CallRingtone.loopPlayer）
+        NotifyAlert.dropLegacy(manager, listOf(LEGACY_CHANNEL_ID))
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "AI 来电", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "AI 主动打给你的来电（可在每个角色会话右上角 ⋮ 的整页设置里关掉「允许主动打电话」）"
+                setSound(
+                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+                enableVibration(true)
+                // 来电是"一直震到接"：repeat 从下标 1 起循环（0 = 不循环）。
+                // ⚠️ SDK 里的方法名是 createWaveform，不是网上常写的 createWavePattern
+                setVibrationEffect(
+                    android.os.VibrationEffect.createWaveform(longArrayOf(0, 250, 250, 250), 1)
+                )
             }
         )
 

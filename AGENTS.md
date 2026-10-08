@@ -193,6 +193,10 @@
      给 TextureView 设变换矩阵；Live2D 走 `fitProjection`）：留边违背"铺满"、拉伸会变形，二者都不要。
      有画面时页底**不能再铺 `NeuBackground`**（改透明），否则白底从画面边缘透出来描白边；
      可读性靠上下两层暗色渐变托底 + 时长/字幕走白色系。
+     ⚠️ **v0.65.0 起页底这一块延伸到底部对话台**：`videoPictureOn` 时对话台**也不铺底色**
+     （用户点名"下面 UI 的背景白膜换成透明的"，伪视频上尤其像一条白带）。
+     只有**没有画面**（语音通话 / 形象坏了回落头像）那一支才铺 `NeuBackground` —— 别把它改成无条件透明，
+     大头像那套的字幕与提示条要靠它托住。
      另：有画面时**不要**给叠在画面上的控件加 `staggerEnter`/`graphicsLayer` 这类 post-layout 变换
      （官方 SurfaceView 文档：合成按布局位置算，变换过的兄弟视图可能与曲面合不上）。
    - **通话页一律不显示名字**（v0.60.1 用户两次点名：视频顶栏、语音主视觉都是"头像就是身份"）：
@@ -258,6 +262,30 @@
      ⚠️ 各家网关的参考图字段名不统一（`image`/`images`/`init_image`/`ref_image`…），本项目的口径是
      **不猜参数名**：只发国内最通用的 `"image": [dataURL]`，被服务端判错就**自动去掉参考图重试一次**，
      成功则在 `ImageGenResult.note` 里明说"这张没按立绘生成"——结果对但条件没生效的事不许闷声。
+
+8. **通知声音 / 勿扰 / 未读红点（v0.62.0 用户拍板），以下四条不许回退。**
+   - **勿扰指手机系统的勿扰（DND）**，读 `NotificationManager.currentInterruptionFilter` 判断
+     （不需权限）。**不要**再往"App 自己做一个勿扰开关"的方向走——用户明确否掉了。
+   - **渠道声音创建即锁死**：Android 8 起 `createNotificationChannel` 改不动已存在渠道的声音与震动，
+     所以「给老装机补上提示音」只有一条路 = **换新渠道 id 重建 + 删旧 id**
+     （`proactive_greeting_v2` / `scheduled_message_v2` / `ai_call_v2`，旧 id 由 `NotifyAlert.dropLegacy` 清）。
+     ⚠️ 谁要是把常量改回老 id，通知声音这次修复就直接失效，而且不报错、不崩——是最难查的一种回退。
+   - **消息类通知在勿扰时只震动、不响铃**：实现是预建两条渠道（`<id>` 与 `<id>_quiet`）、
+     发的时候按勿扰状态挑一条（`notify/NotifyAlert.kt`）。
+     ⚠️ 勿扰下**允不允许震动是 ROM 说的算**，要保证震得动得让用户开「勿扰访问权限」
+     （`ACCESS_NOTIFICATION_POLICY` + `setBypassDnd`）——那个开关太深、普通人找不到，**用户已确认不做**。
+     普通聊天里 AI 的回复**不发系统通知**（只在会话列表亮红点）也是用户明确选的，别自作主张加通知。
+   - **AI 主动来电穿勿扰**：来电铃声一律放 `USAGE_ALARM`（闹钟音轨，`CallRingtone.loopPlayer(ringThroughDnd = true)`），
+     这是闹钟 App 穿勿扰的标准做法、零权限。三点不许回退：
+     ① 别改回 `USAGE_NOTIFICATION_RINGTONE` 或 `Ringtone.play()`，那样勿扰下必然没声音
+     （这就是 v0.53.9 那次"勿扰下不响"被判成"正常"的真根因）；
+     ② 系统默认铃声那一档**也要走 MediaPlayer + content Uri**，不要用 `Ringtone.setAudioAttributes`——
+        它要 API 28，本工程 minSdk 26，26/27 上会悄悄不响；
+     ③ **只有 AI 打给用户的那一通**传 true；用户打给 AI 的回铃、铃声页「试听」照旧走铃声音量。
+     代价要如实告诉用户：来电铃声吃的是系统的**闹钟音量**那条滑杆，拉到 0 就听不见，这不是 bug。
+   - **未读点是品牌红 `BrandSalmon #FF7262`**（会话列表那颗 + 底栏「消息」那颗），
+     **不是 `NeuAccent`**（浅色下纯黑，用户说"黑点不像未读"），也**不是 `NeuDanger`**
+     （那个色在全 App 是"删除/危险"语义，拿来当未读会让人以为出了事）。
 
 
 ## 一、项目是什么

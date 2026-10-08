@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.verticalScroll
@@ -37,6 +38,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
@@ -289,6 +291,14 @@ fun SettingsSearchRow(placeholder: String = "搜索", onClick: () -> Unit) {
 fun SettingsLineRow(
     title: String,
     subtitle: String = "",
+    /**
+     * 右侧的**当前选择**（v0.65.0，小标题尺寸贴在箭头左边）。
+     *
+     * 用在"这行选了什么就直接在行上写出来"的入口（音色 / 铃声）：
+     * 用户要的是一眼看到当前值，而不是多点一次进弹层才知道现在用哪个。
+     * 与 [subtitle] 互斥使用（那个是标题下面的一行，会把行撑高；这个不撑高）。
+     */
+    trailingText: String = "",
     trailing: (@Composable () -> Unit)? = null,
     /** 右侧不挂控件时是否画那颗浅箭头（默认画：表明"点进去还有东西"） */
     showChevron: Boolean = true,
@@ -342,12 +352,24 @@ fun SettingsLineRow(
                     Text(subtitle, fontSize = 12.sp, color = MutedText, maxLines = 1)
                 }
             }
-            when {
-                trailing != null -> {
+            // 右侧先给"当前选择"（宽度封顶 + 省略号：Row 里不带封顶的单行文字会把标题挤没），
+            // 再给那颗箭头；挂了自定义控件（开关那类）就不显示文本，由控件自己说话。
+            if (trailing != null) {
+                Spacer(Modifier.width(10.dp))
+                trailing()
+            } else {
+                if (trailingText.isNotBlank()) {
                     Spacer(Modifier.width(10.dp))
-                    trailing()
+                    Text(
+                        trailingText,
+                        fontSize = 12.sp,
+                        color = MutedText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 140.dp),
+                    )
                 }
-                showChevron -> {
+                if (showChevron) {
                     Spacer(Modifier.width(10.dp))
                     Icon(
                         MIcons.ChevronRight,

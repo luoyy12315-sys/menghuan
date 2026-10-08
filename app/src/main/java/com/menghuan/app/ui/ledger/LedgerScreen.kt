@@ -16,10 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.border
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,6 +45,8 @@ import com.menghuan.app.ui.common.AdaptiveScreen
 import com.menghuan.app.ui.common.NeuCard
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.NeuCircleButton
+import com.menghuan.app.ui.common.NeuMenu
+import com.menghuan.app.ui.common.NeuMenuItem
 import com.menghuan.app.ui.common.NeuSectionTitle
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
@@ -56,7 +54,6 @@ import com.menghuan.app.ui.common.RollingAmountText
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
-import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuHairline
 import com.menghuan.app.ui.theme.NeuTrack
@@ -88,10 +85,12 @@ fun LedgerScreen(
     onShiftPeriod: (Long) -> Unit,
     onBack: () -> Unit,
     onDelete: (Long) -> Unit,
+    /** 长按流水 → 菜单「编辑」：把这笔灌回记一笔弹层改（v0.63.0 用户点名） */
+    onEdit: (LedgerEntry) -> Unit,
     onAdd: () -> Unit,
 ) {
     AdaptiveScreen {
-        var deleting by remember { mutableStateOf<LedgerEntry?>(null) }
+        var menuFor by remember { mutableStateOf<LedgerEntry?>(null) }
         val haptic = LocalHapticFeedback.current
 
         NeuTopBar(
@@ -177,23 +176,25 @@ fun LedgerScreen(
                             entry = entry,
                             onLongClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                deleting = entry
+                                menuFor = entry
                             },
                         )
                         Box(Modifier.align(Alignment.BottomEnd).size(1.dp)) {
-                            DropdownMenu(
-                                expanded = deleting?.id == entry.id,
-                                onDismissRequest = { deleting = null },
-                                modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(14.dp)),
-                                containerColor = NeuSurface,
-                                shape = RoundedCornerShape(14.dp),
-                                shadowElevation = 0.dp, // v0.42.1 全应用去阴影
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("删除这笔", fontSize = 14.sp, color = com.menghuan.app.ui.theme.NeuDanger) },
+                            // v0.63.0：紧凑菜单（和任务页同一份），并补上「编辑这笔」
+                            NeuMenu(expanded = menuFor?.id == entry.id, onDismissRequest = { menuFor = null }) {
+                                NeuMenuItem(
+                                    "编辑这笔",
                                     onClick = {
+                                        menuFor = null
+                                        onEdit(entry)
+                                    },
+                                )
+                                NeuMenuItem(
+                                    "删除这笔",
+                                    danger = true,
+                                    onClick = {
+                                        menuFor = null
                                         onDelete(entry.id)
-                                        deleting = null
                                     },
                                 )
                             }

@@ -74,6 +74,8 @@ import com.menghuan.app.ui.common.NeuCard
 import com.menghuan.app.ui.common.NeuCheckCircle
 import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuCircleButton
+import com.menghuan.app.ui.common.NeuMenu
+import com.menghuan.app.ui.common.NeuMenuItem
 import com.menghuan.app.ui.common.NeuSectionTitle
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextField
@@ -99,7 +101,9 @@ import com.menghuan.app.ui.theme.NeuSurface
 
 /**
  * 任务清单页：Room 真数据 + 双板块（每日任务 / 基础任务）+ 勾选打卡。
- * 新建任务走右上角 ＋ → 底部弹层（可开「每日重复」）；长按任务行进编辑弹层；设提醒时申请通知权限。
+ * 新建任务走右上角 ＋ → 底部弹层（可开「每日重复」）；**长按任务行 = 震一下 + 弹出菜单**
+ * （编辑 / 删除，锚在行右下角，与会话列表那几处同形状）；点「删除」直接删、不再叠确认框；
+ * 设提醒时申请通知权限。
  */
 private fun dueDateOf(task: TaskItem): LocalDate =
     if (task.dueAt == 0L) LocalDate.now()
@@ -122,7 +126,6 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
     var showTaskSheet by remember { mutableStateOf(false) }
     var showAgentSheet by remember { mutableStateOf(false) }
     var editingTask by remember { mutableStateOf<TaskItem?>(null) }
-    var deleteTarget by remember { mutableStateOf<TaskItem?>(null) }
 
     val today = LocalDate.now()
     val tomorrow = today.plusDays(1)
@@ -212,7 +215,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                     }
                     itemsIndexed(dailyTasks, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                         }
                     }
                 }
@@ -227,7 +230,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                     }
                     itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                         }
                     }
                 }
@@ -237,7 +240,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                     }
                     itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                         }
                     }
                 }
@@ -247,7 +250,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                     }
                     itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                         }
                     }
                 }
@@ -258,7 +261,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                     }
                     itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                         }
                     }
                 }
@@ -276,7 +279,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 item { NeuSectionTitle("每日任务", modifier = Modifier.padding(top = 10.dp)) }
                 itemsIndexed(dailyTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                     }
                 }
             }
@@ -288,7 +291,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                     }
                 }
             }
@@ -296,7 +299,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 item { NeuSectionTitle("明天", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                     }
                 }
             }
@@ -304,7 +307,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 item { NeuSectionTitle("以后", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                     }
                 }
             }
@@ -313,7 +316,7 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onLongPress = { editingTask = task; showTaskSheet = true })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
                     }
                 }
             }
@@ -333,9 +336,11 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
                 showTaskSheet = false
             },
             onDelete = editingTask?.let { task ->
+                // 弹层里这颗「删除任务」也**直接删**，不再弹确认框：
+                // 与长按菜单同一条口径（单条删不叠确认框）
                 {
                     showTaskSheet = false
-                    deleteTarget = task
+                    vm.delete(task)
                 }
             },
             onDismiss = { showTaskSheet = false },
@@ -344,25 +349,6 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
 
     if (showAgentSheet) {
         AgentSheet(vm = vm, onDismiss = { showAgentSheet = false })
-    }
-
-    deleteTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            containerColor = NeuSurface,
-            title = { Text("删除任务", color = TextPrimary) },
-            text = { Text("确定删除「${target.title}」吗？", color = TextPrimary) },
-            confirmButton = {
-                TextButton(onClick = { vm.delete(target); deleteTarget = null }) {
-                    Text("删除", color = NeuDanger)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteTarget = null }) {
-                    Text("取消", color = MutedText)
-                }
-            },
-        )
     }
 }
 
@@ -400,7 +386,8 @@ private fun EmptyTasksHint() {
 
 /**
  * 新建/编辑共用弹层：内容 / 备注 / 日期（今天·明天·自选）/ 提醒时间（可选）。
- * 编辑模式（task != null）额外提供「删除任务」入口（外部走确认对话框）。
+ * 编辑模式（task != null）额外提供「删除任务」入口，**点了直接删**——
+ * 与长按菜单同一条口径（单条删不叠确认框，v0.62.0 起原来那层确认对话框已删）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -653,12 +640,30 @@ private fun TaskSheet(
 }
 
 @OptIn(ExperimentalFoundationApi::class)
+/**
+ * 任务行：**整行点一下 = 打卡**，**长按 = 震一下并弹出菜单**（编辑 / 删除）。
+ *
+ * 菜单形状与会话列表 / 洞察 / 周报 / 记账本流水完全一致：锚在行的右下角。
+ * ⚠️ 点「删除」就**直接删**，不再叠一层确认框——长按呼出菜单那一下本身就是确认
+ * （2026-10-02 定下的规矩；原来是长按直接开编辑弹层、删除藏在弹层里还要再确认一次，
+ * 两处口径和别的地方都不一样）。
+ */
 @Composable
-private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Unit) {
+private fun TaskRow(
+    task: TaskItem,
+    onToggle: () -> Unit,
+    onEdit: (TaskItem) -> Unit,
+    onDelete: (TaskItem) -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val toggleWithHaptic = {
         haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
         onToggle()
+    }
+    val callMenu = {
+        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+        menuOpen = true
     }
     val done = task.isEffectivelyDone()
     val isOverdue = !task.repeatDaily && !done && dueDateOf(task) < LocalDate.now()
@@ -674,62 +679,88 @@ private fun TaskRow(task: TaskItem, onToggle: () -> Unit, onLongPress: () -> Uni
         "AI 建议" -> NeuAccent
         else -> MutedText
     }
-    NeuCard(
-        cornerRadius = 20.dp,
-        contentPadding = 13.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            // 逾期未完成：卡片左缘红色边线（clip 内层绘制，跟随圆角）
-            .then(
-                if (isOverdue) {
-                    val danger = NeuDanger
-                    Modifier.drawBehind {
-                        drawRoundRect(
-                            color = danger,
-                            size = androidx.compose.ui.geometry.Size(2.5.dp.toPx(), size.height),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx()),
-                        )
-                    }
-                } else {
-                    Modifier
-                },
-            ),
-    ) {
-        // v0.55.0：任务行补**按压缩放**。注释里写着"反馈靠卡片按压与勾选动画"，
-        // 但按压那半个从来没做 —— 点一下只有勾选圈动，整行是"死"的。
-        // 现在整行跟着按下缩到 0.975（与会话列表行同一手感），点哪都算数。
-        val rowPress = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-        val rowScale by animateFloatAsState(
-            targetValue = if (rowPress.collectIsPressedAsState().value) 0.975f else 1f,
-            animationSpec = NeuPressSpec,
-            label = "taskRowPress",
-        )
-        Row(
-            Modifier
-                .scale(rowScale)
-                .combinedClickable(
-                    interactionSource = rowPress,
-                    indication = null, // 无涟漪：长按/点击反馈靠卡片按压与勾选动画
-                    onClick = toggleWithHaptic,
-                    onLongClick = onLongPress,
+    Box(Modifier.fillMaxWidth()) {
+        NeuCard(
+            cornerRadius = 20.dp,
+            contentPadding = 13.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                // 逾期未完成：卡片左缘红色边线（clip 内层绘制，跟随圆角）
+                .then(
+                    if (isOverdue) {
+                        val danger = NeuDanger
+                        Modifier.drawBehind {
+                            drawRoundRect(
+                                color = danger,
+                                size = androidx.compose.ui.geometry.Size(2.5.dp.toPx(), size.height),
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx()),
+                            )
+                        }
+                    } else {
+                        Modifier
+                    },
                 ),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            NeuCheckCircle(checked = done, onToggle = toggleWithHaptic)
-            Spacer(Modifier.width(13.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    task.title,
-                    fontSize = 15.sp,
-                    color = if (done) FaintText else TextPrimary,
-                    textDecoration = if (done) TextDecoration.LineThrough else TextDecoration.None,
-                )
-                task.note.takeIf { it.isNotBlank() }?.let {
-                    Text(it, fontSize = 12.sp, color = MutedText, maxLines = 1)
+            // v0.55.0：任务行补**按压缩放**。注释里写着"反馈靠卡片按压与勾选动画"，
+            // 但按压那半个从来没做 —— 点一下只有勾选圈动，整行是"死"的。
+            // 现在整行跟着按下缩到 0.975（与会话列表行同一手感），点哪都算数。
+            val rowPress = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+            val rowScale by animateFloatAsState(
+                targetValue = if (rowPress.collectIsPressedAsState().value) 0.975f else 1f,
+                animationSpec = NeuPressSpec,
+                label = "taskRowPress",
+            )
+            Row(
+                Modifier
+                    .scale(rowScale)
+                    .combinedClickable(
+                        interactionSource = rowPress,
+                        indication = null, // 无涟漪：长按/点击反馈靠卡片按压与勾选动画
+                        onClick = toggleWithHaptic,
+                        onLongClick = callMenu,
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NeuCheckCircle(checked = done, onToggle = toggleWithHaptic)
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        task.title,
+                        fontSize = 15.sp,
+                        color = if (done) FaintText else TextPrimary,
+                        textDecoration = if (done) TextDecoration.LineThrough else TextDecoration.None,
+                    )
+                    task.note.takeIf { it.isNotBlank() }?.let {
+                        Text(it, fontSize = 12.sp, color = MutedText, maxLines = 1)
+                    }
                 }
+                Spacer(Modifier.width(8.dp))
+                TaskTag(tag, tagColor)
             }
-            Spacer(Modifier.width(8.dp))
-            TaskTag(tag, tagColor)
+        }
+        // 菜单锚点：DropdownMenu 的 Popup 锚定它的**直接父节点**，
+        // 所以必须把它包进一个贴在行右下角的 1dp Box（align/offset 直接加在菜单上无效）
+        Box(Modifier.align(Alignment.BottomEnd).size(1.dp)) {
+            // v0.63.0：换成全应用统一的紧凑菜单（13sp / 行高约 33dp）。
+            // M3 的 DropdownMenuItem 最小行高写死 48dp、Modifier 压不动，
+            // 用户点名"菜单太大、和字体大小不匹配"
+            NeuMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                NeuMenuItem(
+                    "编辑",
+                    onClick = {
+                        menuOpen = false
+                        onEdit(task)
+                    },
+                )
+                NeuMenuItem(
+                    "删除",
+                    danger = true,
+                    onClick = {
+                        menuOpen = false
+                        onDelete(task)
+                    },
+                )
+            }
         }
     }
 }

@@ -169,3 +169,26 @@
 ## 禁止复活
 - 打字机 `streamingText`、表情包、API 列表 ✓、语音两个总开关、设定词模板按钮。
 - 已删：`EdgeTtsClient.kt`、`ReadAloudPlayer.kt`、`realtime/Mp3Decoder.kt`。
+
+## 2026-10-08 新增（v0.64.0 · Live2D 动作系统）
+- ⚠️ **绝对不要用 `git checkout -- <文件>` 回退**：本仓库工作区长期存着大量**未提交**改动
+  （HEAD 还停在 v0.61.1）。10-08 就用它冲掉过 `AiPrompts.kt` 里 v0.62/v0.63 的四条 replace。
+  真丢了的话：`app/build/tmp/kotlin-classes/release/.../AiPrompts.class` 的**常量池里留着每条
+  replace 的目标串与替换串**（Kotlin 会把字面量拼接折叠成一条常量）；更狠的一招是用那份
+  release classes 跑个 Java main 调 `AiPrompts.INSTANCE.getDEFAULT_ASSISTANT_PROMPT()`，
+  dump 出货版手册全文当基准逐行 diff。dump 脚本见 `build/dump/`。
+  （Windows 上 classpath 分隔符是 `;`；`/tmp` 路径 javac/java 不认，要用 `X:/...`。）
+- 恢复 replace 时**写成普通字符串 + 显式 `\n`**：带缩进的裸字符串会把每行前的空格也写进文案、
+  并且目标串因多了空白而**静默落空**（踩过）。
+- **通话页布局定稿**（用户原话"下面的 UI 都不见、好像是移到了右边，顶栏的 UI 还要"）：
+  上下分区（角色区 + 对话台）→ **右滑**让对话台横移出场进纯净态、**左滑**唤回、顶栏常驻。
+  角色靠 `setViewportBottomInset` 收进上方那块，**所以不许再加任何蒙版**；画面层尺寸恒定（只改投影）。
+- **动作引擎**（`com.menghuan.app.live2d`，与通话解耦）四条铁律：
+  ① 播放写在 `saveParameters` 之后、`onLateUpdate` 之前 → **口型永远归实时语音**；
+  ② 内置动作**一律不碰 `GENERIC_MOUTH`**（碰了角色会一直张嘴）；
+  ③ 舞台通道（整体位移/旋转/缩放）走**渲染矩阵、零参数依赖**，这是"翻跟斗任何模型都能演"的根；
+  ④ 归一化 `1.0 = 参数可用范围的 60%`，换模型不会被甩到破图。
+- 模型自带动作/表情清单从 GL 线程回调出来（`onCatalogReady`），**回调里只许转手、不许碰 Room**。
+- 删动作时**必须顺手清掉指向它的绑定**，否则表现为"角色卡着不动且毫无提示"。
+- **ZipEntryGuard 现在拒绝开头的 `/`**（绝对路径一律不要），与 `CallVisualTest` 的口径对齐。
+- 当前版本 **0.64.0 / versionCode 152**，APK 落在根目录 `梦欢-v0.64.0-release.apk`，旧版在 `archive/`。

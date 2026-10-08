@@ -69,6 +69,16 @@ class VideoVisualEngine(
     /** 当前正在播的状态槽：同一个槽重复进来不再换源（状态来回抖动时不该重新 prepare） */
     private var playingSlot: String? = null
 
+    /**
+     * 底部要留给 UI 的高度比例（0..0.8，v0.64.0）。
+     *
+     * 通话页改成"角色区 + 对话台"分区之后，画面要完整落在上方那块里 ——
+     * 这里影响的是 [applyCoverTransform] 的目标矩形，**不碰播放器与解码**，
+     * 所以布局动画期间每帧改都没有代价（就是重算一个 Matrix）。
+     */
+    @Volatile
+    private var bottomInset = 0f
+
     /** 首帧渲染出来了没有（页面据此才切视频布局，见 [VisualRuntime.Ready.drawn]） */
     @Volatile
     private var drawn = false
@@ -161,13 +171,25 @@ class VideoVisualEngine(
         val vh = view.height.toFloat()
         val aspect = displayAspect
         if (vw <= 0f || vh <= 0f || aspect <= 0f) return
+        // v0.64.0：cover 的目标从"整屏"换成"上方那块可用区域"。
+        // inset = 0 时下面两行与老实现逐字一致（可用高度 = 整屏、居中 = 原来的居中），
+        // 所以视频通话不分区的那条路径行为完全没有变化。
+        val availH = (vh * (1f - bottomInset.coerceIn(0f, 0.8f))).coerceAtLeast(1f)
         runCatching {
-            val scale = maxOf(vw / aspect, vh)
+            val scale = maxOf(vw / aspect, availH)
             val m = android.graphics.Matrix()
             m.setScale(scale, scale)
-            m.postTranslate((vw - aspect * scale) / 2f, (vh - scale) / 2f)
+            m.postTranslate((vw - aspect * scale) / 2f, (availH - scale) / 2f)
             view.setTransform(m)
         }
+    }
+
+    override fun setViewportBottomInset(fraction: Float) {
+        val next = fraction.coerceIn(0f, 0.8f)
+        if (next == bottomInset) return
+        bottomInset = next
+        // 尺寸没变也要重设一次矩阵：这是唯一一处"改了就必须重算"的副作用
+        applyCoverTransform()
     }
 
     override fun setCallState(state: CallVisualState) {

@@ -12,12 +12,15 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.menghuan.app.data.model.AiInsight
 import com.menghuan.app.data.model.AiWeeklyReport
+import com.menghuan.app.data.model.CallActionBindingEntity
 import com.menghuan.app.data.model.CallSession
 import com.menghuan.app.data.model.CallTurn
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.DailySuggestion
 import com.menghuan.app.data.model.ImageGenerationRecord
 import com.menghuan.app.data.model.LedgerEntry
+import com.menghuan.app.data.model.Live2dActionEntity
+import com.menghuan.app.data.model.MemoEntry
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.ProfileFact
 import com.menghuan.app.data.model.Sticker
@@ -286,6 +289,33 @@ interface LedgerDao {
     suspend fun deleteAll()
 }
 
+/**
+ * 备忘（v0.62.0）。条数天然很少（几十到几百），整表倒序观察即可，
+ * 不做分页也不做按时间索引——排序口径在 MemoMath 里，保持单一来源。
+ */
+@Dao
+interface MemoDao {
+    @Query("SELECT * FROM memos ORDER BY pinned DESC, createdAt DESC")
+    fun observeAll(): Flow<List<MemoEntry>>
+
+    /** 编辑前取回原条（保住 createdAt，别让编辑把时间戳刷到最新） */
+    @Query("SELECT * FROM memos WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): MemoEntry?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(memo: MemoEntry): Long
+
+    @Query("UPDATE memos SET pinned = :pinned WHERE id = :id")
+    suspend fun setPinned(id: Long, pinned: Boolean)
+
+    @Query("DELETE FROM memos WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    /** 清除全部数据用 */
+    @Query("DELETE FROM memos")
+    suspend fun deleteAll()
+}
+
 @Dao
 interface DailySuggestionDao {
     /** 今日建议（按天取）：数据页顶部/中部展示区 */
@@ -358,6 +388,88 @@ interface CallDao {
     suspend fun deleteTurns(sessionId: Long)
 }
 
+/**
+ * Live2D 动作库（v0.64.0）。
+ *
+ * 读取口径固定为「全机共享的动作（`personaId = 0`） + 本角色专属的动作（模型自带的那批）」，
+ * 所以每个查询都带 `personaId = 0 OR personaId = :personaId`。**不要**把它拆成两条查询再在
+ * Kotlin 里合并 —— 那样"收藏优先、新建在后"的排序要在两处各写一遍。
+ */
+@Dao
+interface Live2dActionDao {
+
+    /** 排序：收藏的在前，其次按建立时间（列表顺序要稳，不能因为改了一次收藏就整片跳） */
+    @Query(
+        "SELECT * FROM live2d_actions WHERE personaId = 0 OR personaId = :personaId " +
+            "ORDER BY favorite DESC, createdAt ASC, id ASC"
+    )
+    fun observeFor(personaId: Long): Flow<List<Live2dActionEntity>>
+
+    @Query(
+        "SELECT * FROM live2d_actions WHERE personaId = 0 OR personaId = :personaId " +
+            "ORDER BY favorite DESC, createdAt ASC, id ASC"
+    )
+    suspend fun listFor(personaId: Long): List<Live2dActionEntity>
+
+    @Query("SELECT * FROM live2d_actions WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): Live2dActionEntity?
+
+    @Query("SELECT * FROM live2d_actions WHERE builtinKey = :key LIMIT 1")
+    suspend fun getByBuiltinKey(key: String): Live2dActionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(action: Live2dActionEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(actions: List<Live2dActionEntity>)
+
+    @Query("UPDATE live2d_actions SET favorite = :favorite, updatedAt = :now WHERE id = :id")
+    suspend fun setFavorite(id: Long, favorite: Boolean, now: Long)
+
+    @Query("DELETE FROM live2d_actions WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    /** 换模型时整批替换该角色"模型自带"那一档 */
+    @Query("DELETE FROM live2d_actions WHERE source = 'MODEL' AND personaId = :personaId")
+    suspend fun deleteModelActions(personaId: Long)
+
+    /** 清除全部数据用 */
+    @Query("DELETE FROM live2d_actions")
+    suspend fun deleteAll()
+}
+
+/**
+ * 四个通话状态的动作绑定（v0.64.0）。
+ *
+ * `actionId = 0` 是"用这个槽的内置默认动作"的哨兵值，不是脏数据。
+ */
+@Dao
+interface CallActionBindingDao {
+
+    @Query("SELECT * FROM call_action_bindings WHERE personaId = :personaId")
+    fun observeFor(personaId: Long): Flow<List<CallActionBindingEntity>>
+
+    @Query("SELECT * FROM call_action_bindings WHERE personaId = :personaId")
+    suspend fun getFor(personaId: Long): List<CallActionBindingEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(binding: CallActionBindingEntity)
+
+    @Query("DELETE FROM call_action_bindings WHERE personaId = :personaId AND slot = :slot")
+    suspend fun clearSlot(personaId: Long, slot: String)
+
+    /** 动作被删掉时，所有指向它的绑定一起收回来（否则会出现绑到空气、角色不动） */
+    @Query("DELETE FROM call_action_bindings WHERE actionId = :actionId")
+    suspend fun clearByAction(actionId: Long)
+
+    @Query("DELETE FROM call_action_bindings WHERE personaId = :personaId")
+    suspend fun clearForPersona(personaId: Long)
+
+    /** 清除全部数据用 */
+    @Query("DELETE FROM call_action_bindings")
+    suspend fun deleteAll()
+}
+
 @Database(
     entities = [
         Persona::class,
@@ -373,8 +485,11 @@ interface CallDao {
         Sticker::class,
         CallSession::class,
         CallTurn::class,
+        MemoEntry::class,
+        Live2dActionEntity::class,
+        CallActionBindingEntity::class,
     ],
-    version = 16,
+    version = 19,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -388,11 +503,53 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun aiWeeklyReportDao(): AiWeeklyReportDao
     abstract fun imageGenerationDao(): ImageGenerationDao
     abstract fun ledgerDao(): LedgerDao
+    abstract fun memoDao(): MemoDao
     abstract fun dailySuggestionDao(): DailySuggestionDao
     abstract fun stickerDao(): StickerDao
     abstract fun callDao(): CallDao
+    abstract fun live2dActionDao(): Live2dActionDao
+    abstract fun callActionBindingDao(): CallActionBindingDao
 
     companion object {
+        /**
+         * v19：Live2D 动作库（v0.64.0）。
+         *
+         * 两张**全新表**，不动任何存量列，所以升级是零风险的：
+         * - `live2d_actions`：动作本体（内置 / 模型自带 / 我的 / AI 生成共用一张表）
+         * - `call_action_bindings`：人设 × 四个状态 → 动作 id（0 = 用内置默认）
+         *
+         * ⚠️ 内置动作**不在迁移里播种**：内置动作的轨道定义在代码里
+         * （[com.menghuan.app.live2d.BuiltinActions]），要能在后续版本里改幅度、改时长。
+         * 迁移里灌一份快照进去，等于把 v0.64.0 的动作永久冻结在用户机器上。
+         * 播种放在仓库层 `ensureBuiltins()`，每次启动对一遍内置键。
+         */
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `live2d_actions` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`type` TEXT NOT NULL, " +
+                        "`source` TEXT NOT NULL, " +
+                        "`builtinKey` TEXT NOT NULL DEFAULT '', " +
+                        "`spec` TEXT NOT NULL, " +
+                        "`durationMs` INTEGER NOT NULL DEFAULT 0, " +
+                        "`loop` INTEGER NOT NULL DEFAULT 0, " +
+                        "`favorite` INTEGER NOT NULL DEFAULT 0, " +
+                        "`personaId` INTEGER NOT NULL DEFAULT 0, " +
+                        "`createdAt` INTEGER NOT NULL DEFAULT 0, " +
+                        "`updatedAt` INTEGER NOT NULL DEFAULT 0)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `call_action_bindings` (" +
+                        "`personaId` INTEGER NOT NULL, " +
+                        "`slot` TEXT NOT NULL, " +
+                        "`actionId` INTEGER NOT NULL DEFAULT 0, " +
+                        "PRIMARY KEY(`personaId`, `slot`))"
+                )
+            }
+        }
+
         /**
          * v16：人设的角色立绘（v0.58.1）。
          *
@@ -405,6 +562,53 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE `personas` ADD COLUMN `artImagePath` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        /**
+         * v18：备忘本去掉手填的 `markedAt` / `place`（v0.63.0 用户拍板"时间地点要自动标注"）。
+         *
+         * 自动能做到的只有"记下的那一刻"（`createdAt` 本来就有），地点那条路要定位权限 +
+         * 第三方逆地理编码 Key，用户确认后整个删掉。
+         * 删列只能**重建表**：SQLite 的 `ALTER TABLE DROP COLUMN` 要 3.35+，
+         * Android 自带的 SQLite 在低版本 API 上没这个能力，照写就是启动即崩。
+         * `memos` 是 v17 才建的新表，实际数据量≈0，重建代价可以忽略。
+         */
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `memos_new` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`content` TEXT NOT NULL, " +
+                        "`pinned` INTEGER NOT NULL DEFAULT 0, " +
+                        "`createdAt` INTEGER NOT NULL DEFAULT 0)"
+                )
+                db.execSQL(
+                    "INSERT INTO `memos_new` (`id`, `content`, `pinned`, `createdAt`) " +
+                        "SELECT `id`, `content`, `pinned`, `createdAt` FROM `memos`"
+                )
+                db.execSQL("DROP TABLE `memos`")
+                db.execSQL("ALTER TABLE `memos_new` RENAME TO `memos`")
+            }
+        }
+
+        /**
+         * v17：备忘本（v0.62.0）。全新表 `memos`，存量数据零影响。
+         *
+         * `markedAt` / `place` 都带默认值（0 / 空串 = 用户没标），
+         * 所以「只写一句话」这条最常用的路不需要任何占位字段。
+         */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `memos` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`content` TEXT NOT NULL, " +
+                        "`markedAt` INTEGER NOT NULL DEFAULT 0, " +
+                        "`place` TEXT NOT NULL DEFAULT '', " +
+                        "`pinned` INTEGER NOT NULL DEFAULT 0, " +
+                        "`createdAt` INTEGER NOT NULL DEFAULT 0)"
                 )
             }
         }
