@@ -66,7 +66,12 @@ object ScheduledMessageSender {
             ""
         }
 
-        val facts = runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList())
+        // v0.70.0：记忆按人设分开（这条定时消息是发给某个角色的，不是发给全体 AI）
+        val sharedReadable = runCatching { settings.profileSharedReadable.first() }.getOrDefault(true)
+        val facts = MemoryScope.visible(
+            runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList()),
+            persona.id, sharedReadable,
+        )
         val tasks = runCatching { db.taskDao().observeAll().first() }
             .getOrDefault(emptyList())
             .filter { !it.isDone }

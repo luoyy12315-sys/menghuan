@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">梦欢</string>
-    <!-- 底栏文案与设计基准 preview/all.html 对齐（消息 / 数据 / 任务 / 我的） -->
+    <!-- 底栏文案与设计基准 preview/all.html 对齐（消息 / 数据 / 动态 / 我的，v0.73.0 起第 3 格由「任务」换成「动态」） -->
     <string name="tab_chat">消息</string>
     <string name="tab_data">数据</string>
     <string name="tab_tasks">任务</string>
+    <string name="tab_moments">动态</string>
     <string name="tab_me">我的</string>
 </resources>

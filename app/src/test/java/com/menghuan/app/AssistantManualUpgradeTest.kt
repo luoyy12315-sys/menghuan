@@ -138,4 +138,45 @@ class AssistantManualUpgradeTest {
 
         assertEquals(current, assistantPrompt())
     }
+
+    /**
+     * **改过名字的内置助手**也要照常升级，且绝不多建一条（v0.68.0，全面验收查出的断链）。
+     *
+     * 老逻辑三处都写死 `getByName("应用助手")`：用户一旦给助手改名 ——
+     * ① 提示词页查不到 → 显示的是**出厂手册**而不是他那份；
+     * ② 点保存走 `?: Persona(…)` → **再建一条内置助手**，人设列表里出现两个；
+     * ③ 启动升级也按名字找 → 他那本手册**永远停在改名那一刻**。
+     * ③ 是最难发现的：不报错、不崩，界面一切正常，只是助手从此答旧话。
+     *
+     * 现在统一走 [com.menghuan.app.data.PersonaRepository.findAssistant]：
+     * 名字找不到就认"内置人设里身上还挂着内置手册形状的那一份"。
+     */
+    @Test
+    fun renamedAssistantStillUpgradesAndNeverDuplicates() = runBlocking {
+        val dao = app.db.personaDao()
+        val seeded = dao.getByName(ASSISTANT_PERSONA_NAME)
+            ?: error("setUp 的 ensureAssistant() 应当已经有一条内置助手")
+        val renamed = seeded.copy(name = "我的向导", systemPrompt = stockV038)
+        dao.upsert(renamed)
+        // **把场景做成确定的**：Robolectric 整轮共享同一个内存库，前面用例（尤其本类这条改名用例）
+        // 会让"按默认名字补种"再插一条进来。这里做出"库里只有改名这一条内置助手"的场景，
+        // 测的才是断链本身，而不是别人的残留。
+        dao.getBuiltIns().filter { it.id != renamed.id }.forEach { dao.deleteById(it.id) }
+
+        app.personaRepository.refreshAssistantPromptIfNeeded()
+
+        val found = app.personaRepository.findAssistant()
+        assertEquals("改过名也必须被找回来并升到当前版", current, found?.systemPrompt)
+        assertEquals("升的得是他那一本，不是按默认名字新建的那本", "我的向导", found?.name)
+
+        // ensureAssistant 同样不能因为名字对不上就补一条（它每启动都跑）
+        app.personaRepository.ensureAssistant()
+        assertEquals("不该按默认名字再建第二条内置助手", 1, dao.getBuiltIns().size)
+        assertNull("按默认名字查仍然查不到 —— 老逻辑正是断在这里", dao.getByName(ASSISTANT_PERSONA_NAME))
+
+        // 还原名字，别把"库里没有默认名助手"这个状态留给后面的用例（它们的 helper 按名字取 !!）。
+        // 用 if 而不是 `found?.let { … }` 收尾：后者会把表达式类型带成非 Unit，
+        // JUnit 于是报"Method … should be void"整个类跑不起来。
+        if (found != null) dao.upsert(found.copy(name = ASSISTANT_PERSONA_NAME))
+    }
 }

@@ -95,10 +95,11 @@ class ExtractionEngine(
         val reply = OpenAiClient(config.baseUrl, config.apiKey, config.model)
             .collectReply(ProfileExtractor.systemPrompt(strategy), listOf(ChatMessage(conversationId = 0, isFromUser = true, content = content)))
         sb.append(reply.text)
-        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model) }
+        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model,
+            reply.promptTokens, reply.cachedPromptTokens) }
 
         val extracted = ProfileExtractor.parse(sb.toString())
-        val (newFacts, updatedFacts) = mergeFacts(extracted.facts)
+        val (newFacts, updatedFacts) = mergeFacts(extracted.facts, personaId)
         val newInsights = saveInsights(extracted.insights)
         val newSuggestions = saveSuggestions(personaId, extracted.taskSuggestions)
         // 水位线推进到最后一条已处理消息；即便模型这次没产出，也不重复送同一段
@@ -142,12 +143,19 @@ class ExtractionEngine(
         }
     }
 
-    /** @return 新增数 to 更新数 */
-    private suspend fun mergeFacts(facts: List<Pair<String, String>>): Pair<Int, Int> {
+    /**
+     * @return 新增数 to 更新数
+     *
+     * v0.70.0：**同名判据带上 personaId**。以前 `getByKey(key)` 是全表找，
+     * A 角色聊出的"口味=辣"会直接把 B 角色那条同名记忆改掉 ——
+     * 记忆分开之后同名条目在不同角色下必须各算一条，否则"分开"只是表面。
+     * 用户手填的基础档案（personaId = 0）也不该被某个角色的提炼结果覆盖，所以这里只找本角色的。
+     */
+    private suspend fun mergeFacts(facts: List<Pair<String, String>>, personaId: Long): Pair<Int, Int> {
         var newCount = 0
         var updatedCount = 0
         facts.forEach { (key, value) ->
-            val existing = db.profileFactDao().getByKey(key)
+            val existing = db.profileFactDao().findScoped(key, personaId)
             db.profileFactDao().upsert(
                 ProfileFact(
                     id = existing?.id ?: 0,
@@ -156,6 +164,11 @@ class ExtractionEngine(
                     // 用户手填的条目保持 manual 标记（值可被 AI 刷新，但来源语义不篡改）
                     source = if (existing?.source == "manual") "manual" else "ai",
                     updatedAt = System.currentTimeMillis(),
+                    // 提炼产出**永远归到当前这个角色名下**；personaId = 0 那一档只有用户自己在
+                    // 「基础档案」页里填的才进得去（否则"按人设分开"会被这条写入路径悄悄打穿）
+                    personaId = personaId,
+                    lifecycle = existing?.lifecycle ?: "active",
+                    category = existing?.category ?: "",
                 )
             )
             if (existing == null) newCount++ else updatedCount++

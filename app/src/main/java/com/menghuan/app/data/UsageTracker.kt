@@ -93,13 +93,45 @@ object UsageTracker {
         }
     }
 
-    /** 记一笔：跨月自动重置（月键不匹配即清零重计） */
-    suspend fun add(settingsRepository: SettingsRepository, tokens: Int, model: String = "") {
-        if (tokens <= 0) return
+    /**
+     * 缓存命中率（纯函数，JVM 单测口径）：命中 ÷ 输入；**输入为 0 返回 null**。
+     *
+     * ⚠️ null 的含义是"没有读数"（服务商没回 usage），**不是 0%**。
+     * 把"没有读数"画成 0% 会推着用户去改一个本来就对的前缀——这条在 v0.69.0 定口径时就为这个吵过。
+     */
+    fun cacheHitRate(promptTokens: Int, cachedTokens: Int): Double? {
+        if (promptTokens <= 0) return null
+        val hit = cachedTokens.coerceAtLeast(0).toDouble() / promptTokens
+        return hit.coerceIn(0.0, 1.0)
+    }
+
+    /** 命中率的一行读数（配合 [cacheHitRate] 的 null 口径：没读数就明说，不编百分比） */
+    fun cacheHitLabel(promptTokens: Int, cachedTokens: Int): String {
+        val rate = cacheHitRate(promptTokens, cachedTokens)
+            ?: return "缓存命中：服务商未返回用量"
+        // `kotlin.math.roundToInt` 是扩展函数、不是顶层函数，写成 roundToInt(x) 编译不过（本轮真挂过一次）
+        return "缓存命中 " + formatTokens(cachedTokens) + " / " + formatTokens(promptTokens) +
+            " tokens（" + kotlin.math.round(rate * 100).toInt() + "%）"
+    }
+
+    /**
+     * 记一笔：跨月自动重置（月键不匹配即清零重计）。
+     *
+     * v0.69.0 起顺带记**输入**与其中**缓存命中**两个数：`tokens` 为 0 但带了 prompt/cached
+     * 也照样记（有些兼容网关只回这两项），三者全 0 才跳过。
+     */
+    suspend fun add(
+        settingsRepository: SettingsRepository,
+        tokens: Int,
+        model: String = "",
+        promptTokens: Int = 0,
+        cachedTokens: Int = 0,
+    ) {
+        if (tokens <= 0 && promptTokens <= 0 && cachedTokens <= 0) return
         val month = monthKey()
-        settingsRepository.addUsageTokens(month, tokens)
+        settingsRepository.addUsageTokens(month, tokens, promptTokens, cachedTokens)
         // v0.56.7：同时记到**这个模型自己**的账上（用户要求"按每个模型分别算各自的用量"）。
         // 调用点都拿得到 ApiConfig.model；拿不到时落到"（未填模型）"这一桶，不丢数。
-        settingsRepository.addUsageTokensForModel(month, model, tokens)
+        if (tokens > 0) settingsRepository.addUsageTokensForModel(month, model, tokens)
     }
 }

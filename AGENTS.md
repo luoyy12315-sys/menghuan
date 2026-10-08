@@ -138,10 +138,19 @@
      只要用户没亲手改过助手的设定词，启动时一律刷成最新 `DEFAULT_ASSISTANT_PROMPT`
      （`PersonaRepository.refreshAssistantPromptIfNeeded` + DataStore 三态标记
      `assistant_prompt_customized`；用户在提示词页/人设编辑里存过自定义内容 = 改过 = 从此不覆盖，
-     点「全部恢复默认」则重新纳管）。旧做法是"库里这段是否**精确等于**某个历史默认文案"，
+     在提示词页把「应用助手提示词」那一格点「恢复」再「保存」则重新纳管 —— v0.54.4 起页面上
+     **没有**全局的「全部恢复默认」按钮了，恢复是**分段**的）。旧做法是"库里这段是否**精确等于**某个历史默认文案"，
      而每版都是在原地追加 replace、中间态从未登记，于是 v0.41~v0.50 之间升过级的用户再也匹配不上，
      手册永久卡死——v0.50.0 写了整章语音配置教程，真机上助手依然答不上"语音怎么配"，
      就是这个机制漏的（回归测试：`AssistantManualUpgradeTest`）。
+   - **找内置「应用助手」只许走 `PersonaRepository.findAssistant()`（v0.68.0 立的规定）。**
+     以前三处（提示词页读取、提示词页保存、启动升级）都写死 `getByName("应用助手")`，
+     而人设编辑器**不锁名字**：用户一改名就同时坏三件事 —— 提示词页显示出厂手册、
+     保存时 `?: Persona(…)` **多建一条内置助手**、启动升级再也找不到他那本（**手册从此停在改名那一刻，
+     不报错不崩，只是永远答旧话** —— 正是 §零.5 要防的那一类静默失效）。
+     `findAssistant()` 先按名字找，找不到就认"内置人设里身上还挂着内置手册形状的那一份"；
+     同时编辑页对内置助手的**名字那一格锁死**（`NeuTextField` 的只读分支）。
+     新增任何"找助手"的代码不要再自己写 `getByName`。
    - 涉及**外部服务配置**的功能（语音合成、生图、LLM 接口），手册必须写清"去哪家官网、拿什么、
      填到哪一步"，给出可点击的官方地址，不能只说"去设置里看看"。用户问"语音怎么配置"时
      要能直接引导到 `cloud.siliconflow.cn` 注册拿 Key 的完整步骤。
@@ -340,6 +349,62 @@
      **不是 `NeuAccent`**（浅色下纯黑，用户说"黑点不像未读"），也**不是 `NeuDanger`**
      （那个色在全 App 是"删除/危险"语义，拿来当未读会让人以为出了事）。
 
+10. **动态（v0.73.0，推特式时间线）+ 备忘本下线 + 任务页搬家，以下六条不许回退。**
+    - **一张表装两种行**：`moments`（Room **v21**）里 `parentId = 0` 是帖子、非 0 是回复，**只有这一层**
+      （回复的回复也挂同一个 parentId —— 推特本人就这样，三层以上会把 UI 拖成楼中楼套娃）。
+      点赞不另建表：`likedBy` 是逗号分隔的 id 串（用户固定 `u`）。
+      排序 / 条数 / 相对时间 / 字数收口**只在 `data/MomentMath` 这一处**（纯函数 + 单测），
+      页面不许自己排第二遍 —— 否则「列表说 3 条、点进去 2 条」就是这么来的。
+    - **AI 侧走标记协议**（`data/MomentMarker`，同 `[生图:…]` / `<add:…>` 一族，§五.4.2）：
+      `[动态:内容]` 发新帖、`[动态#id:内容]` 回帖。三条硬口径：
+      **标记必须剥干净**（漏进正文 = 把内部协议漏给用户）；**回帖先验 id**（模型会编一个不存在的编号，
+      那种回复指向空气，直接丢弃并写日志）；**AI 只有 insert**，不许给她 update/delete 用户发的东西。
+      一轮最多落 2 条（时间线是公共空间，防刷屏）。
+    - **可回编号的清单走易变上下文，不走 system prompt**（§零.9）：`ChatViewModel.momentFeedBlock()`
+      贴到最后一条用户消息上；**协议说明本身是固定文字**，才留在 system prompt（`MomentMarker.promptSection()`）。
+      ⚠️ 名单进前缀 = 每轮作废缓存；而**空名单必须返回空串**，塞一个空标题会让模型以为有事可做、然后编编号。
+    - **三态**：`loaded` 从同一条 `combine` 派生（照会话列表 v0.43.1 的教训），
+      **绝不另开一条 `observeAll().first()` 探测协程**（Room 查询线程争抢 + runTest 挂住），
+      也绝不在没加载完时显示「发第一条动态」—— 那个冷启动先闪引导的 bug 本项目修过一次。
+    - **任务页已经不在底栏**：底栏第 3 格是「动态」，任务页是全屏路由 `tasks`，
+      入口在**数据页那张同款卡**（`tasks_entry_row`，形状照 `LedgerEntryCard`，卡面不显示任何条目）。
+      `menghuan://open/tasks`（小组件 + 三处任务提醒通知都发它）挂在**任务页自己的 deep link** 上 ——
+      0 个参数的模式比 home 的 `open/{page}` 更具体，Navigation 选它。**不要再往 home 那张表里加回 `tasks`**，
+      那样点提醒通知会落到动态页。
+    - **备忘本整块下线、且不迁数据**（用户拍板）：`ui/memo/`、`MemoEntry` / `MemoMath` / `MemoDao` 全删，
+      `MIGRATION_20_21` 直接 `DROP TABLE memos`。手册里那三段备忘说明**一句不许留**，
+      并且要明说「这是产品决定，不是 App 坏了」——用户会问「我以前的备忘呢」。
+      ⚠️ `AiPromptsTest` 的 `v0620 备忘本` / `v0650 备忘本入口卡` 两条里那些备忘断言**已经翻成 `assertFalse`**，
+      **别改回 `assertTrue`**（改回去就是把手册拖回旧形状）。
+    - ⚠️ **删实体那一刀的刀口**：这次删 `MemoEntry` 顺手切掉了隔壁的 `DailySuggestion`，
+      而症状只是最外层一句 `[ksp] [MissingType]: Element AppDatabase references a type that is not present` ——
+      Room 不告诉你是哪个实体没了。**删完必须按 `@Database(entities = […])` 那一列逐个 grep 类名回来**。
+9. **上下文成本纪律（v0.69.0 立，改 prompt 组装前必读）。**
+   服务商的隐式前缀缓存按"请求开头逐字节相同"计费提速，所以**每轮都变的内容一律不许进 system prompt**。
+   - 唯一的动态注入位是 **最后一条用户消息**（`data/RuntimeContext.kt` + `OpenAiClient.RUNTIME_CONTEXT_MARK`）：
+     当前时间、会话联网结果、以后的记忆检索结果与环境感知**都从这里加**。
+     为什么不另发一条 system：各家兼容端点对 system 能出现在什么位置、能不能连续两条 user **都不保证**，
+     与 §五.4.2"不猜 `tools` 字段"同一条纪律。
+   - 判"前缀到底稳不稳"只有一个读数：`usage` 里的 **cached_tokens**（`parseUsage` 认三种方言，
+     全 0 返回 null —— **拿不到的不猜**）。把"没有读数"画成 0% 会推着用户去改一个本来就对的东西。
+   - **打断路径必须收口**：通话被 barge-in 掐掉后，下一次请求要在最后一条 AI 轮尾巴补
+     "……（被用户打断了）"，否则模型以为自己整段说完了、接着讲那段没人听见的内容。
+     ⚠️ 只在**请求副本**上补，**不写进 `turns`**（那批整条进通话记录，写了等于伪造用户说过的话）。
+   - **`<add:内容>` 的新条目落 `staging`（待入库），要用户在「TA 的记忆」页点头才生效**（v0.71.0）。
+     次序**必须是先有审批页、再切暂存**：`MemoryScope.visible` 不注入 staging，
+     没有入口的暂存区等于做一个**用户看不见的死功能**（屏幕上说"我记住了"，那行数据永远不进 prompt）。
+     已在库的 `active` / `core` / `archived` **不许降级回待审**；被 `rejected` 过的句子永久不再写回；
+     `rejected` 行不跟着角色删、不给一键清空（删了就等于允许它再记一遍）。
+     会话设置那一行要带「N 条待确认」计数，否则没人会点进去。
+   - **新参数不许加在 suspend lambda 之后**（v0.69.0 真实挂过一次）：调用点普遍用尾随 lambda 传
+     `imageDataUrl`，而尾随 lambda 永远绑**最后一个**参数 —— 加在后面等于把回调悄悄换成一个 String。
+     `chat / collectReply / streamEvents / buildMessagesJson` 四处固定同序：
+     `systemPrompt, history, runtimeContext, imageDataUrl`。
+   - ⚠️ 仓库里长期挂着 **5** 个红测试（v0.73.0 全量跑数出来的，都不是那一批改坏的）：
+     `AiCallLogicTest` 钟点顺延 / `TaskActionsToggleTest` 勾选回退 / `TtsConfigTest` 自定义音色名单 /
+     `UiRenderTest.render19LedgerPage`（等"636.20"超时）/ `UiRenderTest.render28TtsConfigScreen`（等"硅基流动"超时）。
+     后两条已用 HEAD（v0.67.0）独立 worktree 单独复跑，**一样红**。     **别把它们当成自己改坏的线索**，也别顺手"改绿"（要修单独发话）。
+
 
 ## 一、项目是什么
 
@@ -358,7 +423,7 @@
 | ------- | ---------------------------------------------------------------- |
 | 语言 / UI | Kotlin + Jetpack Compose（Material 3）                             |
 | 架构      | MVVM + Repository，手动依赖容器（`MentorApp`），无 Hilt                     |
-| 本地库     | Room（personas / messages / tasks / profile_facts）+ DataStore（规划） |
+| 本地库     | Room（personas / messages / tasks / profile_facts / moments）+ DataStore |
 | 网络      | OkHttp + SSE（OpenAI 兼容协议，`llm/OpenAiClient.kt`）                  |
 | 构建      | Gradle Kotlin DSL，AGP 8.7.3，Kotlin 2.0.21，minSdk 26，targetSdk 35 |
 
@@ -374,7 +439,7 @@
 │   ├── MentorApp.kt             # Application + 服务容器（db / persona / profile / settings 仓库 / extractionEngine / weeklyReportGenerator）
 │   ├── data/
 │   │   ├── model/Models.kt      # Persona(含 tone/pinned/avatarImagePath) / ToneStyle / ChatMessage(含 imagePath) / TaskItem / ProfileFact / AiInsight / AiWeeklyReport
-│   │   ├── db/AppDatabase.kt    # Room v12 + 正式 Migration（9 DAO；v9 avatarImagePath/imagePath、v11 messages.reasoning、v12 ledger_entries/daily_suggestions；schema 导出到 app/schemas，禁破坏性重建）
+│   │   ├── db/AppDatabase.kt    # Room **v21** + 正式 Migration（14 DAO；v15 videoVisualType、v16 artImagePath、v17 memos、v19 live2d_actions、v20 profile_facts 按人设分列、**v21 moments 建表 + DROP memos**；schema 导出到 app/schemas，禁破坏性重建）
 │   │   ├── ExtractionEngine.kt  # AI 提炼流水线（水位线增量 + 近 7 天任务上下文 → LLM → facts/insights/taskSuggestions 落库/分发）
 │   │   ├── WeeklyReportGenerator.kt # AI 周报（WeeklyReportMath 纯函数：周区间/统计聚合/prompt/宽容解析 + LLM 生成落库，同周覆盖）
 │   │   ├── ProfileExtractor.kt  # 提炼 prompt + 宽容 JSON 解析（facts/insights/taskSuggestions，纯函数，JVM 单测）
@@ -419,12 +484,13 @@
 │       ├── ledger/              # 记账本（v0.42.0 建，v0.42.1 加周度统计）：LedgerScreen 全屏页（月/周可切统计卡）+ LedgerComponents 记一笔弹层/流水行 + LedgerInput 语音与解析
 │       ├── profile/MeScreen.kt  # 「我的」页（第 4 tab：人设管理/基础档案/AI 图库/AI 提示词/设置 五张行卡 + MeViewModel；
 │       │                        #   v0.51.0 起五张卡全部跳全屏页，档案编辑与 AI 图库也在这里定义成 ProfileScreen / GalleryScreen）
-│       ├── tasks/TasksScreen.kt # 任务页（分组卡片/勾选打卡/长按删除 + TasksViewModel）
+│       ├── moment/              # 动态（v0.73.0，推特式）：MomentsScreen（时间线 + 帖子详情页 + 发帖弹层）+ MomentsViewModel + MomentFeed
+│       ├── tasks/TasksScreen.kt # 任务页（分组卡片/勾选打卡/长按删除 + TasksViewModel；**v0.73.0 起不在底栏**，是全屏路由 `tasks`，入口在数据页那张卡）
 │       ├── common/MarkdownText.kt # AI 气泡轻量 Markdown（粗体/行内码/列表/标题/代码栅栏）
 │       ├── settings/SettingsScreen.kt  # 设置主页（v0.51.0 起「我的」这条线全部是全屏页 + NavHost 路由，不再是弹层）
 │       ├── settings/SettingsPage.kt    # 设置链全屏页统一骨架（顶栏返回 + 可滚动 + 版心收窄）+ SettingsRoutes 路由名表
 │       ├── settings/SettingsScreens.kt # 外观 / 通知与提醒 / 数据与隐私 / 语音 / 关于 五个设置页
-│       ├── settings/ApiConfigScreen.kt + PromptSettingsScreen.kt（AI 提示词八段）+ TtsConfigScreen.kt + AsrModelScreen.kt
+│       ├── settings/ApiConfigScreen.kt + PromptSettingsScreen.kt（AI 提示词九段，v0.68.0 补每日建议）+ TtsConfigScreen.kt + AsrModelScreen.kt
 ```
 
 ## 四、设计系统（Figma 风，2026-09-28 用户拍板）
@@ -477,11 +543,14 @@
   长按时补一次 `HapticFeedbackType.LongPress` 震动反馈。
 - ~~长按头像 = 对话风格面板~~（对话风格 v0.32.0 整体取消：tone UI/切换/注入全删，personas.tone 列保留不用）
   - v0.35.0 起 **长按头像 = 切换当前生效的 AI 接口**（多接口配置，`ChatComponents.ApiSwitchSheet`）
-- **搜索框只出现在会话列表顶部**（v0.35.0）：`atTop` 时顶栏下方显示凹陷搜索行；  
-  一旦上滑离开顶部就收起、换成顶栏右侧的放大镜图标（**图标不带圆圈**，用户明确要求）
+- ~~**搜索框只出现在会话列表顶部**（v0.35.0）：`atTop` 时顶栏下方显示凹陷搜索行；  
+  一旦上滑离开顶部就收起、换成顶栏右侧的放大镜图标~~ —— **v0.56.8 第二批整条作废**：
+  用户点名"消息页不要搜索，顶栏放大镜也不要"，输入框 / 结果流 / `runSearch` 全链路已删
+  （`ChatListScreen` 里那条注释是准的）。**别再往消息页加搜索**；设置页那边的搜索不受影响。
 - 人设管理 / 基础档案 / AI 提示词 / 设置（含外观）入口**只在「我的」页**；
-  （v0.45.0：AI 提示词从设置面板提出来、单独成一级行卡；设置面板里不再放人设管理，避免与「我的」页重复）  
-  会话列表顶栏只留标题与搜索图标，不放任何其它图标按钮
+  （v0.45.0：AI 提示词从设置面板提出来、单独成一级行卡；设置面板里不再放人设管理，避免与「我的」页重复；
+  v0.54.x 起「AI 提示词」再搬进 **设置 → 提示词库**，「我的」页那一行已取消）  
+  会话列表顶栏只留标题，不放任何其它图标按钮
   - **人设管理每张卡：点卡片本体 = 编辑，点右端那颗 `ChatBubble` = 进 TA 的会话**（v0.60.1）。
     那颗图标**不是装饰**（原来是 18dp 的 `FaintText` 箭头）：40dp 命中区 + 21dp 图标 + `TextSecondary`。
     它是被「删除会话」`setHidden` 隐藏的会话**唯一的找回路** —— 列表按 `hidden && 无消息` 过滤，
@@ -524,7 +593,7 @@
   隐藏底栏页面的手势条避让由 AdaptiveScreen 的 navigationBarsPadding 补足。
 - 底部导航**不要**用 Material `NavigationBar`，用 `MainActivity` 里的 `HomeBottomBar`
   （白色浮起药丸 + 黑色弹簧滑移选中胶囊 + 22dp 图标 + 9.5sp 标签，选中项图标翻白）。
-- 顶级四 tab = `HorizontalPager`（消息/数据/任务/我的，可横滑，beyondViewportPageCount 保 4 页存活不丢滚动位置），
+- 顶级四 tab = `HorizontalPager`（消息/数据/动态/我的，可横滑，beyondViewportPageCount 保 4 页存活不丢滚动位置），
   底栏胶囊与 Pager 双向联动；单聊/人设管理不参与滑动（不在 Pager 里）。
 - 宽度判源唯一：`calculateWindowSizeClass` → `LocalWindowWidthClass`（`ui/common/AdaptiveScreen.kt`），
   != Compact 即 >=600dp；不要另立 600dp 判断。
@@ -551,7 +620,7 @@
 - 手机点会话 → push 滑入**单聊页**（左上 ← 返回退出）；平板双栏模式右栏内嵌单聊（无返回键，点行切换）；**每个 persona 的会话消息完全独立**
 - 单聊输入栏三颗按钮：清单=快捷打卡、图片=**发图给 AI 看**（vision，v0.38.0；以当前输入为字幕立即发出）、纸飞机=发送；顶栏放大镜无圆圈；**长按顶栏头像 = 切换 AI 接口**
   （~~笑脸=表情包面板~~ 已于 v0.35.1 取消：emoji 需求作废，`EmojiPack` 整个删除）
-- 底部 tab：消息 / 数据 / 任务 / 我的，Pager 横滑 + 底栏胶囊弹簧联动
+- 底部 tab：消息 / 数据 / 动态 / 我的（v0.73.0：第 3 格原来是「任务」，任务已搬进数据页），Pager 横滑 + 底栏胶囊弹簧联动
 - **键盘弹起时列表要跟着滚（v0.45.1）**：聊天页是 `Column`=[顶栏]+[列表 `weight(1f)`]+[输入栏]，
   键盘一弹输入栏被顶高、列表视口变矮，而 `LazyColumn` **不会自动保持贴底** → 最新一条被挤出屏幕外。
   `ChatScreen` 里监听视口高度，**只在视口收缩且收缩前本来贴底**时按收缩量 `scrollBy` 跟随到底

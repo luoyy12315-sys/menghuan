@@ -197,8 +197,9 @@ class AiPromptsTest {
     @Test
     fun `v0536b 对话页菜单进手册`() {
         // v0.54.4：点三个点改成开**整页**会话设置（措辞见 v0544），这里只留仍成立的两条
-        // 「聊天背景只存不显」在 v0.54.7 被改成「角色立绘 / Live 2D 仍是只存不显」（见 v0547）
-        assertTrue(manual.contains("**角色立绘 / Live 2D 仍是只存不显**"))
+        // v0.68.0：这条旧事实已经作废 —— 立绘挪到编辑人设页当生图参考图、通话形象配了真的显示。
+        // 旧措辞必须整句消失（留着就是助手在答旧话），新措辞由 `v0680 …` 那条断言。
+        assertFalse(manual.contains("**角色立绘 / Live 2D 仍是只存不显**"))
         assertTrue(manual.contains("联网**打开后"))
         assertTrue(manual.contains("音色不在这里（改到对话页右上角菜单 → 音色里选）"))
     }
@@ -507,8 +508,11 @@ class AiPromptsTest {
         assertFalse(manual.contains("弹层里三样 —— ① 开关「允许主动打电话」；"))
         assertFalse(manual.contains("② **什么时候打过来**（时间表盘直接拨，默认 21:00，不用自己输）"))
         assertFalse(manual.contains("（时间表盘直接拨"))
-        // ② 聊天背景：二选一 + 真正生效（角色立绘 / Live 2D 仍只存不显）
-        assertTrue(manual.contains("其中**角色立绘 / Live 2D 仍是只存不显**"))
+        // ② 聊天背景：二选一 + 真正生效。
+        //    ⚠️ 同批的「角色立绘 / Live 2D 仍是只存不显」到 v0.68.0 已作废（整句必须消失）；
+        //    「③ 音色」这种带圈序号的写法也别往手册里加 —— 会与更早那条
+        //    `assertFalse(manual.contains("③ 音色"))`（设置主页旧分组措辞的守卫）撞车。
+        assertFalse(manual.contains("其中**角色立绘 / Live 2D 仍是只存不显**"))
         assertTrue(manual.contains("**聊天背景已经能用**：点它会从底部弹出两个选项 ——「原生背景」与「自定义」"))
         assertTrue(manual.contains("选完**这个角色的聊天页就会铺上这张图**"))
         assertFalse(manual.contains("**角色立绘 / Live 2D / 聊天背景现在只存不显**"))
@@ -572,9 +576,10 @@ class AiPromptsTest {
         assertTrue(manual.contains("https://mimo.mi.com/docs/zh-CN/api/audio/tts"))
         assertTrue(manual.contains("实名认证"))
         assertTrue(manual.contains("【语音条】"))
-        // 提示词段数跟着改了
-        assertTrue(manual.contains("八段提示词都可编辑"))
+        // 提示词段数跟着改了（v0.68.0 补每日建议：八段 → 九段）
+        assertTrue(manual.contains("九段提示词都可编辑"))
         assertFalse(manual.contains("七段提示词都可编辑"))
+        assertFalse(manual.contains("八段提示词都可编辑"))
         assertTrue(manual.contains("AI 语音条策略"))
     }
 
@@ -888,20 +893,22 @@ class AiPromptsTest {
      */
     @Test
     fun `v0620 备忘本 进手册`() {
-        assertTrue(manual.contains("**备忘本**（v0.62.0 建，v0.63.0 定形）"))
-        assertTrue(manual.contains("**没有弹窗、也没有要填的表单**"))
-        assertTrue(manual.contains("时间**自动记成你按下回车的那一刻**"))
-        assertTrue(manual.contains("**没有地点这一项**"))
-        assertTrue(manual.contains("AI 平时**读不到**你的备忘"))
-        // v0.63.0 记账本流水长按编辑（同一段 replace 里补的，锚点句丢了就是整段没换上）
+        // ⚠️ v0.73.0：备忘本整块下线。这一格改成「任务」入口，手册里那段备忘的用法说明
+        // **必须一句不剩** —— 留着就是让助手教用户用一个已经不存在的模块（§零.5 同一件事）。
+        // 这一版的断言因此全部翻成 assertFalse；新写法的正向断言在 `v0_73_0 手册写明动态与备忘下线`。
+        assertFalse(manual.contains("**备忘本**（v0.62.0 建，v0.63.0 定形）"))
+        assertFalse(manual.contains("**没有弹窗、也没有要填的表单**"))
+        assertFalse(manual.contains("时间**自动记成你按下回车的那一刻**"))
+        assertFalse(manual.contains("**没有地点这一项**"))
+        assertFalse(manual.contains("AI 平时**读不到**你的备忘"))
+        // v0.63.0 记账本流水长按编辑（同一段 replace 里补的，锚点句丢了就是整段没换上）：
+        // 这一句在备忘段落**之后**，v0.73.0 换段落时特意留在锚点之外，必须还在
         assertTrue(manual.contains("「编辑这笔」改收支方向/金额/备注"))
         // 旧形状必须整段消失
         assertFalse(manual.contains("一条备忘 = 正文 + 可标的时间 + 可标的地点 + 可置顶"))
         assertFalse(manual.contains("点某条 = 打开编辑"))
         assertFalse(manual.contains("卡片只显示最近 3 条"))
         assertFalse(manual.contains("**标了时间不会到点提醒**"))
-        // ⚠️ v0.65.0 又改了形态（数据页那张卡不再打字、条目改成一张张卡片）：
-        // 那几句旧措辞的 assertFalse 在 `v0650 备忘本入口卡与通话台透明与背景两档 进手册` 里，别搬回来。
     }
 
     /**
@@ -999,11 +1006,11 @@ class AiPromptsTest {
      */
     @Test
     fun `v0650 备忘本入口卡与通话台透明与背景两档 进手册`() {
-        // ① 备忘本：数据页只剩入口卡，打字与条目都在全屏页
-        assertTrue(manual.contains("**一样大小**、**表面不显示任何内容**（不摊条目、不写条数），**点卡片本体才进全屏页**"))
-        assertTrue(manual.contains("下面**一条备忘一张卡片**"))
-        assertTrue(manual.contains("进页面时卡片**逐条错峰展开**"))
-        assertTrue(manual.contains("**点某张备忘卡 = 那张卡原地变成可编辑的文字**"))
+        // ① 备忘本（v0.65.0 形状）—— v0.73.0 整个模块下线，这段说明一句都不许剩
+        assertFalse(manual.contains("**一样大小**、**表面不显示任何内容**（不摊条目、不写条数），**点卡片本体才进全屏页**"))
+        assertFalse(manual.contains("下面**一条备忘一张卡片**"))
+        assertFalse(manual.contains("进页面时卡片**逐条错峰展开**"))
+        assertFalse(manual.contains("**点某张备忘卡 = 那张卡原地变成可编辑的文字**"))
         assertFalse(manual.contains("点卡里那行「记点什么…」**就在卡里直接打字**"))
         assertFalse(manual.contains("卡片上**只显示一条**（有置顶就显示置顶那条，没有就显示最新那条）"))
         assertFalse(manual.contains("**点某条备忘 = 那一行原地变成可编辑的文字**"))
@@ -1071,5 +1078,147 @@ class AiPromptsTest {
         assertTrue(manual.contains("**切动作不再弹回原位**"))
         assertTrue(manual.contains("**翻跟斗绕的是角色自己**"))
         assertTrue(manual.contains("**画面封顶 60 帧**"))
+    }
+
+    /**
+     * v0.68.0（全面验收查出四类滞后）：数据页真实顺序 + 今日建议整块缺失、
+     * 会话设置那几行还停在 v0.54 且把"立绘 / Live 2D 只存不显"说死、
+     * 提示词库段数（八→九）、平板双栏从来没写过。
+     *
+     * **四条全部配成对**（新措辞在 + 旧措辞不在）：这一类的失败形状是"replace 静默落空"
+     * ——不报错、不崩、页面上什么都正常，只有助手在答旧话（AGENTS §零.5）。
+     */
+    @Test
+    fun `v0680 数据页今日建议 会话设置行名 九段提示词 平板双栏 进手册`() {
+        // ① 数据页：v0.42.0 起的真实五块 + 今日建议这条独立链路
+        assertTrue(manual.contains("从上往下是**五块**（v0.42.0 大改版后用户指定的顺序"))
+        assertTrue(manual.contains("② **今日建议**：AI 每天**早上 07:30 自动出一条**"))
+        assertTrue(manual.contains("它和「AI 建议」是**两回事**"))
+        assertTrue(manual.contains("设置 → 提示词库 → 每日建议策略"))
+        assertFalse(manual.contains("2. 数据：顶部一张「本周卡」合并展示"))
+        // ② 会话设置：行名跟着 v0.58.1 / v0.64 / v0.66 的结构走，"只存不显"必须作废
+        assertTrue(manual.contains("**视频通话形象**、**通话背景**、**角色空间**、**通话动作**"))
+        assertTrue(manual.contains("「角色立绘 / Live 2D 只存不显」这句话已经作废"))
+        assertTrue(manual.contains("整页是五组平铺"))
+        assertFalse(manual.contains("仍是只存不显"))
+        assertFalse(manual.contains("）、角色立绘、Live 2D、聊天背景、联网（开/关）、音色、模型、"))
+        // ③ 提示词库：八段 → 九段，框架段数五 → 六
+        assertTrue(manual.contains("**九段提示词都可编辑**"))
+        assertTrue(manual.contains("每日建议策略**（v0.68.0 补上"))
+        assertTrue(manual.contains("后六段的**输出格式框架由代码硬编码不可改**"))
+        assertFalse(manual.contains("**八段提示词都可编辑**"))
+        assertFalse(manual.contains("后五段的**输出格式框架"))
+        // ④ 平板 / 折叠屏：双栏与版心是自动的，没有开关
+        assertTrue(manual.contains("⚠️ **平板 / 折叠屏 / 大屏**"))
+        assertTrue(manual.contains("**点左边一行是切换右边，不是 push 新页面**"))
+        assertTrue(manual.contains("内容宽度**封顶 840dp**"))
+    }
+
+    /**
+     * v0.69.0：P0 那几条改动进手册。
+     *
+     * ⚠️ 这批全是"**在既有句子上追加**"的改动，多数没有"旧措辞"可以 assertFalse，
+     * 所以配对的另一半用**只出现一次**的计数断言 ——
+     * `.replace()` 的锚点若被别处复用，同一句会被追加两遍；锚点落空则一句都不出现。
+     * 两种失效都是静默的、都不报错，只能这样钉（§零.5 立这条规矩的原因就在这）。
+     */
+    @Test
+    fun `v0_69_0 手册补上打断收口_时间_语气读数_自换表情_缓存读数`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        // ① 打断收口：这条有真旧措辞，可以按老规矩成对钉
+        assertTrue(manual.contains("打断后 TA 知道自己是被打断的"))
+        assertFalse("旧句子形状必须已被改写", manual.contains("插话打断。入口恒显示"))
+        // ② 每轮带日期时间星期
+        assertTrue(manual.contains("现在的日期、时间与星期"))
+        assertEquals(1, Regex("现在的日期、时间与星期").findAll(manual).count())
+        // ③ 通话里的语气读数（含"不进屏幕、不进记录"这两条边界）
+        assertTrue(manual.contains("听出用户的语气"))
+        assertTrue(manual.contains("不会显示在屏幕上"))
+        assertEquals(1, Regex("听出用户的语气").findAll(manual).count())
+        // ④ Live2D 自己换表情，并说清候选是从模型包里扫出来的；伪视频要撇清
+        assertTrue("表情段锚点落空了", manual.contains("TA 会在通话里自己换表情"))
+        assertTrue(manual.contains("从你这个模型包里扫出来的"))
+        assertTrue(manual.contains("只有伪视频形象时没有这一条"))
+        // ⑤ 缓存命中读数：没有读数不等于坏了
+        assertTrue("缓存读数那句锚点落空了", manual.contains("服务商未返回用量"))
+        assertEquals(1, Regex("服务商未返回用量").findAll(manual).count())
+    }
+
+    /**
+     * v0.70.0：记忆按人设分开之后，手册必须解释「TA 怎么不记得我说过的话了」。
+     * 这一条同时钉住新加的开关入口（基础档案页那行「全部 AI 可读」）与它的默认值。
+     */
+    @Test
+    fun `v0_70_0 手册说明记忆分角色_并给出全部AI可读开关`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        assertTrue("分角色这件事没写进手册", manual.contains("记忆是分角色的"))
+        assertTrue("开关没写进手册", manual.contains("全部 AI 可读"))
+        // AI 会自己记、也会自己想起：用户问「你怎么知道我不吃香菜」时必须答得上来
+        assertTrue("记忆行为没写进手册", manual.contains("主动想起"))
+        assertTrue(manual.contains("值得长期记住"))
+        // 这条是接在上一条的产出句子后面的，重复应用一次就会多出一整段
+        assertEquals(1, Regex("读不到基础档案了").findAll(manual).count())
+        // 默认值必须写明白：用户升级完如果发现每个角色都不认识自己，第一反应是"坏了"
+        assertTrue(manual.contains("默认开着"))
+        assertEquals(1, Regex("全部 AI 可读").findAll(manual).count())
+        assertEquals(1, Regex("记忆是分角色的").findAll(manual).count())
+    }
+
+    /**
+     * v0.71.0：「TA 的记忆」页要问得出来。
+     * 钉的是**入口路径 + 四段的名字**（用户照着念给助手听的就是这几个词），
+     * 以及那条"复用前面产出句子当锚点"的写法没有被应用两次。
+     */
+    @Test
+    fun `v0_71_0 手册写明记忆页入口与四段`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        assertTrue("入口路径没进手册", manual.contains("会话设置 →「TA 的记忆」"))
+        assertTrue(manual.contains("N 条待确认"))
+        assertTrue(manual.contains("**待入库**"))
+        assertTrue(manual.contains("**已忽略**"))
+        // 「不生效但保留」这句是防用户以为"已忽略"该能一键清空的误解
+        assertTrue(manual.contains("不再生效但保留"))
+        assertEquals(1, Regex("换角色就是另一份记忆").findAll(manual).count())
+    }
+
+    /**
+     * v0.72.0：主动关心看的是状态，不是配额也不是骰子。
+     * 钉住两个最容易误解的点：「她没找我 ≠ 额度用完」与「时间窗仍是硬上限」。
+     */
+    @Test
+    fun `v0_72_0 手册说明主动关心看状态不摇骰子`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        assertTrue("状态引擎没进手册", manual.contains("她为什么会主动找我"))
+        assertTrue(manual.contains("不是摇骰子"))
+        assertTrue("必须说清时间窗仍是硬上限", manual.contains("时间窗外一律不发"))
+        assertTrue(manual.contains("不会把状态本身念出来"))
+        assertEquals(1, Regex("她为什么会主动找我").findAll(manual).count())
+    }
+
+    /**
+     * v0.73.0：动态上线、备忘本整块下线、任务页从底栏搬进数据页。
+     *
+     * 三条都是**旧措辞不许还在**的成对断言（§零.5）：只写"新话在"守不住静默落空 ——
+     * 旧的备忘说明如果还留在手册里，助手会一边教人用已经删掉的功能、一边说动态。
+     */
+    @Test
+    fun `v0_73_0 手册写明动态与备忘下线`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        // 新：动态那一章 + 入口形状
+        assertTrue("动态那一章没进手册", manual.contains("【动态】（v0.73.0，底栏第三格）"))
+        assertTrue(manual.contains("右下角那颗黑色圆钮"))
+        assertTrue("回复只有一层这件事要写明", manual.contains("回复只有一层"))
+        assertTrue("「她不发动态不是 bug」这条必须在内", manual.contains("时间线空着是正常状态"))
+        // 新：任务页换了位置
+        assertTrue(manual.contains("任务改从**数据页那张入口卡**进"))
+        assertTrue(manual.contains("④ **任务**：与记账本那张**一样大小**的入口卡"))
+        // 旧：备忘本的整套操作说明一律不许还留着
+        assertFalse("备忘的入口描述还在手册里", manual.contains("点进去才是卡片列表"))
+        assertFalse(manual.contains("一条备忘就是一句话"))
+        assertFalse(manual.contains("记点什么…"))
+        assertFalse("置顶/发给 AI 那套旧说明不许回来", manual.contains("把这条备忘连同"))
+        // 并且**明说**这个模块没了、数据没迁移（用户会问"我以前的备忘呢"）
+        assertTrue(manual.contains("整个模块已经下线"))
+        assertEquals(1, Regex("【动态】").findAll(manual).count())
     }
 }

@@ -120,7 +120,15 @@ private val TaskPlacementSpring = spring<androidx.compose.ui.unit.IntOffset>(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)) {
+fun TasksScreen(
+    /**
+     * v0.73.0：任务页从底栏 tab 变成了**从数据页进入的全屏页**（那一格让给了动态），
+     * 所以它需要一个返回键。为 null 时（以后若有别的路径直接嵌进来）顶栏左侧留空，
+     * 与原来在 Pager 里的观感完全一致。
+     */
+    onBack: (() -> Unit)? = null,
+    vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory),
+) {
     val tasks by vm.tasks.collectAsState()
     val hideDone by vm.hideDone.collectAsState()
     var showTaskSheet by remember { mutableStateOf(false) }
@@ -151,6 +159,14 @@ fun TasksScreen(vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory)
     ) {
         NeuTopBar(
             title = "任务",
+            // 全屏页才有的返回键（tab 版没有 onBack，左侧依旧留空）
+            navigationIcon = onBack?.let { back ->
+                {
+                    NeuCircleButton(onClick = back, size = 38.dp) {
+                        Icon(MIcons.Back, contentDescription = "返回", tint = TextPrimary, modifier = Modifier.size(19.dp))
+                    }
+                }
+            },
             // 三颗按钮（隐藏已完成 / Agent / 新建）超出默认槽宽，显式加宽避免「＋」被裁掉
             actionsWidth = 150.dp,
             actions = {

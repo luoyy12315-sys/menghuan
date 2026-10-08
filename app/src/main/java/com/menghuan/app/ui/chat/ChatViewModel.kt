@@ -185,6 +185,22 @@ const val IMAGE_ONLY_PLACEHOLDER = "（正在为你生成图片）"
 const val VOICE_ONLY_PLACEHOLDER = "（这条没说出内容）"
 
 /**
+ * 整条回复只有 `<add:…>` 时的占位（v0.70.0）。
+ *
+ * 为什么不能留空：记忆已经静静进了暂存区，而屏幕上是一条空白消息 ——
+ * 用户看到的就是"AI 没反应"，实际发生的是一件他不知道的事。
+ * 这一句要**说得像 TA 自己在想**，不是系统日志（与 `<add:>` 的"脑内记忆"口径一致）。
+ */
+const val MEMORY_ONLY_PLACEHOLDER = "💭 记下了"
+
+/**
+ * 整条回复只有 `[动态:…]` / `[动态#id:…]` 时的占位（v0.73.0）。
+ * 与 [MEMORY_ONLY_PLACEHOLDER] 同一条理由：帖子已经落进时间线了，
+ * 聊天里留一条空白消息 = 用户以为 TA 没反应。
+ */
+const val MOMENT_ONLY_PLACEHOLDER = "🌙 去发了条动态"
+
+/**
  * 设置 · AI 提示词面板里的「生成逻辑说明」文案。
  * 与实现同源：提炼走 ExtractionEngine（攒够 8 条增量消息自动跑，
  * 数据页可手动「提炼」），周报走 WeeklyReportGenerator（每周日 21:30，
@@ -779,6 +795,23 @@ class ChatViewModel(
         // v0.57：整轮生成挂应用级作用域（[generationScope]），退出聊天页不掐断
         generationScope.launch {
             val saved = runCatching { db.messageDao().insert(userMsg) }
+            // 他说话了：想念清零、骄傲软一点（状态引擎的"被回应"事件，v0.72.0）。
+            // 放在落库之后 —— 消息没存上就不该顺手改动她的心情。
+            if (saved.isSuccess) {
+                val nowMs = System.currentTimeMillis()
+                runCatching {
+                    settingsRepository.markCompanionMessageAt(personaId, nowMs)
+                    val s = com.menghuan.app.data.CompanionLogic.decode(
+                        settingsRepository.companionStateRaw(personaId).first()
+                    )
+                    settingsRepository.setCompanionStateRaw(
+                        personaId,
+                        com.menghuan.app.data.CompanionLogic
+                            .onUserMessage(s).copy(atMs = nowMs)
+                            .let { com.menghuan.app.data.CompanionLogic.encode(it) }
+                    )
+                }
+            }
             if (saved.isFailure) {
                 setError(
                     "消息保存失败：${saved.exceptionOrNull()?.message ?: "存储异常"}",
@@ -907,7 +940,14 @@ class ChatViewModel(
         }
 
         val facts = try {
-            db.profileFactDao().observeAll().first()
+            // v0.70.0：记忆按人设分开。以前是整张表原样拼进来，A 角色聊出来的私事
+            // 会一字不差地从 B 角色嘴里说出来。现在只取「这个角色的 + 基础档案（开关允许时）」。
+            // 读全表再在内存里筛，是因为筛选要同时知道开关值，而开关在 DataStore 不在 SQL。
+            runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList())
+                .let { all ->
+                    val shared = runCatching { settingsRepository.profileSharedReadable.first() }.getOrDefault(true)
+                    com.menghuan.app.data.MemoryScope.visible(all, personaId, shared)
+                }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -973,66 +1013,10 @@ class ChatViewModel(
                 }
                 append(agentChatHint(strategy))
             }
-            // 会话联网（v0.53.6）：这个对话开着联网时，拿用户这一句当查询先搜一遍，再把结果给它。
-            // 复用「联网搜索」里配好的搜索服务（博查 / Tavily），不另配一套。
-            //
-            // ⚠️ v0.56.5 修「配好 Key、打开联网，角色仍然不联网」：
-            // 原来查询串取的是 `_uiState.value.input`，而 `send()` 在调用本函数**之前**
-            // 已经把输入框清空了（`input = ""`）→ `query` 恒为空 → 整段联网注入**从来没执行过**。
-            // 现在改成读**最后一条用户消息**（就是刚发出去那句，落库与上屏都已完成），
-            // 重试时也仍然拿得到同一句。
-            val webSearchOn = try {
-                settingsRepository.chatWebSearch.first()[personaId] == true
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                false
-            }
-            if (webSearchOn) {
-                val query = _uiState.value.messages.lastOrNull { it.isFromUser }?.content?.trim().orEmpty()
-                if (query.isNotEmpty()) {
-                    val provider = try {
-                        settingsRepository.searchProvider.first()
-                    } catch (e: Exception) {
-                        com.menghuan.app.data.SEARCH_BOCHA
-                    }
-                    // v0.59.0：Key 与接口地址都按**当前生效那一家**取——
-                    // 自定义家有独立的一份 Key 和一个用户自填的地址，
-                    // 拿内置那家去取会串成"切到自定义就查不了"
-                    val searchKey = try {
-                        settingsRepository.searchKeyFor(provider)
-                    } catch (e: Exception) {
-                        ""
-                    }
-                    val customEndpoint = try {
-                        settingsRepository.searchEndpointFor(provider)
-                    } catch (e: Exception) {
-                        ""
-                    }
-                    if (isNotEmpty()) append("\n\n")
-                    append("## 联网\n")
-                    if (searchKey.isBlank()) {
-                        append("用户打开了本会话的联网开关，但还没配搜索服务的 Key")
-                        append("（设置 → 模型配置 → 联网搜索）。")
-                        append("被问到最新信息时请**如实说明暂时查不了**，不要凭记忆编。")
-                    } else {
-                        val hits = runCatching {
-                            com.menghuan.app.data.WebSearchClient.search(
-                                provider, searchKey, query, customEndpoint = customEndpoint,
-                            )
-                        }.getOrDefault(emptyList())
-                        val block = com.menghuan.app.data.WebSearchClient
-                            .toPromptBlock(hits, com.menghuan.app.data.WebSearchClient.labelOf(provider))
-                        if (block.isBlank()) {
-                            append("这次没取到搜索结果（网络或额度问题）。")
-                            append("如果问题涉及最新消息，请**如实说查不到**，不要编造。")
-                        } else {
-                            append("下面是刚搜到的结果，优先依据它回答，拿不准的地方就说没查到：\n")
-                            append(block)
-                        }
-                    }
-                }
-            }
+            // 会话联网的结果 v0.69.0 起**不再拼进这段 system prompt**：它是每轮都变的内容，
+            // 留在前缀里等于每次搜索都把整段（人设 + 档案 + 全部能力说明）的缓存作废一次。
+            // 现在走本轮易变上下文，见 webSearchBlock() 与 runtimeContextNow()。
+
             // 打电话能力说明（v0.53.8）：**总是注入**，不再看任何开关。
             // 理由：用户明确点名要的一通（"立刻打给我"）不该被拦住 ——
             // 以前关着就不注入，用户叫它打、它连标记都不输出，用户以为坏了（踩过）。
@@ -1059,6 +1043,14 @@ class ChatViewModel(
                 }
                 append(voiceNoteHint(strategy))
             }
+            // 记忆写入协议（v0.70.0）：这一段的文字是**固定的**，所以放得起前缀（不伤缓存）。
+            // 与 §零.9 里"每轮都变的内容不许进 system prompt"不冲突 —— 变的是命中的记忆，不是这段说明。
+            if (isNotEmpty()) append("\n\n")
+            append(com.menghuan.app.data.MemoryMarker.promptSection())
+            // 动态发帖/回帖协议（v0.73.0）：同样是**固定**文字，放得起前缀。
+            // 每轮变的「有哪些帖子可回」不在这里，走易变上下文（见 momentFeedBlock）。
+            if (isNotEmpty()) append("\n\n")
+            append(com.menghuan.app.data.MomentMarker.promptSection())
             if (isEmpty()) {
                 val base = try {
                     settingsRepository.basePrompt.first()
@@ -1133,6 +1125,9 @@ class ChatViewModel(
         // 思考链全文（v0.41.4）：与正文分开收，一起落库，只在长按菜单里查看
         val thinking = StringBuilder()
         var usageTokens: Int? = null
+        // v0.69.0：输入与其中缓存命中的读数（服务商没回就一直是 0，不参与命中率计算）
+        var usagePrompt = 0
+        var usageCached = 0
         var streamError: Throwable? = null
         // v0.41.4 后台生成一次性发送：不再有打字机追赶循环——正文在后台收完为止，
         // 期间 UI 只挂三点气泡（isStreaming/generating），收到 [DONE] 后整段落库上屏。
@@ -1141,7 +1136,7 @@ class ChatViewModel(
         val collectJob = generationScope.launch {
             try {
                 OpenAiClient(config.baseUrl, config.apiKey, config.model)
-                    .streamEvents(systemPrompt, history) { path ->
+                    .streamEvents(systemPrompt, history, runtimeContextNow()) { path ->
                         // 用户发的图现场降采样转 base64（AI 生成图是 assistant 消息，不进请求）
                         com.menghuan.app.data.VisionImage.encodeDataUrl(path)
                     }
@@ -1149,7 +1144,11 @@ class ChatViewModel(
                         when (ev) {
                             is com.menghuan.app.llm.StreamEvent.Delta -> sb.append(ev.text)
                             is com.menghuan.app.llm.StreamEvent.Reasoning -> thinking.append(ev.text)
-                            is com.menghuan.app.llm.StreamEvent.Usage -> usageTokens = ev.tokens
+                            is com.menghuan.app.llm.StreamEvent.Usage -> {
+                                usageTokens = ev.tokens
+                                usagePrompt = ev.promptTokens
+                                usageCached = ev.cachedPromptTokens
+                            }
                         }
                     }
             } catch (e: CancellationException) {
@@ -1160,7 +1159,7 @@ class ChatViewModel(
         }
         collectJob.join()
         val reasoning = thinking.toString().trim()
-        recordUsage(usageTokens, config.model)
+        recordUsage(usageTokens, config.model, usagePrompt, usageCached)
         val failure = streamError
         if (failure is ApiException) {
             // HTTP 失败：一个 token 都没收到 → 错误条 + 按状态码分级，不落库
@@ -1204,6 +1203,11 @@ class ChatViewModel(
         maybeGenerateImage(rawReply)
         // 对话内操控手机（v0.37.0）：回复里带 [操作手机:目标] 标记 → 直接启动 AgentLoop
         maybeRunAgent(rawReply)
+        // `<add:内容>` → 待入库（v0.70.0）。放在文字落库之后：一条回复先要能正常显示，
+        // 记忆只是它的副作用，副作用失败绝不能把正文带走。
+        maybeStageMemories(rawReply)
+        // `[动态:…]` / `[动态#id:…]` → 落进动态时间线（v0.73.0）。同上：副作用，失败不带走正文。
+        maybePostMoments(rawReply)
         // 提炼流水线：攒够增量消息后由引擎在应用级作用域自行决定是否调用 LLM
         extractionEngine.maybeExtract(personaId)
     }
@@ -1513,6 +1517,103 @@ class ChatViewModel(
      * 手机操作另由 [maybeRunAgent] 起执行卡。
      * [reasoning] = 思考链全文（可为空），随正文一起落库，只在长按菜单里按需查看。
      */
+    /**
+     * `<add:内容>` 的落点：写进**当前这个角色**的记忆（v0.70.0；v0.71.0 起新条目进待入库）。
+     *
+     * ## 为什么新条目落 `staging`
+     * 模型说"我记住了"不等于那条值得记 —— 它会把"你今天吃了个包子"也存下来。
+     * 新条目先落 `staging`，由用户在「TA 的记忆」页点头才生效（`MemoryScope.visible` 不注入 staging）。
+     * v0.70.0 那一批之所以先直接写 `active`，是因为**当时还没有审批入口**：
+     * 没有入口的 staging 等于一个用户看不见的死功能。现在那一页有了，才切回暂存。
+     *
+     * ## 四条不许回退的规则
+     * - **被拒过的句子永久不再回来**（`rejected`）：用户摇过头的事再记第二次，比不记更惹恼人；
+     * - **已经生效的不许降级回 staging**：同一件事被重复提及时只更新内容 ——
+     *   否则表现是"TA 明明记得的事忽然又不记得了"；
+     * - **`core`（用户设为永久）与 `archived`（用户手动停用）都不动**：那是人的决定，不是 AI 的；
+     * - 整条回复只有标记时聊天界面上要留一句 `💭 记下了`，不能发一条空白消息。
+     */
+    private suspend fun maybeStageMemories(rawReply: String) {
+        val items = com.menghuan.app.data.MemoryMarker.parse(rawReply).items
+        if (items.isEmpty()) return
+        val existing = runCatching { db.profileFactDao().observeOwnedBy(personaId).first() }
+            .getOrDefault(emptyList())
+        items.forEach { item ->
+            if (existing.any { it.lifecycle == "rejected" && it.value == item }) return@forEach
+            val dup = existing.firstOrNull { it.value == item && it.lifecycle != "rejected" }
+                ?: existing.firstOrNull {
+                    it.key == com.menghuan.app.data.MemoryMarker.keyOf(item) && it.lifecycle != "rejected"
+                }
+            val lifecycle = when (dup?.lifecycle) {
+                null -> "staging"        // 全新的：等用户在记忆页点头
+                "staging" -> "staging"   // 已在待入库里：更新内容，状态不变
+                else -> dup.lifecycle    // active / core / archived 一律不降级
+            }
+            runCatching {
+                db.profileFactDao().upsert(
+                    com.menghuan.app.data.model.ProfileFact(
+                        id = dup?.id ?: 0L,
+                        key = com.menghuan.app.data.MemoryMarker.keyOf(item),
+                        value = item,
+                        source = "ai",
+                        updatedAt = System.currentTimeMillis(),
+                        personaId = personaId,
+                        lifecycle = lifecycle,
+                    )
+                )
+            }
+        }
+    }
+
+    /**
+     * 回复里带 `[动态:内容]` / `[动态#id:内容]` → 落进动态时间线（v0.73.0）。
+     *
+     * 放在文字落库**之后**，与 [maybeStageMemories] 同一条纪律：一条回复先要能正常显示，
+     * 发帖只是它的副作用，副作用失败绝不能把正文带走（整条链路包在 runCatching 里）。
+     *
+     * 三条口径：
+     * - **回帖先验 id**：模型会编一个不存在的编号（`[动态#99:…]`）。那种回复指向空气，
+     *   时间线上算不出条数、点进去还会白屏 —— 直接丢弃，并留一条日志。
+     *   正文里那个标记已经被剥掉了，所以用户看不见这条没落成的回复；这是刻意的，
+     *   把模型的协议错误甩给用户看只会变成"这 App 奇怪"。
+     * - **一帖一条上限**：一轮回复最多发 2 条，防它把一次回答拆成刷屏（时间线是公共空间）。
+     * - **AI 不能删、不能改用户发的帖**：这条链路只有 insert，没有 update/delete。
+     */
+    private suspend fun maybePostMoments(rawReply: String) {
+        val decision = com.menghuan.app.data.MomentMarker.parse(rawReply)
+        if (!decision.wantsAnything) return
+        val now = System.currentTimeMillis()
+        decision.posts.take(2).forEach { text ->
+            runCatching {
+                db.momentDao().upsert(
+                    com.menghuan.app.data.model.MomentEntry(
+                        personaId = personaId,
+                        parentId = 0L,
+                        text = com.menghuan.app.data.MomentMath.sanitize(text, com.menghuan.app.data.MomentMath.POST_MAX),
+                        createdAt = now,
+                    )
+                )
+            }
+        }
+        decision.replies.take(2).forEach { (parentId, text) ->
+            val parent = runCatching { db.momentDao().getById(parentId) }.getOrNull()
+            if (parent == null) {
+                android.util.Log.w("Menghuan", "moment reply dropped: post $parentId does not exist")
+                return@forEach
+            }
+            runCatching {
+                db.momentDao().upsert(
+                    com.menghuan.app.data.model.MomentEntry(
+                        personaId = personaId,
+                        parentId = parentId,
+                        text = com.menghuan.app.data.MomentMath.sanitize(text, com.menghuan.app.data.MomentMath.REPLY_MAX),
+                        createdAt = now,
+                    )
+                )
+            }
+        }
+    }
+
     private suspend fun persistReply(sb: StringBuilder, reasoning: String = ""): Pair<String, Long> {
         if (sb.isEmpty()) return "" to 0L
         val raw = sb.toString()
@@ -1527,13 +1628,25 @@ class ChatViewModel(
         )
         // 【语音条】也要在这一层剥掉：合成成功与否都不该让用户看见标记本身
         val withoutVoiceNote = if (voiceNote.wantsVoice) voiceNote.cleanText else raw
+        // 记忆标记 `<add:内容>` 同样在这一层剥（v0.70.0）：条目进"待入库"，正文不许带标记
+        val memory = com.menghuan.app.data.MemoryMarker.parse(withoutVoiceNote)
+        // 动态标记 `[动态:…]` / `[动态#id:…]`（v0.73.0）：同一条纪律 —— 标记是给 App 的信号，
+        // 帖子另由 maybePostMoments 落进时间线，正文里一个字都不许留
+        val moment = com.menghuan.app.data.MomentMarker.parse(memory.cleanText)
         val text = AgentPrompts.stripMarker(
-            imgClient.stripMarker(com.menghuan.app.data.AiCallLogic.stripMarker(withoutVoiceNote)),
+            imgClient.stripMarker(
+                com.menghuan.app.data.AiCallLogic.stripMarker(moment.cleanText)
+            ),
         ).ifBlank {
             // 整条回复只有标记、没有正文：给一句占位（图/执行卡/语音条随后接管观感）
             when {
                 hasImageMarker -> IMAGE_ONLY_PLACEHOLDER
                 voiceNote.wantsVoice -> VOICE_ONLY_PLACEHOLDER
+                // 只写了 `<add:…>`：用户得看见"TA 记了一笔"，否则这条回复看起来是空的，
+                // 而记忆已经静静进了暂存区 —— 无声的变化最难查
+                memory.items.isNotEmpty() -> MEMORY_ONLY_PLACEHOLDER
+                // 只写了 `[动态:…]` 同理：TA 去发动态了，屏幕上要给一句交代
+                moment.wantsAnything -> MOMENT_ONLY_PLACEHOLDER
                 else -> AGENT_ONLY_PLACEHOLDER
             }
         }
@@ -1623,10 +1736,170 @@ class ChatViewModel(
      * v0.57：挂 [generationScope] —— 这轮生成可能是在聊天页已经退出（VM 已销毁）之后才收到
      * usage 的，用 viewModelScope 会连记账一起被取消掉。
      */
-    private fun recordUsage(tokens: Int?, model: String) {
-        if (tokens == null) return
+    /**
+     * 本会话联网检索的结果块（v0.69.0 起它是**易变上下文**，不再进 system prompt）。
+     * 
+     * 三种情况都要给出可读的话而不是空串，因为模型拿不到块就会开始凭记忆编新闻：
+     * 没配 Key、搜到了、一家都没搜到 —— 原来那三套措辞整段搬过来，一个字没改。
+     */
+    private suspend fun webSearchBlock(): String = buildString {
+        // 会话联网（v0.53.6）：这个对话开着联网时，拿用户这一句当查询先搜一遍，再把结果给它。
+        // 复用「联网搜索」里配好的搜索服务（博查 / Tavily），不另配一套。
+        //
+        // ⚠️ v0.56.5 修「配好 Key、打开联网，角色仍然不联网」：
+        // 原来查询串取的是 `_uiState.value.input`，而 `send()` 在调用本函数**之前**
+        // 已经把输入框清空了（`input = ""`）→ `query` 恒为空 → 整段联网注入**从来没执行过**。
+        // 现在改成读**最后一条用户消息**（就是刚发出去那句，落库与上屏都已完成），
+        // 重试时也仍然拿得到同一句。
+        val webSearchOn = try {
+            settingsRepository.chatWebSearch.first()[personaId] == true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false
+        }
+        if (webSearchOn) {
+            val query = _uiState.value.messages.lastOrNull { it.isFromUser }?.content?.trim().orEmpty()
+            if (query.isNotEmpty()) {
+                val provider = try {
+                    settingsRepository.searchProvider.first()
+                } catch (e: Exception) {
+                    com.menghuan.app.data.SEARCH_BOCHA
+                }
+                // v0.59.0：Key 与接口地址都按**当前生效那一家**取——
+                // 自定义家有独立的一份 Key 和一个用户自填的地址，
+                // 拿内置那家去取会串成"切到自定义就查不了"
+                val searchKey = try {
+                    settingsRepository.searchKeyFor(provider)
+                } catch (e: Exception) {
+                    ""
+                }
+                val customEndpoint = try {
+                    settingsRepository.searchEndpointFor(provider)
+                } catch (e: Exception) {
+                    ""
+                }
+                if (isNotEmpty()) append("\n\n")
+                append("## 联网\n")
+                if (searchKey.isBlank()) {
+                    append("用户打开了本会话的联网开关，但还没配搜索服务的 Key")
+                    append("（设置 → 模型配置 → 联网搜索）。")
+                    append("被问到最新信息时请**如实说明暂时查不了**，不要凭记忆编。")
+                } else {
+                    val hits = runCatching {
+                        com.menghuan.app.data.WebSearchClient.search(
+                            provider, searchKey, query, customEndpoint = customEndpoint,
+                        )
+                    }.getOrDefault(emptyList())
+                    val block = com.menghuan.app.data.WebSearchClient
+                        .toPromptBlock(hits, com.menghuan.app.data.WebSearchClient.labelOf(provider))
+                    if (block.isBlank()) {
+                        append("这次没取到搜索结果（网络或额度问题）。")
+                        append("如果问题涉及最新消息，请**如实说查不到**，不要编造。")
+                    } else {
+                        append("下面是刚搜到的结果，优先依据它回答，拿不准的地方就说没查到：\n")
+                        append(block)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 本轮的易变上下文（v0.69.0）：当前时间 + 本会话的联网检索结果。
+     *
+     * **刻意不拼进 system prompt**：时间在 system 里 = 前缀每分钟作废一次，缓存永远命不中；
+     * 贴到最后一条用户消息上，前面那一大段（人设 + 档案 + 历史）才逐字节稳定。
+     * 口径与实现都在 [com.menghuan.app.data.RuntimeContext]（通话那边共用它，别两处各拼一份）。
+     *
+     * 之前根本没告诉模型"现在是几点、今天星期几"—— 于是"今晚 / 明天 / 上周"全靠猜。
+     */
+    private suspend fun runtimeContextNow(): String = buildString {
+        append(com.menghuan.app.data.RuntimeContext.clockLineNow())
+        // 联网结果同为易变内容：贴到最后一条用户消息，别放回前缀
+        val web = webSearchBlock()
+        if (web.isNotBlank()) {
+            if (isNotEmpty()) append("\n\n")
+            append(web)
+        }
+        // 记忆检索（v0.70.0）：宿主按这一句去搜，**不等模型开口要**
+        val recall = memoryRecallBlock()
+        if (recall.isNotBlank()) {
+            if (isNotEmpty()) append("\n\n")
+            append(recall)
+        }
+        // 动态时间线现状（v0.73.0）：模型要回帖就得知道**有哪些编号可回**。
+        // 这份名单每轮都变（新帖随时进、旧帖会被删），进 system prompt 就是每轮作废前缀；
+        // 所以和记忆检索一样贴到最后一条用户消息上（§零.9）。
+        val feed = momentFeedBlock()
+        if (feed.isNotBlank()) {
+            if (isNotEmpty()) append("\n\n")
+            append(feed)
+        }
+    }
+
+    /**
+     * 「你手上有哪些帖子可以回」那一段（v0.73.0）。
+     *
+     * 只给**帖子**（parentId=0），不给回复：回复不能再被回复，列出编号只会诱导它写出
+     * `[动态#回复id:…]`，那条会因为指向的不是帖子而被 [maybePostMoments] 丢掉。
+     *
+     * 6 条是实测的平衡点：再多模型开始回每条都像在刷屏，而时间线翻两屏也就这些。
+     */
+    private suspend fun momentFeedBlock(): String {
+        val all = runCatching { db.momentDao().observeAll().first() }.getOrDefault(emptyList())
+        val posts = all.filter { it.parentId == 0L }.sortedByDescending { it.createdAt }.take(6)
+        if (posts.isEmpty()) return ""
+        val names = runCatching { db.personaDao().observeAll().first() }
+            .getOrDefault(emptyList()).associate { it.id to it.name }
+        val lines = posts.map { p ->
+            com.menghuan.app.data.MomentMarker.feedLine(
+                id = p.id,
+                author = if (p.personaId == 0L) "用户" else names[p.personaId] ?: "TA",
+                text = p.text,
+            )
+        }
+        return com.menghuan.app.data.MomentMarker.feedBlock(lines)
+    }
+
+    /**
+     * 把"这一句可能相关的记忆"捞出来给模型（v0.70.0）。
+     *
+     * ## 为什么是宿主主动推，而不是等模型发 `<search:关键词>`
+     * 拉取式协议要求模型**先答一半、我们再把它要的结果喂回去重问一次**：
+     * 每一轮多一次请求、多一笔钱，而且模型不一定每次都记得发那个标记
+     * （不发的时候它就直接凭印象编，用户看不出区别）。
+     * 推取式零额外请求，且命中率不依赖模型的自觉。等记忆页与"得分阈值"能调了，
+     * 再把拉取式作为**补充**加回来（`MemoryScope.search` 已经留着这个入口）。
+     *
+     * ## 为什么放在易变上下文而不是 system prompt
+     * 每条消息命中的记忆都不一样，进前缀就是每轮作废一次缓存（AGENTS.md §零.9）。
+     */
+    private suspend fun memoryRecallBlock(): String {
+        val query = _uiState.value.messages.lastOrNull { it.isFromUser }?.content?.trim().orEmpty()
+        if (query.isEmpty()) return ""
+        val all = runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList())
+        val shared = runCatching { settingsRepository.profileSharedReadable.first() }.getOrDefault(true)
+        // 阈值 60：与爱语「记忆库模糊搜索得分 0-100、默认 60」同口径（见 MemoryScope.search 注释）。
+        // 宁缺毋滥 —— 捞进不相干的记忆会让它把别人的事安在用户头上，比想不起来更糟。
+        val hits = com.menghuan.app.data.MemoryScope.search(all, personaId, shared, query, minScore = 60, limit = 3)
+        if (hits.isEmpty()) return ""
+        return buildString {
+            append("## 你想起来的事\n")
+            append("（以下是你自己记下的关于这个人的事，按相关度排；想用就用，")
+            append("**不要一条条念出来给用户听**，它只是帮你把话接对。）\n")
+            hits.forEach { append("- ").append(it.fact.value).append("\n") }
+        }.trimEnd()
+    }
+
+    private fun recordUsage(tokens: Int?, model: String, promptTokens: Int = 0, cachedTokens: Int = 0) {
+        if (tokens == null && promptTokens <= 0 && cachedTokens <= 0) return
         generationScope.launch {
-            runCatching { com.menghuan.app.data.UsageTracker.add(settingsRepository, tokens, model) }
+            runCatching {
+                com.menghuan.app.data.UsageTracker.add(
+                    settingsRepository, tokens ?: 0, model, promptTokens, cachedTokens,
+                )
+            }
         }
     }
 

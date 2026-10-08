@@ -175,8 +175,32 @@ object ProactiveChat {
             .minWithOrNull(compareBy({ counts[it.id] ?: 0 }, { lastDays[it.id] ?: 0L }))
             ?: return false
 
+
+        // ②.5 她现在想不想开口（v0.72.0）：五轴按时间漂移之后，意愿低于 CONSIDER 这一轮就不发。
+        // 跳过**不消耗今天的配额**（不写 sent 计数）—— 所以「她今天没找我」可能是真没想说，不是额度用完了。
+        val nowMs = System.currentTimeMillis()
+        val stale = CompanionLogic.decode(settingsRepository.companionStateRaw(target.id).first())
+        val sinceMsgMin = settingsRepository.companionLastMessageAt(target.id).first()
+            .let { if (it > 0L) (nowMs - it) / 60_000f else 120f }
+        // 补算的漂移长度用「离上次算过多久」，加速段看「离上次收到他消息多久」——两件事，不能混成一个
+        val sinceCalcMin = if (stale.atMs > 0L) (nowMs - stale.atMs) / 60_000f else sinceMsgMin
+        val state = CompanionLogic
+            .tick(stale, sinceCalcMin.coerceAtMost(7 * 24 * 60f), sinceMsgMin)
+            .copy(atMs = nowMs)
+        runCatching { settingsRepository.setCompanionStateRaw(target.id, CompanionLogic.encode(state)) }
+        if (CompanionLogic.desire(state).ordinal < ReachOut.CONSIDER.ordinal) {
+            // 不发也要留证据：不然排查「她为什么不主动找我」时，日志里一个字都没有
+            android.util.Log.i("ProactiveChat", "personaId=" + target.id + " 意愿=" +
+                CompanionLogic.desire(state) + "，这一轮不发")
+            return false
+        }
+
         // 上下文：**当前时间**（v0.56.8 加，让它说贴合时间的话）+ 档案 + 近 7 天未完成任务
-        val facts = db.profileFactDao().observeAll().first()
+        // v0.70.0：主动关心是**这个角色**要说的话，只带它自己的记忆 + 允许共享的基础档案
+        val facts = MemoryScope.visible(
+            db.profileFactDao().observeAll().first(),
+            target.id, runCatching { settingsRepository.profileSharedReadable.first() }.getOrDefault(true),
+        )
         val zone = java.time.ZoneId.systemDefault()
         val clock = java.time.LocalTime.now(zone)
         val hhmm = String.format(java.util.Locale.US, "%02d:%02d", clock.hour, clock.minute)
@@ -194,6 +218,9 @@ object ProactiveChat {
             .take(8)
         val userContext = buildString {
             append("【现在的时间】").append(hhmm).append("（").append(period).append("）\n\n")
+            // 心情只给模型看：promptContext 自己带了「不要把这段念给用户」那句约束
+            val moodLine = CompanionLogic.promptContext(state)
+            if (moodLine.isNotBlank()) append(moodLine).append("\n\n")
             append("【用户档案】")
             if (facts.isEmpty()) append("暂无")
             else facts.take(10).forEach { append("\n- ").append(it.key).append("：").append(it.value) }

@@ -451,9 +451,18 @@ fun ChatSettingsScreen(
         GroupSeam()
 
         // ⑤ 辅助工具（最低频，行业通用放底部）
-        SettingsLineRow("查看聊天记录", titleSize = 17.sp, index = 14, divider = false) {
+        SettingsLineRow("查看聊天记录", titleSize = 17.sp, index = 14) {
             onOpen("chat_history/$personaId")
         }
+        // 「TA 的记忆」（v0.71.0）：带待确认条数。
+        // ⚠️ 这个数一定要显示 —— AI 说要记的东西先进 staging，而 staging **不参与注入**；
+        // 入口上没有提示，用户就不知道有个地方要点，那些记忆会一直静静躺着不起作用
+        // （和"没审批入口就别写 staging"是同一条道理）。
+        val stagingCount by app.db.profileFactDao().observeStagingCount(personaId).collectAsState(initial = 0)
+        SettingsLineRow(
+            if (stagingCount > 0) "TA 的记忆 · $stagingCount 条待确认" else "TA 的记忆",
+            titleSize = 17.sp, index = 15, divider = false,
+        ) { onOpen("memory/$personaId") }
 
         Spacer(Modifier.height(24.dp))
     }

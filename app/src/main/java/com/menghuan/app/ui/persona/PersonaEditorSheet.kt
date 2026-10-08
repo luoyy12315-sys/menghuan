@@ -60,6 +60,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.menghuan.app.MenghuanApp
+import com.menghuan.app.data.ASSISTANT_PERSONA_NAME
 import com.menghuan.app.data.ClonedVoice
 import com.menghuan.app.data.PersonaRepository
 import com.menghuan.app.data.TtsConfig
@@ -98,6 +99,13 @@ import kotlin.math.abs
  * 在原来那一组人物形象后面补了一组**角色 / 幻想形象**（外星人、机器人、幽灵、妖怪、
  * 巫师、精灵、超级英雄、宇航员、动物…），滑起来更有的挑。
  */
+/**
+ * 内置助手的名字字段是**只读**的（见编辑区那条注释），但要走 `NeuTextField.onClick`
+ * 那条只读分支就必须给一个点击动作 —— 这里给一个什么都不做的：
+ * 它要的效果就是"点它不弹键盘、也不跳任何地方"，纯粹把这一格显示成不可改。
+ */
+private val ASSISTANT_NAME_LOCK_CLICK: () -> Unit = {}
+
 private val avatarPresets = listOf(
     "🙂", "😊", "😄", "😎", "🤗", "😌",
     "👦", "👧", "🧑", "👨", "👩", "🧓", "👴", "👵",
@@ -424,9 +432,17 @@ private fun PersonaEditorContent(
             }
         }
         Spacer(Modifier.height(14.dp))
+        // ⚠️ 内置「应用助手」的名字**锁住不给改**（v0.68.0）：整条"手册跟着版本走"的机制
+        // 是按这份设定词属于谁运转的，名字一改，提示词页查不到、保存会再建一条助手、
+        // 启动升级也找不到它 —— 他那本手册就永远停在改名那一刻（AGENTS §零.5 的红线）。
+        // 只读走 NeuTextField 的 onClick 分支：同一个 label 与内边距，不弹键盘、不出现光标。
+        val assistantLocked = persona?.isBuiltIn == true &&
+            persona.name == ASSISTANT_PERSONA_NAME
+        val lockedClick: (() -> Unit)? = if (assistantLocked) ASSISTANT_NAME_LOCK_CLICK else null
         NeuTextField(
             value = draft.name,
-            onValueChange = { draft = draft.copy(name = it) },
+            onValueChange = { if (!assistantLocked) draft = draft.copy(name = it) },
+            onClick = lockedClick,
             label = "名字",
             placeholder = "例：阿布",
             modifier = Modifier.fillMaxWidth(),

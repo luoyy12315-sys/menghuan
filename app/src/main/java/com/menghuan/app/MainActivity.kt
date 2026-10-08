@@ -95,8 +95,9 @@ import com.menghuan.app.ui.common.WideMaxContentWidth
 import com.menghuan.app.ui.common.isExpandedWindow
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.data.DataScreen
-import com.menghuan.app.ui.memo.MemoRoute
 import com.menghuan.app.ui.persona.PersonaEditorScreen
+import com.menghuan.app.ui.moment.MomentThreadScreen
+import com.menghuan.app.ui.moment.MomentsScreen
 import com.menghuan.app.ui.persona.PersonaManageScreen
 import com.menghuan.app.ui.profile.GalleryScreen
 import com.menghuan.app.ui.profile.MeScreen
@@ -130,6 +131,7 @@ import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.theme.BrandSalmon
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MentorTheme
+import com.menghuan.app.ui.memory.MemoryScreen
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuSurface
@@ -259,7 +261,7 @@ private const val PUSH_TRANSITION_MS = 420
 private val topLevelRoutes = listOf(
     TopLevelRoute("chatList", R.string.tab_chat, MIcons.ChatBubble),
     TopLevelRoute("data", R.string.tab_data, MIcons.BarChart),
-    TopLevelRoute("tasks", R.string.tab_tasks, MIcons.Checklist),
+    TopLevelRoute("moments", R.string.tab_moments, MIcons.Globe),
     TopLevelRoute("me", R.string.tab_me, MIcons.Person),
 )
 
@@ -355,10 +357,15 @@ private fun MenghuanAppRoot(
                 // 仅 deep link（通知/小组件 menghuan://open/{page}）才强制对齐 tab，且只生效一次；
                 // 普通返回（从单聊/人设管理 pop 回 home）不滚动，Pager 自己恢复离开时的页面
                 val deepLinkPage = entry.arguments?.getString("page")
+                // v0.73.0：底栏第 3 格由「任务」换成「动态」。
+                // `tasks` 从这张表里**删掉了** —— 小组件与任务提醒通知发的那四个
+                // `menghuan://open/tasks` 现在由全屏任务页自己的 deep link 接住
+                // （0 个参数的模式比这里的 1 个参数更具体，Navigation 会选它），
+                // 点提醒通知落到任务页、而不是动态页。
                 val initialTab = when (deepLinkPage) {
                     "chatList" -> 0
                     "data" -> 1
-                    "tasks" -> 2
+                    "moments" -> 2
                     "me" -> 3
                     else -> -1
                 }
@@ -378,7 +385,7 @@ private fun MenghuanAppRoot(
                     onTwoPaneChatChange = { twoPaneChatId = it },
                     onOpenLedger = { navController.navigate("ledger") },
                     onOpenAiDetail = { navController.navigate("ai_detail") },
-                    onOpenMemo = { navController.navigate("memo") },
+                    onOpenTasks = { navController.navigate("tasks") },
                 )
             }
             // 单聊页：标准 push 进出——从右侧滑入，返回滑出（平板双栏模式下不走此路由）。
@@ -611,6 +618,24 @@ private fun MenghuanAppRoot(
                     )
                 }
             }
+            // 「TA 的记忆」全屏页（v0.71.0）：入口在会话设置。按 personaId 分 ——
+            // 与"记忆按人设彻底分开"（v0.70.0）是同一条边界，这一页只看当前这个角色。
+            composable(
+                route = "memory/{personaId}",
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                // 与上面 CHAT_SETTINGS 同一取法：全项目这些带参路都是 getString 再 toLong
+                val pid = entry.arguments?.getString("personaId")?.toLongOrNull() ?: 0L
+                AdaptiveScreen { MemoryScreen(personaId = pid, onBack = { navController.popBackStack() }) }
+            }
             // 记账本（v0.42.0）：数据页底部入口进入的全屏页
             composable(
                 route = "ledger",
@@ -626,9 +651,13 @@ private fun MenghuanAppRoot(
             ) {
                 LedgerRoute(onBack = { navController.popBackStack() })
             }
-            // 备忘本（v0.62.0）：数据页便签墙「全部」进入的全屏页
+            // 任务页（v0.73.0）：从「数据」页那张入口卡进来的全屏页。
+            // 原来它是底栏第 3 个 tab，那一格让给了动态；小组件与任务提醒通知的
+            // `menghuan://open/tasks` 由这里的 deep link 接住（模式里没有参数，比 home 的
+            // `menghuan://open/{page}` 更具体，Navigation 选它 —— 点提醒落到任务页）。
             composable(
-                route = "memo",
+                route = "tasks",
+                deepLinks = listOf(navDeepLink { uriPattern = "menghuan://open/tasks" }),
                 enterTransition = {
                     slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
                 },
@@ -639,8 +668,27 @@ private fun MenghuanAppRoot(
                         scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
                 },
             ) {
-                AdaptiveScreen {
-                    MemoRoute(
+                AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {
+                    TasksScreen(onBack = { navController.popBackStack() })
+                }
+            }
+            // 动态的一条帖子详情（v0.73.0）：回复全部平铺在这一页，只有一层
+            composable(
+                route = "moment/{id}",
+                arguments = listOf(navArgument("id") { type = NavType.LongType }),
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {
+                    MomentThreadScreen(
+                        momentId = entry.arguments?.getLong("id") ?: 0L,
                         onBack = { navController.popBackStack() },
                         onOpenChat = { id -> navController.navigate("chat/$id") },
                     )
@@ -814,7 +862,7 @@ private fun HomePages(
     onTwoPaneChatChange: (Long) -> Unit,
     onOpenLedger: () -> Unit,
     onOpenAiDetail: () -> Unit,
-    onOpenMemo: () -> Unit,
+    onOpenTasks: () -> Unit,
 ) {
     val wide = isExpandedWindow()
     HorizontalPager(
@@ -865,11 +913,16 @@ private fun HomePages(
                 DataScreen(
                     onOpenLedger = onOpenLedger,
                     onOpenAiDetail = onOpenAiDetail,
-                    onOpenMemo = onOpenMemo,
+                    onOpenTasks = onOpenTasks,
                     visible = pagerState.settledPage == 1,
                 )
             }
-            2 -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) { TasksScreen() }
+            2 -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {
+                MomentsScreen(
+                    onOpenThread = { id -> navController.navigate("moment/$id") },
+                    onOpenChat = { id -> navController.navigate("chat/$id") },
+                )
+            }
             else -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {
                 MeScreen(
                     onManagePersonas = { navController.navigate("personas") },

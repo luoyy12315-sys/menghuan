@@ -149,7 +149,8 @@ class DailySuggestionGenerator(
             ),
         )
         sb.append(reply.text)
-        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model) }
+        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model,
+            reply.promptTokens, reply.cachedPromptTokens) }
         val parsed = DailySuggestionMath.parse(sb.toString()) ?: return null
 
         db.dailySuggestionDao().upsert(
@@ -171,7 +172,11 @@ class DailySuggestionGenerator(
     /** 汇总生成素材（可被测试单独调用） */
     suspend fun collectContext(day: LocalDate, zone: ZoneId = ZoneId.systemDefault()): DailyContext {
         val tasks = runCatching { db.taskDao().observeAll().first() }.getOrDefault(emptyList())
-        val facts = runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList())
+        // v0.70.0：每日建议**不属于任何一个角色**，所以只读用户本人的基础档案。
+        // 把各角色聊出来的私事喂进这条全局链路，等于绕过按人设分开那道边界。
+        val facts = MemoryScope.visibleGlobal(
+            runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList()),
+        )
         val insights = runCatching { db.aiInsightDao().latest() }.getOrDefault(emptyList())
         val ledger = runCatching { db.ledgerDao().observeAll().first() }.getOrDefault(emptyList())
 

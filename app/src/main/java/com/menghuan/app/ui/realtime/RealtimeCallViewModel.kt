@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.AiPrompts
+import com.menghuan.app.data.MemoryScope
 import com.menghuan.app.data.AsrModelManager
 import com.menghuan.app.data.TtsClients
 import com.menghuan.app.data.TtsConfig
@@ -23,7 +24,10 @@ import com.menghuan.app.realtime.RealtimeCallState
 import com.menghuan.app.realtime.VoiceCallEngine
 import com.menghuan.app.data.CallVisualStore
 import com.menghuan.app.live2d.ActionSlot
+import com.menghuan.app.live2d.ActionSource
+import com.menghuan.app.live2d.ActionType
 import com.menghuan.app.live2d.BuiltinActions
+import com.menghuan.app.live2d.InteractionRules
 import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.realtime.visual.CallVisualEngine
 import com.menghuan.app.realtime.visual.CallVisualEngines
@@ -106,6 +110,16 @@ class RealtimeCallViewModel(
     /** 这一角色的"动作幅度"档位（v0.67.0，会话设置里调）。播任何动作前乘上去 */
     private var actionScale: Float = 1f
 
+    /**
+     * 这张模型**实际有的**表情名（v0.69.0，来自 `onCatalogReady` 的内存快照）。
+     *
+     * 两个用处：拼提示词时的候选清单，和收到 `[表情:名]` 时的**准入判定** ——
+     * 名字不在清单里就静默忽略（模型自造的表情名不该换来一次崩溃或一条提示，§零.7）。
+     * 为什么不读库：库里的 `native:expr:` 行是同步协程异步写的，读库会有
+     * "第一次通话清单为空、整通提不了表情"这种看不出来的静默失效。
+     */
+    private var catalogExpressions: List<String> = emptyList()
+
     private val _ui = MutableStateFlow(RealtimeCallUiState(videoMode = videoMode))
     val ui: StateFlow<RealtimeCallUiState> = _ui
 
@@ -150,7 +164,12 @@ class RealtimeCallViewModel(
 
             // system prompt 组装与文字聊天同源（ChatViewModel.reply 同语义）：
             // 人设设定词（空则基础提示词）+ 档案注入说明 + 用户档案；不注入生图/手机操控能力
-            val facts = runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList())
+            // v0.70.0：与文字聊天同一口径 —— 这通电话只带得上**这个角色自己的记忆**（基础档案按开关）
+            val sharedReadable = runCatching { settings.profileSharedReadable.first() }.getOrDefault(true)
+            val facts = MemoryScope.visible(
+                runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList()),
+                personaId, sharedReadable,
+            )
             val preamble = runCatching { settings.profilePreamble.first() }
                 .getOrDefault(AiPrompts.DEFAULT_PROFILE_PREAMBLE)
             val basePrompt = runCatching { settings.basePrompt.first() }
@@ -196,6 +215,9 @@ class RealtimeCallViewModel(
                 repo.saveCall(p, st, et, turns, status, initiatedByAi, videoMode)
             }
             engine = eng
+            // 清单与引擎谁先到都不确定（形象在 init 里就开始加载了），所以两边**互相都补一次推送**：
+            // 只补一个方向，就会出现"形象先加载完、引擎后建好、这通电话一辈子拿到空清单"。
+            eng.setExpressionCandidates(catalogExpressions)
             // 视觉层在进页时就已经在准备了（init 里那条），这里只是把引擎的状态与口型电平接上去。
             // await 而不是直接读 visual：两边都是协程，不等就会撞上"引擎先就绪、visual 还是 null"。
             if (videoMode) {
@@ -259,6 +281,13 @@ class RealtimeCallViewModel(
             // ⚠️ 回调里**只许转手**：磁盘与数据库操作一律丢到 viewModelScope，
             // 在 GL 线程上碰 Room 会把整条渲染线程堵住（表现为通话里画面卡住）。
             v.onCatalogReady { catalog ->
+                // 清单先**存一份内存快照并推给引擎**（这行不碰磁盘，符合"回调里只许转手"），
+                // 再把入库那部分丢进 viewModelScope。
+                // ⚠️ 表情候选必须走这份快照，**不要在拼提示词时去读库**：
+                // 库里的 `native:expr:` 行是下面这条协程异步写的，
+                // 读库会出现"第一次通话模型清单是空的、整通都提不了表情"这种静默失效。
+                catalogExpressions = catalog.expressions
+                engine?.setExpressionCandidates(catalog.expressions)
                 viewModelScope.launch {
                     runCatching { app.live2dActions.syncModelActions(personaId, catalog) }
                 }
@@ -298,6 +327,32 @@ class RealtimeCallViewModel(
     }
 
     /**
+     * 演一条 AI 点名的表情（v0.69.0）。
+     *
+     * **不查动作库**：`Live2dCharacter` 认的是 `action.expression` 这个字段（非空就把表情切过去），
+     * 所以现造一条纯表情动作就够了。库里那些 `native:expr:` 行是给用户挑、收藏、绑状态用的，
+     * 与这条临时通路不是一回事 —— 别为了"演一个表情"去等 Room。
+     *
+     * 三种情况一律静默返回，不报错、不弹提示：语音通话（`stage` 为 null，
+     * §零.7 本来就要求它不碰视觉层）、伪视频形象（没有可驱动的参数）、
+     * 名字不在这张模型的清单里（模型自造的表情名）。
+     * **表情没换成不等于通话出了问题。**
+     */
+    private fun playExpression(name: String) {
+        val s = stage ?: return
+        if (name !in catalogExpressions) return
+        val action = Live2dAction(
+            name = name,
+            type = ActionType.EXPRESSION,
+            source = ActionSource.MODEL,
+            expression = name,
+        ).scaledBy(actionScale)
+        // 渲染层的任何意外都不许冒泡进通话链路（§零.7 第 3 条），但要留得下来的证据
+        runCatching { s.playAction(action) }
+            .onFailure { Log.e("RealtimeCallVM", "playExpression failed name=$name personaId=$personaId", it) }
+    }
+
+    /**
      * 点了一下画面里的角色（v0.67.0，通话页的角色互动）。
      *
      * 与角色空间共用同一套判定与同一套"区域→动作"的绑定：点着头部是摇头、点着身体是摆手。
@@ -307,6 +362,9 @@ class RealtimeCallViewModel(
         val s = stage ?: return
         viewModelScope.launch {
             val region = runCatching { s.hit(ndcX, ndcY) }.getOrNull() ?: return@launch
+            // 先说话、再演动作：摸这一下要成为**下一轮她听得见的输入**（v0.71.0，抄爱语那一路）。
+            // 只送一句人话，不送坐标也不送内部枚举名。
+            engine?.noteAmbient("用户刚刚" + InteractionRules.spokenActionOf(region))
             val action = runCatching {
                 app.live2dActions.resolveInteraction(personaId, region, System.currentTimeMillis())
             }.getOrNull() ?: return@launch
@@ -362,6 +420,7 @@ class RealtimeCallViewModel(
                 it.copy(userPartial = "", turns = it.turns + CallTurnData("user", ev.text, System.currentTimeMillis()))
             }
             is RealtimeCallEvent.AiDelta -> _ui.update { it.copy(aiPartial = ev.fullText) }
+            is RealtimeCallEvent.Expression -> playExpression(ev.name)
             is RealtimeCallEvent.AiFinal -> _ui.update {
                 it.copy(aiPartial = "", turns = it.turns + CallTurnData("ai", ev.text, System.currentTimeMillis()))
             }

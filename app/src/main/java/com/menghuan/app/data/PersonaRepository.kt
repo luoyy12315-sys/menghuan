@@ -23,9 +23,12 @@ class PersonaRepository(
     suspend fun getPersona(id: Long): Persona? = db.personaDao().getById(id)
 
     suspend fun save(persona: Persona): Long {
-        if (persona.name == ASSISTANT_PERSONA_NAME) {
+        // v0.68.0：判"是不是内置助手"不能只看名字 —— 改过名的那份也是它。
+        // 认错的后果不是崩，而是**手册的纳管标记写错了对象**：
+        // 用户改的是助手手册，标记却没置上 → 下一版启动直接把他的自定义内容冲掉。
+        if (persona.name == ASSISTANT_PERSONA_NAME || isAssistantById(persona.id)) {
             // 亲手改过助手的设定词 = 用户接管这份手册，从此不再自动覆盖；
-            // 改回与默认完全一致（含「全部恢复默认」）= 重新交还给 App 维护
+            // 改回与默认完全一致 = 重新交还给 App 维护（该段下方那颗「恢复」+「保存」就是这条路）
             settingsRepository?.setAssistantPromptCustomized(
                 persona.systemPrompt.trim() != AiPrompts.DEFAULT_ASSISTANT_PROMPT.trim(),
             )
@@ -34,12 +37,40 @@ class PersonaRepository(
     }
 
     /**
+     * 找到内置「应用助手」（v0.68.0）。**所有"找助手"的地方都必须走这一条**，不要再各自 `getByName`。
+     *
+     * 两级：
+     * 1. 按固定名字 —— 正常装机一次就中；
+     * 2. 名字找不到就认"内置人设里身上还挂着内置手册形状的那一份"。
+     *
+     * 为什么要有第 2 级：老逻辑只按名字查，用户一旦把助手改名（人设编辑器**不锁名字**），
+     * 三件事会同时坏：① 提示词页查不到 → 显示的是出厂手册而不是他那份；
+     * ② 点保存走 `?: Persona(…)` **再建一条内置助手**，列表里出现两个；
+     * ③ 启动升级也按名字找 → 他那本手册从此永远停在改名那一刻。
+     * 这一级把已经改过名的历史装机捞回来（新装机由编辑器锁名兜住）。
+     */
+    suspend fun findAssistant(): Persona? {
+        val dao = db.personaDao()
+        dao.getByName(ASSISTANT_PERSONA_NAME)?.let { return it }
+        return dao.getBuiltIns().firstOrNull {
+            AiPrompts.isBuiltinAssistantManual(it.systemPrompt.trim())
+        }
+    }
+
+    private suspend fun isAssistantById(id: Long): Boolean =
+        id != 0L && findAssistant()?.id == id
+
+    /**
      * 物理删除人设 = 级联清理：该会话全部消息 + 未读标记 + 提炼水位线 + 会话级接口覆盖 + 人设音色
      * + 通话视觉素材目录。
      * （人设无独立闹钟；任务闹钟按任务独立，不受影响。）
      */
     suspend fun delete(id: Long) {
         db.messageDao().clearConversation(id)
+        // v0.70.0：记忆按人设分开之后，删角色必须把它自己聊出来的那部分一起清掉，
+        // 否则会留下一堆没人能读到的孤儿行（且 id 不复用，越攒越多）。
+        // deleteForPersona 的 SQL 里写死了 `personaId != 0`：**用户本人的基础档案永远不跟着角色删**。
+        db.profileFactDao().deleteForPersona(id)
         db.personaDao().deleteById(id)
         settingsRepository?.removeReadMark(id)
         settingsRepository?.removeExtractionWatermark(id)
@@ -109,7 +140,7 @@ class PersonaRepository(
      */
     suspend fun ensureAssistant() {
         runCatching {
-            if (db.personaDao().getByName(ASSISTANT_PERSONA_NAME) == null) {
+            if (findAssistant() == null) {
                 seed()
             }
         }
@@ -126,7 +157,8 @@ class PersonaRepository(
      * v0.50.0 写了整章语音配置教程，真机上助手却依然答不上"语音怎么配"。
      *
      * 新判定只看两件事，**以后改手册不必再登记任何历史全文**：
-     * 1. 用户改过吗？改过就永不覆盖（保存路径 [save] 会置标记；「全部恢复默认」把标记清掉、重新纳管）。
+     * 1. 用户改过吗？改过就永不覆盖（保存路径 [save] 会置标记；在提示词页把这一格「恢复」成默认
+     *    再「保存」，标记就清掉、重新纳管 —— v0.54.4 起页面上没有全局的「全部恢复默认」按钮了）。
      *    DataStore 里是 null（本机制引入前的老装机）时，用"这段是不是内置手册的形状"一次性判：
      *    形状对得上=历史版手册（升到最新），对不上=用户自己写的（保护）。
      * 2. 没改过就无条件对齐当前默认（等于就直接返回，不多写一次库）。
@@ -134,7 +166,8 @@ class PersonaRepository(
     suspend fun refreshAssistantPromptIfNeeded() {
         runCatching {
             val settings = settingsRepository ?: return
-            val persona = db.personaDao().getByName(ASSISTANT_PERSONA_NAME) ?: return
+            // 走 findAssistant（v0.68.0）：按名字找会让改过名的装机永久停在旧手册上
+            val persona = findAssistant() ?: return
             val default = AiPrompts.DEFAULT_ASSISTANT_PROMPT
             val current = persona.systemPrompt.trim()
             if (current == default.trim()) return

@@ -147,11 +147,26 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
     // 关掉就没了，所以列表级的话必须单独一个槽（v0.37.1 的教训不变）
     var listMsg by remember { mutableStateOf<String?>(null) }
 
+    // 本月「输入 token / 其中缓存命中」（v0.69.0）：把"前缀稳不稳"变成看得见的数。
+    // 服务商没回 usage 时两个数都是 0 —— **这时一行都不显示**，不画个 0% 骗用户去改本来就对的前缀。
+    val cacheUsage by app.settingsRepository.monthlyCacheUsage
+        .collectAsState(initial = Triple("", 0, 0))
+
     SettingsPage(
         title = if (kind == ApiModelKind.CHAT) "对话模型" else "生图模型",
         onBack = onBack,
     ) {
         Spacer(Modifier.height(14.dp))
+
+        // 缓存命中率一行（v0.69.0）：有读数才占位
+        if (com.menghuan.app.data.UsageTracker.cacheHitRate(cacheUsage.second, cacheUsage.third) != null) {
+            Text(
+                com.menghuan.app.data.UsageTracker.cacheHitLabel(cacheUsage.second, cacheUsage.third),
+                fontSize = 12.sp,
+                color = MutedText,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
 
         // 本月用量按模型查表（v0.56.8 用户点名：**直接显示在模型卡片上、模型名的右边**，
         // 文字是「共消耗 X tokens」，字体沿用行内原来的小字）。

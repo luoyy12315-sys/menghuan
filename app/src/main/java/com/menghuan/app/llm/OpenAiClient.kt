@@ -32,6 +32,42 @@ class ApiException(val code: Int, val body: String?) :
 data class ModelListResult(val ids: List<String> = emptyList(), val error: String? = null)
 
 /**
+ * 一次调用的用量读数（纯函数产物，JVM 单测口径）。
+ *
+ * [cachedPromptTokens] 是**输入里被服务商缓存命中的那部分**。它一直是 §零 里
+ * "当前设置会不会多花钱"唯一缺的那块读数：前缀（人设 + 稳定记忆）有没有真的稳定，
+ * 只看 total_tokens 永远看不出来。
+ */
+data class UsageReadout(
+    val totalTokens: Int,
+    val promptTokens: Int,
+    val cachedPromptTokens: Int,
+)
+
+/**
+ * `usage` 块 → [UsageReadout]；三个数全为 0（或没有 usage 块）时返回 null —— **拿不到的不猜**。
+ *
+ * cached 的字段名各家不一样，这里按"取第一个非 0"认三种方言，而不是只认 OpenAI 那一种：
+ * - `prompt_tokens_details.cached_tokens`（OpenAI / DeepSeek / Moonshot 兼容口径）
+ * - `cached_tokens`（个别兼容端把这层摊平在 usage 根上）
+ * - `cache_read_input_tokens`（Anthropic 方言；走兼容网关转出来的那一类会用它）
+ * 认不出来就是 0，**不编一个看起来合理的数**。
+ */
+fun parseUsage(usage: JSONObject?): UsageReadout? {
+    usage ?: return null
+    val total = usage.optInt("total_tokens", 0)
+    val prompt = usage.optInt("prompt_tokens", 0)
+    val nested = usage.optJSONObject("prompt_tokens_details")?.optInt("cached_tokens", 0) ?: 0
+    val cached = when {
+        nested > 0 -> nested
+        usage.optInt("cached_tokens", 0) > 0 -> usage.optInt("cached_tokens", 0)
+        else -> usage.optInt("cache_read_input_tokens", 0)
+    }
+    if (total <= 0 && prompt <= 0 && cached <= 0) return null
+    return UsageReadout(total.coerceAtLeast(0), prompt.coerceAtLeast(0), cached.coerceAtLeast(0))
+}
+
+/**
  * 流式事件：正文增量 / 思考链增量 / 用量统计
  * （部分服务商在最后一个 SSE 块带 usage；没有就没有）。
  */
@@ -44,7 +80,16 @@ sealed interface StreamEvent {
      * 思考链只在长按菜单里按需查看，绝不混进气泡。
      */
     data class Reasoning(val text: String) : StreamEvent
-    data class Usage(val tokens: Int) : StreamEvent
+
+    /**
+     * 用量统计。后两个字段带默认值，所以老调用点 `StreamEvent.Usage(tokens)` 与
+     * `ev.tokens` 全部照旧编译——缓存命中率这一路是**加读数**，不是改协议。
+     */
+    data class Usage(
+        val tokens: Int,
+        val promptTokens: Int = 0,
+        val cachedPromptTokens: Int = 0,
+    ) : StreamEvent
 }
 
 /** collectReply 的返回：全量回复文本 + 思考链 + 该次调用的 token 用量（拿不到为 null） */
@@ -53,6 +98,10 @@ data class CollectedReply(
     val usageTokens: Int? = null,
     /** 思考链全文（没有推理段落的模型为空串） */
     val reasoning: String = "",
+    /** 输入 token 数（服务商没回 usage 时为 0，不猜） */
+    val promptTokens: Int = 0,
+    /** 输入里被缓存命中的 token 数（服务商没回时为 0，不猜） */
+    val cachedPromptTokens: Int = 0,
 )
 
 /**
@@ -79,28 +128,36 @@ class OpenAiClient(
     suspend fun collectReply(
         systemPrompt: String,
         history: List<ChatMessage>,
+        runtimeContext: String = "",
         imageDataUrl: suspend (String) -> String? = { null },
     ): CollectedReply {
         val text = StringBuilder()
         val reasoning = StringBuilder()
         var usage: Int? = null
-        streamEvents(systemPrompt, history, imageDataUrl).collect { ev ->
+        var prompt = 0
+        var cached = 0
+        streamEvents(systemPrompt, history, runtimeContext, imageDataUrl).collect { ev ->
             when (ev) {
                 is StreamEvent.Delta -> text.append(ev.text)
                 is StreamEvent.Reasoning -> reasoning.append(ev.text)
-                is StreamEvent.Usage -> usage = ev.tokens
+                is StreamEvent.Usage -> {
+                    usage = ev.tokens
+                    prompt = ev.promptTokens
+                    cached = ev.cachedPromptTokens
+                }
             }
         }
-        return CollectedReply(text.toString(), usage, reasoning.toString())
+        return CollectedReply(text.toString(), usage, reasoning.toString(), prompt, cached)
     }
 
     /** 事件流（公开：ChatViewModel 一边渲染增量一边收 usage 记账） */
     fun streamEvents(
         systemPrompt: String,
         history: List<ChatMessage>,
+        runtimeContext: String = "",
         imageDataUrl: suspend (String) -> String? = { null },
     ): Flow<StreamEvent> = flow {
-        val messages = buildMessagesJson(systemPrompt, history, imageDataUrl)
+        val messages = buildMessagesJson(systemPrompt, history, runtimeContext, imageDataUrl)
         val body = JSONObject()
             .put("model", model)
             .put("messages", messages)
@@ -144,9 +201,9 @@ class OpenAiClient(
                         emit(StreamEvent.Reasoning(reasoning))
                     }
                     // 用量块（部分服务商最后一块带 usage，choices 为空）：有就记账
-                    val usage = json.optJSONObject("usage")
-                    val tokens = usage?.optInt("total_tokens", 0) ?: 0
-                    if (tokens > 0) emit(StreamEvent.Usage(tokens))
+                    parseUsage(json.optJSONObject("usage"))?.let {
+                        emit(StreamEvent.Usage(it.totalTokens, it.promptTokens, it.cachedPromptTokens))
+                    }
                 }
             }
         } catch (e: CancellationException) {
@@ -263,6 +320,33 @@ class OpenAiClient(
 
     companion object {
         /**
+         * 易变上下文（当前时间等）的开场标记（照 kiwi-mem `_RUNTIME_CONTEXT_BEGIN` 的措辞口径）。
+         *
+         * **为什么拼在最后一条用户消息里，而不是再发一条 system / 再插一条 user**：
+         * 各家 OpenAI 兼容端点对 `messages` 里 system 能出现在什么位置、能不能连续两条 user，
+         * **都不保证** —— 与本项目"不猜外部服务的参数字段名"（`tools` 那条）是同一条纪律。
+         * 拼进最新那条用户消息，是所有兼容端都不挑的写法。
+         *
+         * **为什么这样仍然保得住缓存**：上一轮发出去的请求里，这个块挂在当时最新的那条消息上；
+         * 本轮重放历史时那条消息已不是最新、且库里存的是**不带块的原文**，
+         * 于是分歧点恰好落在"最后一条消息"这一处 —— 而那一处本来就是要变的。
+         * **前缀（system + 其余全部历史）逐字节与上一轮相同**，缓存照样命中。
+         * 反过来，把时间写进 system prompt 会让整段前缀每分钟作废一次。
+         */
+        const val RUNTIME_CONTEXT_MARK = "[以下为系统自动注入的实时上下文，并非用户发送]"
+
+        /**
+         * 把易变上下文拼到消息正文前面（纯函数，JVM 单测口径）。
+         * [runtimeContext] 为空 = 原文一字不动（**不塞一个空标记进去污染正文**）。
+         */
+        fun withRuntimeContext(content: String, runtimeContext: String): String {
+            val block = runtimeContext.trim()
+            if (block.isEmpty()) return content
+            val head = "$RUNTIME_CONTEXT_MARK\n$block"
+            return if (content.isBlank()) head else "$head\n\n$content"
+        }
+
+        /**
          * 组装 messages 数组（纯函数，JVM 可测）：
          * - system + 历史逐条展开；
          * - 用户消息带 imagePath 且 [imageDataUrl] 给得出 data URL → vision 多段 content
@@ -271,15 +355,25 @@ class OpenAiClient(
          * - 助手消息的 reasoning（思考链，v0.41.4）**同样不进请求**：它是给用户看的旁白，
          *   回送既白费 token，又会把模型上一轮的旧思路重新灌进上下文带偏本轮（显式标注，
          *   防止以后有人"顺手"把它拼进去）。
+         *
+         * ⚠️ **[runtimeContext] 排在 [imageDataUrl] 之前**：这个位置是刻意的。
+         * 调用点（含既有单测）用的是**尾随 lambda**写法，尾随 lambda 永远绑到最后一个参数；
+         * 把新参数加在 suspend lambda 后面，等于把所有尾随调用点的图片编码回调
+         * 悄悄换成一个 String —— 编译期报"类型不匹配"还算好事，本轮真机没跑到才发现就晚了。
          */
         internal suspend fun buildMessagesJson(
             systemPrompt: String,
             history: List<ChatMessage>,
+            runtimeContext: String = "",
             imageDataUrl: suspend (String) -> String? = { null },
         ): JSONArray = JSONArray().apply {
             put(JSONObject().put("role", "system").put("content", systemPrompt))
-            history.forEach { m ->
+            // 易变上下文只贴到**最后一条用户消息**上（理由见 RUNTIME_CONTEXT_MARK 注释）
+            val lastUserIndex = history.indexOfLast { it.isFromUser }
+            history.forEachIndexed { index, m ->
                 val role = if (m.isFromUser) "user" else "assistant"
+                val content =
+                    if (index == lastUserIndex) withRuntimeContext(m.content, runtimeContext) else m.content
                 val dataUrl = if (m.isFromUser && m.imagePath.isNotBlank()) imageDataUrl(m.imagePath) else null
                 if (dataUrl != null) {
                     val parts = JSONArray()
@@ -287,15 +381,15 @@ class OpenAiClient(
                             JSONObject().put("type", "image_url")
                                 .put("image_url", JSONObject().put("url", dataUrl))
                         )
-                    if (m.content.isNotBlank()) {
-                        parts.put(JSONObject().put("type", "text").put("text", m.content))
+                    if (content.isNotBlank()) {
+                        parts.put(JSONObject().put("type", "text").put("text", content))
                     }
                     put(JSONObject().put("role", role).put("content", parts))
                 } else {
                     put(
                         JSONObject()
                             .put("role", role)
-                            .put("content", m.content)
+                            .put("content", content)
                     )
                 }
             }

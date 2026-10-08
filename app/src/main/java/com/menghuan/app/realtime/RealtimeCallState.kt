@@ -34,6 +34,14 @@ sealed interface RealtimeCallEvent {
 
     data class State(val state: RealtimeCallState) : RealtimeCallEvent
     data class Error(val message: String) : RealtimeCallEvent
+    /**
+     * AI 在回复里点了名要换的表情（v0.69.0，标记 `[表情:名]` 已由引擎剥掉，这里只发名字）。
+     *
+     * **只有 Live2D 形象才认它**：伪视频没有可驱动的参数，语音通话连视觉层都不创建
+     * （AGENTS.md §零.7"语音通话必须完全不碰视觉层"），所以那两条路收到就丢 ——
+     * 表情没换成不等于通话出了问题，不许报错、不许弹提示。
+     */
+    data class Expression(val name: String) : RealtimeCallEvent
 }
 
 /**

@@ -68,6 +68,7 @@ import com.menghuan.app.data.model.TaskItem
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuSheetRow
+import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.NeuTextButton
@@ -113,6 +114,21 @@ class MeViewModel(
     /** 基础档案（编辑弹层真数据源；保存后注入聊天 system prompt） */
     val facts: StateFlow<List<ProfileFact>> = profileRepository.observeFacts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * 「个人档案全部 AI 可读」开关（v0.70.0）。
+     *
+     * 这一页的条目全是 `personaId = 0` 那一档 —— 记忆按人设分开之后，只有它天然是跨角色的。
+     * **默认开**：用户亲手填的姓名/职业本来就是"讲给我身边所有 AI"的，
+     * 默认关掉会让 TA 一觉醒来发现每个角色都不认识自己了，那是静默倒退。
+     * 想收成"只给某个角色看"的人，把具体那条挪进该角色的记忆就行（记忆页那一轮做）。
+     */
+    val profileSharedReadable: StateFlow<Boolean> = settingsRepository.profileSharedReadable
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    fun setProfileSharedReadable(enabled: Boolean) = viewModelScope.launch {
+        settingsRepository.setProfileSharedReadable(enabled)
+    }
 
     /** 档案编辑保存：删被移除的行，非空行 upsert，保留已有来源标记 */
     fun saveEdits(items: List<DraftFact>, removedIds: List<Long>) = viewModelScope.launch {
@@ -187,7 +203,7 @@ class MeViewModel(
                 db.profileFactDao().deleteAll()
                 db.taskCompletionDao().deleteAll()
                 db.taskDao().deleteAll()
-                db.memoDao().deleteAll()
+                db.momentDao().deleteAll()
                 // 聊天发图与 AI 生成图一并删掉：消息表清了，图留着就是孤儿文件（v0.38.0）
                 runCatching { java.io.File(app.filesDir, "chat_images").deleteRecursively() }
                 runCatching { java.io.File(app.filesDir, "images").deleteRecursively() }
@@ -469,6 +485,24 @@ fun ProfileScreen(
 
     SettingsPage(title = "基础档案", onBack = onBack) {
         Spacer(Modifier.height(14.dp))
+
+        // v0.70.0：这一页的条目属于 `personaId = 0` 那一档（跨角色共享）。
+        // 开关只决定"这些共享条目还发不发"，各角色自己聊出来的记忆不受它管。
+        val sharedReadable by vm.profileSharedReadable.collectAsState()
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "全部 AI 可读",
+                fontSize = 15.sp,
+                color = TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            NeuSwitch(checked = sharedReadable, onToggle = { vm.setProfileSharedReadable(it) })
+        }
+        Spacer(Modifier.height(14.dp))
+
         drafts.forEachIndexed { index, draft ->
             Row(
                 Modifier.fillMaxWidth(),

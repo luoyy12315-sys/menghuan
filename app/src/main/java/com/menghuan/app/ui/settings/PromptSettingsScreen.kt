@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.AiPrompts
+import com.menghuan.app.data.DailySuggestionMath
 import com.menghuan.app.data.ASSISTANT_PERSONA_NAME
 import com.menghuan.app.data.ASSISTANT_PERSONA_TITLE
 import com.menghuan.app.data.ProfileExtractor
@@ -41,13 +42,14 @@ import com.menghuan.app.ui.theme.TextSecondary
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-/** 该页所有可编提示词的**当前草稿**（v0.54.4） */
+/** 该页所有可编提示词的**当前草稿**（v0.54.4 · v0.68.0 补每日建议） */
 private data class PromptDraft(
     val assistant: String = AiPrompts.DEFAULT_ASSISTANT_PROMPT,
     val base: String = AiPrompts.DEFAULT_BASE_PROMPT,
     val preamble: String = AiPrompts.DEFAULT_PROFILE_PREAMBLE,
     val extraction: String = ProfileExtractor.DEFAULT_STRATEGY,
     val weekly: String = WeeklyReportMath.DEFAULT_STRATEGY,
+    val daily: String = DailySuggestionMath.DEFAULT_STRATEGY,
     val image: String = IMAGE_HINT_DEFAULT_STRATEGY,
     val agentEnabled: Boolean = true,
     val agent: String = AGENT_CHAT_DEFAULT_STRATEGY,
@@ -55,7 +57,11 @@ private data class PromptDraft(
 )
 
 /**
- * 设置 · AI 提示词：**八段**可编辑（手风琴布局）。
+ * 设置 · AI 提示词：**九段**可编辑（手风琴布局）。
+ *
+ * v0.68.0 补上第九段「每日建议策略」—— DataStore 键与生成链路的读取从 v0.42.0 就在了，
+ * `DailySuggestionGenerator` 的注释也一直写着"用户可在设置里覆盖"，**唯独页面里没有这一格**：
+ * 用户看得见别的段、改不了今日建议的口径，而代码那句承诺是假的。
  *
  * 分层语义不变：框架（硬编码只读，改了 parse 会崩）+ 策略（可编可恢复）。
  *
@@ -88,13 +94,17 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
 
     LaunchedEffect(Unit) {
         val initial = PromptDraft(
+            // 助手手册按"是不是内置助手"定位，不是按名字（v0.68.0）：
+            // 老逻辑只查 name="应用助手"，用户改过名字就查不到 → 这一格显示默认手册，
+            // 点保存还会**再建一个**内置助手，而原来那份从此不再跟着版本升级。
             assistant = runCatching {
-                app.db.personaDao().getByName(ASSISTANT_PERSONA_NAME)?.systemPrompt
+                app.personaRepository.findAssistant()?.systemPrompt
             }.getOrNull() ?: AiPrompts.DEFAULT_ASSISTANT_PROMPT,
             base = app.settingsRepository.basePrompt.first(),
             preamble = app.settingsRepository.profilePreamble.first(),
             extraction = app.settingsRepository.extractionStrategy.first(),
             weekly = app.settingsRepository.weeklyReportStrategy.first(),
+            daily = app.settingsRepository.dailySuggestionStrategy.first(),
             image = app.settingsRepository.imageHintStrategy.first(),
             agentEnabled = app.settingsRepository.agentChatEnabled.first(),
             agent = app.settingsRepository.agentChatStrategy.first(),
@@ -113,7 +123,9 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                 // 应用助手：改内置人设的设定词；被删除后保存会以固定名字重建。
                 // 必须走 personaRepository.save——那里记下"用户亲手改过手册"，
                 // App 才不会在下个版本把用户写的东西冲掉（v0.51.1 升级机制）
-                val existing = app.db.personaDao().getByName(ASSISTANT_PERSONA_NAME)
+                // 查"是不是内置助手"也走同一个 findAssistant（v0.68.0）：
+                // 按名字查会在改过名的装机上多建一条内置助手。
+                val existing = app.personaRepository.findAssistant()
                 val trimmed = current.assistant.trim()
                 app.personaRepository.save(
                     existing?.copy(systemPrompt = trimmed)
@@ -129,6 +141,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                 app.settingsRepository.setProfilePreamble(current.preamble)
                 app.settingsRepository.setExtractionStrategy(current.extraction)
                 app.settingsRepository.setWeeklyReportStrategy(current.weekly)
+                app.settingsRepository.setDailySuggestionStrategy(current.daily)
                 app.settingsRepository.setImageHintStrategy(current.image)
                 app.settingsRepository.setAgentChatEnabled(current.agentEnabled)
                 app.settingsRepository.setAgentChatStrategy(current.agent)
@@ -247,6 +260,23 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                 dirty = draft.weekly != persisted.weekly,
                 onStrategyChange = { draft = draft.copy(weekly = it) },
                 onReset = { draft = draft.copy(weekly = WeeklyReportMath.DEFAULT_STRATEGY) },
+                onSave = { save() },
+            )
+        }
+
+        SettingsSectionRow(
+            title = "每日建议策略",
+            titleSize = 17.sp,
+            customized = customized(draft.daily, DailySuggestionMath.DEFAULT_STRATEGY),
+            expanded = openSection == "daily",
+        ) { toggle("daily") }
+        if (openSection == "daily") {
+            LayeredEditor(
+                framework = DailySuggestionMath.FRAMEWORK,
+                strategy = draft.daily,
+                dirty = draft.daily != persisted.daily,
+                onStrategyChange = { draft = draft.copy(daily = it) },
+                onReset = { draft = draft.copy(daily = DailySuggestionMath.DEFAULT_STRATEGY) },
                 onSave = { save() },
             )
         }

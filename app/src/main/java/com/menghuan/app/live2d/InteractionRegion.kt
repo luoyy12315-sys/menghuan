@@ -56,6 +56,23 @@ object InteractionRules {
     }
 
     /**
+     * 把一次点击翻成**给模型听的一句人话**（v0.71.0，"触碰→对话"那一条链）。
+     *
+     * 两条讲究：
+     * - **说"刚才做了什么"，不说坐标也不说内部枚举名**。模型拿到 `HEAD` 或 `0.12,-0.4`
+     *   只会瞎猜；拿到"用户摸了摸你的头"就能直接接话。
+     *   （爱语那边有 11 个部位，我们只有三区 —— 因为免费模型的 HitArea 基本只画了 Head/Body，
+     *   硬凑出"左手右手"会在一大半模型上说出没发生过的事，那比粗更糟。）
+     * - **`OTHER` 不许谎称被碰到**：点到画面空白处就是空白处，
+     *   告诉模型"用户碰了碰你的身体"是让它对一个没发生的接触表情绪。
+     */
+    fun spokenActionOf(region: InteractionRegion): String = when (region) {
+        InteractionRegion.HEAD -> "摸了摸你的头"
+        InteractionRegion.BODY -> "轻轻碰了碰你的身体"
+        InteractionRegion.OTHER -> "点了一下画面，但没点到你的身上"
+    }
+
+    /**
      * 第二级（兜底）：按"触点落在角色包围盒里的相对高度"分区。
      *
      * @param normalizedY 0 = 角色包围盒顶部，1 = 底部；**null = 根本没点在角色身上** → OTHER

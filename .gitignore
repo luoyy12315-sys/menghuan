@@ -11,3 +11,7 @@ logs/
 ui-screenshots/
 # 官方 Live2D SDK 全量解压（含 Sample 源码与示例模型），只作本地参考，不入库
 _sdkfull/
+# 第三方模型压缩包（体积大、来源第三方，只作本地素材，不入库）
+*.zip
+# 编辑器/工具留下的临时文件
+*.tmp

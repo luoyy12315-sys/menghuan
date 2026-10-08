@@ -20,7 +20,7 @@ import com.menghuan.app.data.model.DailySuggestion
 import com.menghuan.app.data.model.ImageGenerationRecord
 import com.menghuan.app.data.model.LedgerEntry
 import com.menghuan.app.data.model.Live2dActionEntity
-import com.menghuan.app.data.model.MemoEntry
+import com.menghuan.app.data.model.MomentEntry
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.ProfileFact
 import com.menghuan.app.data.model.Sticker
@@ -43,6 +43,16 @@ interface PersonaDao {
     /** 按名字查人设（内置「应用助手」提示词编辑用） */
     @Query("SELECT * FROM personas WHERE name = :name LIMIT 1")
     suspend fun getByName(name: String): Persona?
+
+    /**
+     * 全部内置人设，按创建时间（v0.68.0）。
+     *
+     * 存在的理由只有一个：**内置助手可能被改名**，而"按名字找回助手"这条路一断，
+     * 手册就永久停止跟随版本升级、提示词页还会多建一条助手。
+     * 这里取出来交给 [PersonaRepository.findAssistant] 用"身上是不是内置手册的形状"再认一次。
+     */
+    @Query("SELECT * FROM personas WHERE isBuiltIn = 1 ORDER BY createdAt ASC")
+    suspend fun getBuiltIns(): List<Persona>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(persona: Persona): Long
@@ -197,6 +207,47 @@ interface ProfileFactDao {
     @Query("SELECT * FROM profile_facts WHERE key = :key LIMIT 1")
     suspend fun getByKey(key: String): ProfileFact?
 
+    /**
+     * 分人设之后的同名判据（v0.70.0）：**同 key 在不同角色下是两条独立记忆**。
+     * 不再用 [getByKey] 做合并，否则 A 角色聊出的"爱吃辣"会把 B 角色那条覆盖掉。
+     * （不重载成同名 `getByKey`：DAO 里一参/两参同名会给代码生成器添无谓风险。）
+     */
+    @Query("SELECT * FROM profile_facts WHERE key = :key AND personaId = :personaId LIMIT 1")
+    suspend fun findScoped(key: String, personaId: Long): ProfileFact?
+
+    /**
+     * 某个角色**能读到的全部记忆**：自己的 + 用户的基础档案（personaId = 0）。
+     * 基础档案那部分要不要真给，由调用方按「个人档案全部 AI 可读」这个开关再筛一次
+     * （SQL 里判不了开关，别把开关逻辑塞进查询——两处各写一份迟早打架）。
+     */
+    @Query(
+        "SELECT * FROM profile_facts " +
+            "WHERE personaId IN (0, :personaId) AND lifecycle IN ('active', 'core') " +
+            "ORDER BY CASE lifecycle WHEN 'core' THEN 0 ELSE 1 END, id ASC"
+    )
+    fun observeVisibleFor(personaId: Long): Flow<List<ProfileFact>>
+
+    /** 基础档案页：只看 personaId = 0 这一档（不含各角色的记忆，也不含待入库/已拒的） */
+    @Query("SELECT * FROM profile_facts WHERE personaId = 0 AND lifecycle IN ('active', 'core') ORDER BY id ASC")
+    fun observeGlobal(): Flow<List<ProfileFact>>
+
+    /** 记忆页：某个角色自己的记忆（含 staging 与 rejected，页面要能列出来给用户处置） */
+    @Query("SELECT * FROM profile_facts WHERE personaId = :personaId ORDER BY id ASC")
+    fun observeOwnedBy(personaId: Long): Flow<List<ProfileFact>>
+
+    /**
+     * 待入库条数（v0.71.0）：会话设置那一行的「N 条待确认」用它。
+     *
+     * 为什么要单独一个计数查询而不是把整表拉进内存数：这一行在**每个**会话设置页都要显示，
+     * 而记忆库会一直长；把全表读进组合层只为了数一个数，是白给的开销。
+     */
+    @Query("SELECT COUNT(*) FROM profile_facts WHERE personaId = :personaId AND lifecycle = 'staging'")
+    fun observeStagingCount(personaId: Long): Flow<Int>
+
+    /** 删角色时级联清掉它自己的记忆（0 是用户本人的档案，**永远不跟着角色删**） */
+    @Query("DELETE FROM profile_facts WHERE personaId = :personaId AND personaId != 0")
+    suspend fun deleteForPersona(personaId: Long)
+
     /** 清除全部数据用（v0.36.5） */
     @Query("DELETE FROM profile_facts")
     suspend fun deleteAll()
@@ -290,29 +341,36 @@ interface LedgerDao {
 }
 
 /**
- * 备忘（v0.62.0）。条数天然很少（几十到几百），整表倒序观察即可，
- * 不做分页也不做按时间索引——排序口径在 MemoMath 里，保持单一来源。
+ * 动态（v0.73.0）：一张表两种行 —— `parentId = 0` 是帖子，其余是它下面的回复。
+ *
+ * 排序口径**只在 [MomentMath] 这一处**：DAO 只按时间倒序把全量交给内存，
+ * 因为一个陪伴 App 的动态量级天然是几十到几百条，不是社交媒体量级。
+ * 真到了要分页的那天再改这里，别提前把简单事情做复杂。
  */
 @Dao
-interface MemoDao {
-    @Query("SELECT * FROM memos ORDER BY pinned DESC, createdAt DESC")
-    fun observeAll(): Flow<List<MemoEntry>>
+interface MomentDao {
+    @Query("SELECT * FROM moments ORDER BY createdAt DESC")
+    fun observeAll(): Flow<List<MomentEntry>>
 
-    /** 编辑前取回原条（保住 createdAt，别让编辑把时间戳刷到最新） */
-    @Query("SELECT * FROM memos WHERE id = :id LIMIT 1")
-    suspend fun getById(id: Long): MemoEntry?
+    @Query("SELECT * FROM moments WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): MomentEntry?
 
+    /** 发帖/回复都用这条；id=0 走自增 */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(memo: MemoEntry): Long
+    suspend fun upsert(moment: MomentEntry): Long
 
-    @Query("UPDATE memos SET pinned = :pinned WHERE id = :id")
-    suspend fun setPinned(id: Long, pinned: Boolean)
+    /** 删一条帖子要连带它的回复 —— 不然回复成了指向空气的孤儿行，时间线上会算出错的条数 */
+    @Query("DELETE FROM moments WHERE id = :id OR parentId = :id")
+    suspend fun deleteThread(id: Long)
 
-    @Query("DELETE FROM memos WHERE id = :id")
-    suspend fun deleteById(id: Long)
+    @Query("UPDATE moments SET text = :text WHERE id = :id")
+    suspend fun setText(id: Long, text: String)
 
-    /** 清除全部数据用 */
-    @Query("DELETE FROM memos")
+    @Query("UPDATE moments SET likedBy = :likedBy WHERE id = :id")
+    suspend fun setLikedBy(id: Long, likedBy: String)
+
+    /** 清除全部数据用（v0.36.5 那一套） */
+    @Query("DELETE FROM moments")
     suspend fun deleteAll()
 }
 
@@ -485,11 +543,11 @@ interface CallActionBindingDao {
         Sticker::class,
         CallSession::class,
         CallTurn::class,
-        MemoEntry::class,
+        MomentEntry::class,
         Live2dActionEntity::class,
         CallActionBindingEntity::class,
     ],
-    version = 19,
+    version = 21,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -503,7 +561,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun aiWeeklyReportDao(): AiWeeklyReportDao
     abstract fun imageGenerationDao(): ImageGenerationDao
     abstract fun ledgerDao(): LedgerDao
-    abstract fun memoDao(): MemoDao
+    abstract fun momentDao(): MomentDao
     abstract fun dailySuggestionDao(): DailySuggestionDao
     abstract fun stickerDao(): StickerDao
     abstract fun callDao(): CallDao
@@ -523,6 +581,48 @@ abstract class AppDatabase : RoomDatabase() {
          * 迁移里灌一份快照进去，等于把 v0.64.0 的动作永久冻结在用户机器上。
          * 播种放在仓库层 `ensureBuiltins()`，每次启动对一遍内置键。
          */
+        /**
+         * v0.70.0：记忆按人设彻底分开。
+         *
+         * 三列全部**带默认值加列**，一条数据都不动、不重建表（§六 禁破坏性迁移）：
+         * 既有行落到 `personaId = 0` = "用户自己的基础档案"，
+         * 这正是它们原本的语义（对所有角色可见），所以不需要用户逐条挑归属。
+         */
+        /**
+         * v0.73.0：「动态」上线、备忘本整块下线。
+         *
+         * 建 moments、**DROP memos**：用户明确说了不需要备忘录功能、也不要迁移旧数据，
+         * 所以这里不写 INSERT INTO ... SELECT。AGENTS.md §六 禁的是"破坏性重建"
+         * （为了改形状而重建表、丢用户数据），不是禁止按需求删模块 —— 这一条是用户点名的删除。
+         */
+        val MIGRATION_20_21 = object : Migration(20, 21) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `moments` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`personaId` INTEGER NOT NULL DEFAULT 0, " +
+                        "`parentId` INTEGER NOT NULL DEFAULT 0, " +
+                        "`text` TEXT NOT NULL DEFAULT '', " +
+                        "`createdAt` INTEGER NOT NULL DEFAULT 0, " +
+                        "`likedBy` TEXT NOT NULL DEFAULT '')"
+                )
+                // ⚠️ 索引必须跟着建：[com.menghuan.app.data.model.MomentEntry] 声明了这两条，
+                // 漏了不报错、不崩，只是老装机升级后时间线是**全表扫**（量小看不出来，越用越慢）。
+                // 同 v15 给 call_sessions 补索引的写法。
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_moments_createdAt` ON `moments` (`createdAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_moments_parentId` ON `moments` (`parentId`)")
+                db.execSQL("DROP TABLE IF EXISTS `memos`")
+            }
+        }
+
+        val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `profile_facts` ADD COLUMN `personaId` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `profile_facts` ADD COLUMN `category` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `profile_facts` ADD COLUMN `lifecycle` TEXT NOT NULL DEFAULT 'active'")
+            }
+        }
+
         val MIGRATION_18_19 = object : Migration(18, 19) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(

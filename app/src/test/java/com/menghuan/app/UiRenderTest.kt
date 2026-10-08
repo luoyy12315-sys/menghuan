@@ -271,9 +271,32 @@ class UiRenderTest {
     @Test
     fun render3Tasks() {
         awaitText("阿布")
-        compose.onNodeWithTag("bottom_tab_2").performClick() // 底栏 tab
+        // v0.73.0：任务从底栏第 3 格搬进了**数据页那张入口卡**（第 3 格换成了「动态」），
+        // 所以这里不再是点 tab，而是「数据 → 任务卡 → 全屏任务页」这条真实路径。
+        compose.onNodeWithTag("bottom_tab_1").performClick()
+        awaitText("记账本")
+        scrollToTagAndClick("tasks_entry_row")
         awaitText("暂无任务") // 空库空态
         snap("3-tasks")
+    }
+
+    /**
+     * 动态页（v0.73.0，底栏第 3 格）：空态 → 发一条 → 时间线上出现。
+     *
+     * 这条同时钉住两件事：**发帖入口在右下那颗圆钮**（不是顶栏），
+     * 以及帖子落库后时间线会自己刷出来（Room Flow，不靠手动 reload）。
+     */
+    @Test
+    fun render41Moments() {
+        awaitText("阿布")
+        compose.onNodeWithTag("bottom_tab_2").performClick() // 底栏「动态」
+        awaitText("发第一条动态") // 空态就是这一个动作，没有客套话
+        snap("60-moments-empty")
+        compose.onNodeWithTag("moment_compose_fab").performClick()
+        compose.onNodeWithText("此刻在想什么？").performTextInput("今晚的风很大")
+        clickText("发布")
+        awaitText("今晚的风很大")
+        snap("61-moments-one")
     }
 
     /**
@@ -596,9 +619,14 @@ class UiRenderTest {
         compose.waitForIdle()
         snap("0-chatlist-unread") // 未读点光晕 + 打卡回执消息的列表预览 + 置顶标识
         // 任务页（有数据）：分组标题 + 标签 + 完成划线
-        compose.onNodeWithTag("bottom_tab_2").performClick()
+        // v0.73.0：任务不在底栏第 3 格了，走「数据 → 任务卡」这条真实路径进去
+        compose.onNodeWithTag("bottom_tab_1").performClick()
+        scrollToTagAndClick("tasks_entry_row")
         awaitText("已逾期")
         snap("5-tasks-filled")
+        // 任务页是全屏页，后面还要用底栏 → 先按 ← 退回数据页
+        compose.onNodeWithContentDescription("返回").performClick()
+        awaitText("记账本")
         // 单聊页（长内容）：气泡宽度折行 + ❤️ 大表情 + 未读点光晕
         compose.onNodeWithTag("bottom_tab_0").performClick() // 底栏 tab
         awaitText("❤️") // 列表预览已更新为最后一条消息

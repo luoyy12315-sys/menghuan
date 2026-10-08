@@ -10,7 +10,13 @@ import kotlinx.coroutines.flow.Flow
  */
 class ProfileRepository(private val db: AppDatabase) {
 
-    fun observeFacts(): Flow<List<ProfileFact>> = db.profileFactDao().observeAll()
+    /**
+     * 「基础档案」页看到的 = **personaId = 0 那一档**（v0.70.0）。
+     *
+     * 以前这里返回整张表，于是各角色被提炼出来的记忆会一股脑出现在用户的档案页里，
+     * 用户以为那是"我自己填的资料"，删也不是留也不是。现在各角色的记忆归记忆页（按角色看）。
+     */
+    fun observeFacts(): Flow<List<ProfileFact>> = db.profileFactDao().observeGlobal()
 
     suspend fun getFact(id: Long): ProfileFact? = db.profileFactDao().getById(id)
 

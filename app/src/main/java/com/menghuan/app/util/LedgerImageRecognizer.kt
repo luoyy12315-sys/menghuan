@@ -81,7 +81,8 @@ object LedgerImageRecognizer {
             return@withContext Result(error = "识别失败：${e.message?.take(160) ?: e.javaClass.simpleName}")
         }
         usageTracker(reply.usageTokens ?: 0)
-        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model) }
+        runCatching { UsageTracker.add(settingsRepository, reply.usageTokens ?: 0, config.model,
+            reply.promptTokens, reply.cachedPromptTokens) }
         val text = reply.text.trim()
         if (text.isEmpty()) return@withContext Result(error = "没能识别出内容，换张清晰的图")
         Result(reply = text)

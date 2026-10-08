@@ -44,6 +44,22 @@ interface VoiceCallEngine {
     fun speakFirst()    fun hangUp()
     fun setMuted(muted: Boolean)
 
+    /**
+     * 告诉引擎：这张模型**实际有的**表情名清单（v0.69.0，`[表情:名]` 那一路）。
+     *
+     * 做成方法而不是构造参数，是因为清单比引擎晚到（模型在 GL 线程加载完才回调出来），
+     * 而且**语音通话永远不调它**（清单为空 = 表情段整段不注入，一个字都不多花）。
+     */
+    fun setExpressionCandidates(names: List<String>)
+
+    /**
+     * 把一条"身体/环境"事件交给下一轮的模型（v0.71.0，通话页点到角色时用）。
+     *
+     * 默认不做任何事：语音通话按 §零.7 不创建视觉层，伪视频也没有可点的位置 ——
+     * 只有 Live2D 那条实现会真的把它塞进下一轮的易变上下文。
+     */
+    fun noteAmbient(text: String) { /* 默认丢弃：没有形象就没有"被摸"这回事 */ }
+
     /** VM 销毁兜底：未挂断就离开页面时补一次完整清理，然后终止引擎协程域 */
     fun destroy()
 }
@@ -102,6 +118,45 @@ class PipelineVoiceCallEngine(
     private val spoken = StringBuffer()
     private var lastMuted = false
     private var bargeInSpeechMs = 0L
+    /** 上一轮 AI 有没有被 barge-in 掐掉（下一次建请求时在请求里补一句收口，之后清零） */
+    private var lastTurnInterrupted = false
+    /**
+     * 这张模型**实际有的**表情名（v0.69.0，由通话页在模型加载完成后塞进来）。
+     *
+     * 空清单 = 不注入表情段（伪视频、语音通话、模型没加载好都是这一种）。
+     * 引擎自己不去读数据库也不碰渲染层：它只负责把名字列给模型、把标记剥干净，
+     * "换成哪个表情"归页面（引擎不认识动作库，与四态绑定那条分工一致）。
+     */
+    @Volatile private var expressionNames: List<String> = emptyList()
+
+    override fun setExpressionCandidates(names: List<String>) {
+        expressionNames = names.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+    }
+
+    /**
+     * 环境/身体事件（v0.71.0）：用户摸了角色、点了哪一处 —— 下一轮喂给模型的易变上下文。
+     *
+     * 设计取向是爱语那一路（触碰不是只播个动画，而是**变成模型听得见的一条输入**）。
+     * 但**不进 `turns`、不进字幕**：`turns` 会整批存进通话记录，把"用户摸了你一下"写成
+     * 一句用户话就是伪造对话。它和当前时间、联网结果同属"每轮都变"，所以走同一个槽。
+     *
+     * 只留最近 [AMBIENT_MAX] 条：通话里连点十下不该把十行事件堆进上下文。
+     */
+    private val ambientNotes = java.util.concurrent.ConcurrentLinkedDeque<String>()
+
+    override fun noteAmbient(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        while (ambientNotes.size >= AMBIENT_MAX) ambientNotes.pollFirst()
+        ambientNotes.addLast(t)
+    }
+
+    /** 取走并清空（一次请求 consume 一次，避免同一句触摸被反复重放） */
+    private fun drainAmbient(): List<String> {
+        val out = ArrayList<String>(ambientNotes.size)
+        while (true) { val n = ambientNotes.pollFirst() ?: break; out += n }
+        return out
+    }
     private var startedAt = 0L
     private var hadError = false
 
@@ -133,6 +188,7 @@ class PipelineVoiceCallEngine(
         startedAt = System.currentTimeMillis()
         lastMuted = false
         bargeInSpeechMs = 0
+        lastTurnInterrupted = false
         mainLoop = scope.launch {
             // 同 ttsPlayer：这个协程也在 applicationScope 上，抛出来就是整个 App 没了。
             // 采样/VAD/识别里任何意外都接住，报一条错误并收线，不让用户只看到闪退。
@@ -255,11 +311,16 @@ class PipelineVoiceCallEngine(
                     // 离线非流式：整段吃完才出字，所以字幕**按段出**，没有逐字 partial。
                     // 解码这几百毫秒里音频循环暂停——此刻用户刚说完、正等 AI 接话，
                     // 丢掉的是静音尾巴，barge-in 也不需要在这段窗口里生效。
-                    val text = SherpaAsr.transcribeSamples(appContext, seg.samples)
+                    // v0.69.0：同一次解码顺带把语气读数取回来（**没有第二条解码路径**，
+                    // 228MB 权重再开一个 session 就是 500MB，中低端机直接 OOM）
+                    val readout = SherpaAsr.readoutSamples(appContext, seg.samples)
+                    val text = readout?.text
                     if (!text.isNullOrBlank()) {
                         synchronized(turns) { turns += CallTurnData("user", text, System.currentTimeMillis()) }
                         _events.tryEmit(RealtimeCallEvent.UserFinal(text))
-                        respond(text)
+                        // 语气只进**请求**，不进 turns、不进字幕：
+                        // 落库的是用户说的话本身，"听起来有点低落"是我们对它的判读，不是新事实
+                        respond(text, readout?.toneHint().orEmpty())
                     }
                 }
             }
@@ -277,7 +338,14 @@ class PipelineVoiceCallEngine(
         respond("（电话已经接通，用户接起来了。请你先开口打招呼。）")
     }
 
-    private fun respond(text: String) {
+    /**
+     * 起一轮 AI 回复。
+     *
+     * [toneHint] 是端侧 ASR 对**这一句**的语气判读（v0.69.0，可为空串）。
+     * 它只走请求时的易变上下文，不进 `turns`、不进字幕、不进通话记录 ——
+     * 那是我们对用户那句话的解读，不是用户说过的话。
+     */
+    private fun respond(text: String, toneHint: String = "") {
         llmJob?.cancel()
         ttsJob?.cancel()
         ttsChannel?.close()
@@ -288,7 +356,20 @@ class PipelineVoiceCallEngine(
             _state.value = RealtimeCallState.AI_THINKING
             emitState()
             val history = synchronized(turns) {
-                turns.map { ChatMessage(conversationId = 0L, content = it.text, isFromUser = it.speaker == "user", timestamp = it.timestamp) }
+                // 上一轮被打断：只在**发出去的请求**里补一句说明，`turns` 本体不动 ——
+                // turns 会整批存进通话记录（下面 snapshot 那条路），把提示写进去等于伪造一句用户话。
+                // 不补的代价是真实的：模型看到的自己上一轮是一句戛然而止的话，它会以为自己说完了，
+                // 于是下一轮接着讲那段没人听见的内容（Open-LLM-VTuber 的 handle_interrupt 治的就是这个）。
+                val lastAiIndex = if (lastTurnInterrupted) turns.indexOfLast { it.speaker == "ai" } else -1
+                if (lastTurnInterrupted) lastTurnInterrupted = false
+                turns.mapIndexed { index, t ->
+                    ChatMessage(
+                        conversationId = 0L,
+                        content = if (index == lastAiIndex) t.text + INTERRUPT_NOTE else t.text,
+                        isFromUser = t.speaker == "user",
+                        timestamp = t.timestamp,
+                    )
+                }
             } + ChatMessage(conversationId = 0L, content = text, isFromUser = true, timestamp = System.currentTimeMillis())
 
             spoken.setLength(0)
@@ -304,25 +385,54 @@ class PipelineVoiceCallEngine(
             val shown = StringBuilder()
             var lastEmit = 0L
             try {
-                llm.streamEvents(cfg.systemPrompt, history).collect { ev ->
+                llm.streamEvents(
+                    // 表情段**每次建请求时现拼**，不在 start() 时拼死：
+                    // 模型加载比引擎晚，start() 那一刻清单还是空的，拼死了这一通电话就再也提不了表情。
+                    cfg.systemPrompt + com.menghuan.app.realtime.CallExpressionMarker
+                        .promptSection(expressionNames).let { if (it.isEmpty()) "" else "\n\n$it" },
+                    history,
+                    runtimeContext = buildString {
+                        append(com.menghuan.app.data.RuntimeContext.clockLineNow())
+                        // 刚被摸了一下 / 点了一下哪里：同属"这轮才有效"的信息
+                        // 刚被摸了一下 / 点了哪里：同属"这轮才有效"的信息，
+                        // 用 Char 字面量换行（写 "\n" 会被脚本层吃掉转义，前面已经栽过一次）
+                        drainAmbient().forEach { append('\n').append(it) }
+                        // 语气判读同为"每轮都变"的内容，所以走同一条易变上下文，不进 system prompt
+                        if (toneHint.isNotBlank()) append("\n").append(toneHint)
+                    },
+                ).collect { ev ->
                     if (ev is StreamEvent.Delta) {
                         buf.append(ev.text)
                         shown.append(ev.text)
                         val now = System.currentTimeMillis()
                         if (now - lastEmit > 200) {
                             lastEmit = now
-                            _events.tryEmit(RealtimeCallEvent.AiDelta(shown.toString()))
+                            _events.tryEmit(
+                                RealtimeCallEvent.AiDelta(CallExpressionMarker.stripForDisplay(shown.toString()))
+                            )
                         }
                         val (sentences, rest) = SentenceSplitter.drain(buf.toString())
                         if (sentences.isNotEmpty()) {
-                            sentences.forEach { channel.send(it) }
+                            // **标记必须在进 TTS 之前剥掉**：念出"表情 脸红"是当场就能听见的错。
+                            // 切句不会把标记从中间劈开（方括号里没有句读），所以按整句处理是安全的。
+                            sentences.forEach { raw ->
+                                val parsed = CallExpressionMarker.parse(raw)
+                                parsed.names.forEach { _events.tryEmit(RealtimeCallEvent.Expression(it)) }
+                                if (parsed.text.isNotBlank()) channel.send(parsed.text)
+                            }
                             buf.clear().append(rest)
-                            _events.tryEmit(RealtimeCallEvent.AiDelta(shown.toString()))
+                            _events.tryEmit(
+                                RealtimeCallEvent.AiDelta(CallExpressionMarker.stripForDisplay(shown.toString()))
+                            )
                         }
                     }
                 }
                 val tail = buf.toString().trim()
-                if (tail.isNotEmpty()) channel.send(tail)
+                if (tail.isNotEmpty()) {
+                    val parsed = CallExpressionMarker.parse(tail)
+                    parsed.names.forEach { _events.tryEmit(RealtimeCallEvent.Expression(it)) }
+                    if (parsed.text.isNotBlank()) channel.send(parsed.text)
+                }
                 channel.close()
                 ttsJob?.join()
                 val said = spoken.toString().trim()
@@ -409,6 +519,9 @@ class PipelineVoiceCallEngine(
         if (said.isNotEmpty()) {
             synchronized(turns) { turns += CallTurnData("ai", said, System.currentTimeMillis()) }
             _events.tryEmit(RealtimeCallEvent.AiFinal(said))
+            // 只在真记下了 AI 轮时才标记：否则下一条"最后 ai 轮"会落到更早的那一句上，
+            // 等于把一句早就说完了的话判成被打断
+            lastTurnInterrupted = true
         }
         _state.value = RealtimeCallState.INTERRUPTED
         emitState()
@@ -431,5 +544,17 @@ class PipelineVoiceCallEngine(
     private companion object {
         const val TAG = "VoiceCallEngine"
         const val BARGE_IN_MS = 300L
+        /** 环境事件最多攒几条就丢旧的（连点十下不该堆十行进上下文） */
+        const val AMBIENT_MAX = 3
+
+        /**
+         * 打断那一句在**请求里**的收口写法（v0.69.0）。
+         *
+         * 刻意写成"AI 自己那一轮的尾巴"而不是另起一条 system/user 消息：
+         * 通话的 history 是 `turns` 一对一映射出来的（只有 user / ai 两种 speaker），
+         * 凭空插一条 system 会连带改 `CallTurnData` 与落库形状，代价不值。
+         * 语义上 OLVT 那句 `heard_response + "..."` 与本条等价。
+         */
+        const val INTERRUPT_NOTE = "……（这里被用户打断了，后面的话我没能说出口）"
     }
 }

@@ -376,6 +376,34 @@ class SettingsRepository(
         store.edit { it.remove(longPreferencesKey(readPrefix + personaId)) }
     }
 
+    // ===== 角色情绪状态（v0.72.0）=====
+    /** 五轴状态串；编码格式见 [com.menghuan.app.data.CompanionLogic.encode]。空串 = 还没算过 */
+    fun companionStateRaw(personaId: Long): Flow<String> =
+        store.data.map { it[stringPreferencesKey("companion_state_" + personaId)] ?: "" }
+
+    suspend fun setCompanionStateRaw(personaId: Long, raw: String) {
+        store.edit { it[stringPreferencesKey("companion_state_" + personaId)] = raw }
+    }
+
+    /**
+     * 上一次收到用户消息的时刻。连接需求看的是「离上次他说话多久」，
+     * 不是「离上次算漂移多久」—— 一次长关机（两天没打开 App）不能只按这一次的长度算。
+     */
+    fun companionLastMessageAt(personaId: Long): Flow<Long> =
+        store.data.map { it[longPreferencesKey("companion_last_msg_" + personaId)] ?: 0L }
+
+    suspend fun markCompanionMessageAt(personaId: Long, atMs: Long) {
+        store.edit { it[longPreferencesKey("companion_last_msg_" + personaId)] = atMs }
+    }
+
+    /** 人设删除时级联清掉（与 [removeReadMark] 同批调用） */
+    suspend fun removeCompanionState(personaId: Long) {
+        store.edit {
+            it.remove(stringPreferencesKey("companion_state_" + personaId))
+            it.remove(longPreferencesKey("companion_last_msg_" + personaId))
+        }
+    }
+
     /** 任务到点通知总开关（设置 · 通知与提醒） */
     val notificationsEnabled: Flow<Boolean> = store.data.map { it[keyNotifyEnabled] ?: true }
 
@@ -401,6 +429,14 @@ class SettingsRepository(
 
     private val keyBasePrompt = stringPreferencesKey("base_prompt")
     private val keyProfilePreamble = stringPreferencesKey("profile_preamble")
+    /**
+     * 「个人档案全部 AI 可读」开关（v0.70.0）。
+     *
+     * 记忆按人设分开之后，**基础档案是那一档跨角色共享的**（`personaId = 0`）。
+     * 这个开关决定它到底给不给所有 AI 读：默认给（保持老行为，也符合"档案本来就是讲我这个人"）。
+     * 关掉之后每个角色只剩自己的记忆 —— 有人就是不想让新认识的角色知道自己以前说过什么。
+     */
+    private val keyProfileSharedReadable = booleanPreferencesKey("profile_shared_readable")
     // v0.36.0：三段"策略"提示词（框架部分硬编码在 ProfileExtractor / WeeklyReportMath / ChatViewModel）
     private val keyExtractionStrategy = stringPreferencesKey("extraction_strategy")
     private val keyWeeklyReportStrategy = stringPreferencesKey("weekly_report_strategy")
@@ -467,6 +503,13 @@ class SettingsRepository(
     private val keyAiAnswerDelay = intPreferencesKey("ai_answer_delay_seconds")
     private val keyUsageMonth = stringPreferencesKey("usage_month")
     private val keyUsageTokens = intPreferencesKey("usage_tokens")
+    /**
+     * 本月**输入** token 累计与其中**缓存命中**的累计（v0.69.0）。
+     * 只为一件事：把"前缀到底稳不稳"变成屏幕上看得见的一个百分比。
+     * 跨月口径与 [keyUsageTokens] 完全一致（同一个 [keyUsageMonth] 判定）。
+     */
+    private val keyUsagePromptTokens = intPreferencesKey("usage_prompt_tokens")
+    private val keyUsageCachedTokens = intPreferencesKey("usage_cached_tokens")
     /** 本月用量按模型分表（v0.56.7）：`月键\t模型\ttokens` 一行一条 */
     private val keyUsageByModel = stringPreferencesKey("usage_by_model")
 
@@ -487,6 +530,14 @@ class SettingsRepository(
     /** 档案注入说明：用户档案进入 system prompt 前的包装语 */
     val profilePreamble: Flow<String> =
         store.data.map { it[keyProfilePreamble] ?: AiPrompts.DEFAULT_PROFILE_PREAMBLE }
+
+    /** 基础档案（`personaId = 0`）要不要注入给所有角色（v0.70.0，默认 true） */
+    val profileSharedReadable: Flow<Boolean> =
+        store.data.map { it[keyProfileSharedReadable] ?: true }
+
+    suspend fun setProfileSharedReadable(enabled: Boolean) {
+        store.edit { prefs -> prefs[keyProfileSharedReadable] = enabled }
+    }
 
     suspend fun setProfilePreamble(text: String) {
         store.edit { prefs ->
@@ -1539,6 +1590,20 @@ class SettingsRepository(
     }
 
     /**
+     * 本月**输入 token 累计** 与其中**缓存命中累计**（v0.69.0，月键与 [monthlyUsage] 同一份）。
+     *
+     * ⚠️ 口径：**两个数都是 0 不等于"一次都没命中"，而是"服务商压根没回 usage"**。
+     * 界面必须按这个区别显示（`UsageTracker.cacheHitRate` 对 0 输入返回 null，不编百分比）。
+     */
+    val monthlyCacheUsage: Flow<Triple<String, Int, Int>> = store.data.map { prefs ->
+        Triple(
+            prefs[keyUsageMonth] ?: "",
+            prefs[keyUsagePromptTokens] ?: 0,
+            prefs[keyUsageCachedTokens] ?: 0,
+        )
+    }
+
+    /**
      * 本月用量**按模型分开看**（v0.56.7）：`月键 to (模型 → tokens)`，按 tokens 降序。
      * 只有服务商回了 usage 才记（拿不到的不猜），与总数同一口径。
      */
@@ -1555,12 +1620,18 @@ class SettingsRepository(
         month to rows
     }
 
-    suspend fun addUsageTokens(month: String, tokens: Int) {
+    suspend fun addUsageTokens(month: String, tokens: Int, promptTokens: Int = 0, cachedTokens: Int = 0) {
         store.edit { prefs ->
             val storedMonth = prefs[keyUsageMonth]
-            val base = if (storedMonth == month) prefs[keyUsageTokens] ?: 0 else 0
+            val sameMonth = storedMonth == month
+            // 三个数**在同一次 edit 里一起判跨月**：拆成两个函数就会互相抢 keyUsageMonth，
+            // 谁先写谁把月键翻过去、另一个读到"同月"于是上月累计不清零（v0.69.0 想过省事分开写）。
             prefs[keyUsageMonth] = month
-            prefs[keyUsageTokens] = base + tokens
+            prefs[keyUsageTokens] = (if (sameMonth) prefs[keyUsageTokens] ?: 0 else 0) + tokens
+            prefs[keyUsagePromptTokens] =
+                (if (sameMonth) prefs[keyUsagePromptTokens] ?: 0 else 0) + promptTokens.coerceAtLeast(0)
+            prefs[keyUsageCachedTokens] =
+                (if (sameMonth) prefs[keyUsageCachedTokens] ?: 0 else 0) + cachedTokens.coerceAtLeast(0)
         }
     }
 

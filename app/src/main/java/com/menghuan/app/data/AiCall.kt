@@ -111,7 +111,7 @@ object AiCall {
         val instruction = instructionOverride?.takeIf { it.isNotBlank() } ?: rule?.instruction.orEmpty()
         val persona = runCatching { db.personaDao().getById(personaId) }.getOrNull() ?: return false
         val greeting = runCatching {
-            generateGreeting(db, api, persona, instruction)
+            generateGreeting(db, api, persona, instruction, settings)
         }.getOrNull() ?: return false
         if (greeting.isBlank()) return false
 
@@ -169,8 +169,14 @@ object AiCall {
         api: ApiConfig,
         persona: Persona,
         instruction: String,
+        settings: SettingsRepository,
     ): String? {
-        val facts = runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList())
+        // v0.70.0：记忆按人设分开 —— 这通电话是打给**这个角色**的，只该带上它自己聊出来的记忆
+        val sharedReadable = runCatching { settings.profileSharedReadable.first() }.getOrDefault(true)
+        val facts = MemoryScope.visible(
+            runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList()),
+            persona.id, sharedReadable,
+        )
         val tasks = runCatching { db.taskDao().observeAll().first() }
             .getOrDefault(emptyList())
             .filter { !it.isDone }

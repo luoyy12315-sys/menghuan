@@ -62,7 +62,6 @@ import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
 import com.menghuan.app.ui.ledger.LedgerRow
-import com.menghuan.app.ui.memo.MemoEntryCard
 import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.theme.FaintText
@@ -132,7 +131,7 @@ fun DataScreen(
      */
     visible: Boolean = true,
     /** 进备忘本全屏页（v0.62.0；v0.65.0 起本页只剩入口卡） */
-    onOpenMemo: () -> Unit = {},
+            onOpenTasks: () -> Unit = {},
 ) {
     val weekReview by vm.weekReview.collectAsState()
     val todaySuggestion by vm.todaySuggestion.collectAsState()
@@ -206,9 +205,9 @@ fun DataScreen(
                 onClick = onOpenLedger,
             )
 
-            // ④ 备忘本入口卡（v0.65.0 用户点名：与记账本一样大小、表面不显示任何内容）
-            // 条目、条数、打字全部收进「备忘本」全屏页——这张卡只负责进门。
-            MemoEntryCard(onOpenAll = onOpenMemo)
+            // ④ 任务入口卡（v0.73.0：原来这一格是备忘本，备忘整条线下线、任务页搬进来）
+            // 与记账本同款大小、表面不显示条目——条目只在任务页看。
+            TasksEntryCard(onClick = onOpenTasks)
 
             // ⑤ AI 洞察 / 周报合并入口
             AiEntryCard(
@@ -788,6 +787,40 @@ private fun LedgerEntryCard(cashCents: Long, onClick: () -> Unit) {
             color = TextPrimary,
         )
         Spacer(Modifier.width(6.dp))
+        Icon(MIcons.ChevronRight, contentDescription = null, tint = MutedText, modifier = Modifier.size(18.dp))
+    }
+}
+
+/**
+ * 任务入口卡（v0.73.0）：形状照 [LedgerEntryCard]，同大小、同细线描边。
+ *
+ * 为什么这一格原来是备忘本、现在换成任务：用户拍板备忘录功能整条下线，
+ * 而任务页从底栏第 3 个 tab 挪进了这里（底栏那一格换成「动态」）。
+ * 卡面上**不显示任何条目或数字**——与当年那张备忘本入口卡同一个要求，
+ * 数据页只负责进门，明细只在任务页看一处。
+ */
+@Composable
+private fun TasksEntryCard(onClick: () -> Unit) {
+    val press = rememberNeuPressState(raised = 4.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .testTag("tasks_entry_row")
+            .scale(press.scale)
+            .neuSurface(16.dp, color = NeuSurface)
+            .clickable(interactionSource = press.interactionSource, indication = null, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(38.dp).neuSurface(999.dp, color = NeuTrack, inset = true),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(MIcons.Checklist, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(19.dp))
+        }
+        Spacer(Modifier.width(13.dp))
+        Text("任务", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+        Spacer(Modifier.weight(1f))
         Icon(MIcons.ChevronRight, contentDescription = null, tint = MutedText, modifier = Modifier.size(18.dp))
     }
 }

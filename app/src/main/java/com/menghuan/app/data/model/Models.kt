@@ -206,7 +206,26 @@ data class ProfileFact(
     val value: String,
     val source: String = "manual",  // manual / ai
     val updatedAt: Long = System.currentTimeMillis(),
-)
+    /**
+     * 这条记忆属于谁（v0.70.0 起）。**0 = 用户自己的基础档案**，`> 0` = 只在该角色的会话里生效。
+     *
+     * 为什么必须分：以前整张表是全局的，A 角色聊出来的"用户爱吃辣"会原样注进 B 角色的 system prompt，
+     * 两个角色互相串味（用户拍板"记忆按人设彻底分开"）。
+     * 0 这一档保留是因为"我是谁、我在哪工作"这类事实天然属于人本身，不属于某个 AI。
+     */
+    val personaId: Long = 0,
+    /** 粗分类（身份/喜好/作息/事件…），只用于列表分组与排序，不参与注入判定 */
+    val category: String = "",
+    /**
+     * 生命周期（照 dudulove-memory 的六态收敛）：
+     * `active` 正常参与注入；`core` 永久记忆，**豁免去重与衰减**；
+     * `staging` 待入库（AI 刚说 `<add:>` 还没落定）；`rejected` 用户明确拒过；`archived` 停用。
+     */
+    val lifecycle: String = "active",
+) {
+    /** 参与注入的唯一判据：`rejected` 与 `archived` 一律不进 prompt（§零.9 的准入口径） */
+    val injectable: Boolean get() = lifecycle != "rejected" && lifecycle != "archived"
+}
 
 /** AI 洞察：提炼流水线从对话中产出的行为模式观察（数据页「AI 洞察」真数据源） */
 @Entity(tableName = "ai_insights")
@@ -288,58 +307,6 @@ object LedgerSource {
         IMAGE -> "识图"
         else -> "手动"
     }
-}
-
-/**
- * 备忘（v0.62.0 建，v0.63.0 按用户拍板收敛成"一句话 + 自动时间"）。
- *
- * 与任务的分工：任务是「要去做的事」，有完成态、有提醒、进打卡口径；
- * 备忘是「先记下来」的一句话，**没有完成态、没有提醒**。
- *
- * ⚠️ v0.63.0 删掉了手填的 `markedAt` / `place` 两列（迁移见 MIGRATION_17_18）：
- * 用户要的是**自动标注**，而自动能做到的就是"记下的那一刻"（[createdAt]）。
- * 地点不做自动——手机定位在国内 ROM 上拿 `Geocoder` 基本翻不出地名，
- * 要翻就得申请定位权限 + 让用户另外填一个高德/腾讯 Key，为一个字段不值当（用户已确认删掉）。
- * 排序口径统一为「置顶优先，其次新建优先」，见 [MemoMath.sorted]。
- */
-@Entity(tableName = "memos")
-data class MemoEntry(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val content: String,
-    @ColumnInfo(defaultValue = "0")
-    val pinned: Boolean = false,
-    /** 记下的那一刻（毫秒），也是行上显示的那个时间 */
-    @ColumnInfo(defaultValue = "0")
-    val createdAt: Long = System.currentTimeMillis(),
-)
-
-/**
- * 备忘的纯函数口径（排序 / 时间文案），JVM 可单测。
- */
-object MemoMath {
-    /** 置顶优先，其次新记录在前 */
-    fun sorted(memos: List<MemoEntry>): List<MemoEntry> =
-        memos.sortedWith(compareByDescending<MemoEntry> { it.pinned }.thenByDescending { it.createdAt })
-
-    /** 记下的那一刻：今天/昨天只给钟点，跨天带上日期 */
-    fun timeLabel(
-        memo: MemoEntry,
-        now: java.time.LocalDate = java.time.LocalDate.now(),
-    ): String {
-        val zoned = java.time.Instant.ofEpochMilli(memo.createdAt)
-            .atZone(java.time.ZoneId.systemDefault())
-        val d = zoned.toLocalDate()
-        val t = zoned.toLocalTime()
-        val clock = "${"%02d".format(t.hour)}:${"%02d".format(t.minute)}"
-        return when (d) {
-            now -> "今天 $clock"
-            now.minusDays(1) -> "昨天 $clock"
-            else -> "${d.monthValue}月${d.dayOfMonth}日 $clock"
-        }
-    }
-
-    /** 长按「发给 AI」时带过去的正文：连"什么时候记的"一起给，否则 AI 只拿到半句话 */
-    fun toChatText(memo: MemoEntry): String = "${memo.content}（${timeLabel(memo)}记的）"
 }
 
 /**
@@ -542,4 +509,27 @@ data class CallTurn(
     val speaker: String,
     val text: String,
     val timestamp: Long,
+)
+
+/**
+ * 动态（v0.73.0，推特式帖子）：一张表同时装「帖子」和「回复」。
+ *
+ * `parentId = 0` = 一条帖子；非 0 = 指向那条帖子。回复只有一层，
+ * 回复的回复也挂同一个 parentId —— 推特也是这个形状，多层树会把 UI 拖成楼中楼套娃。
+ *
+ * `personaId`：0 = 用户本人发的，非 0 = 哪个 AI 发的。点赞没有单独的表，
+ * `likedBy` 存逗号分隔的 id 串（用户固定是 `u`）；数据量级用不上关系表，
+ * 多一张表就多一次 join 与一处不一致。
+ */
+@Entity(
+    tableName = "moments",
+    indices = [Index("createdAt"), Index("parentId")],
+)
+data class MomentEntry(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    @ColumnInfo(defaultValue = "0") val personaId: Long = 0,
+    @ColumnInfo(defaultValue = "0") val parentId: Long = 0,
+    @ColumnInfo(defaultValue = "") val text: String = "",
+    @ColumnInfo(defaultValue = "0") val createdAt: Long = System.currentTimeMillis(),
+    @ColumnInfo(defaultValue = "") val likedBy: String = "",
 )
