@@ -1,5 +1,6 @@
 package com.menghuan.app.ui.live2d
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -115,7 +116,13 @@ class Live2dSpaceViewModel(
                 _ui.update { it.copy(capability = e.capability()) }
             }
         }
-        runCatching { e.load(personaId, asset) }
+        // 异常在引擎内部就被判死成 Degraded 了（§零.7：视觉失败不许冒泡）。
+        // 这里再兜一层**只为了留读数**：以前这里是裸 runCatching，抛出物被吞掉后
+        // runtime 还停在 Loading，页面就永远显示"正在准备角色…"——
+        // 那种"什么都不发生、也什么都不说"的形状和当年的着色器一模一样。
+        runCatching { e.load(personaId, asset) }.onFailure {
+            Log.e("Live2dSpace", "space visual load threw personaId=$personaId", it)
+        }
         reloadLibrary()
         // 进页面就开始待机 —— 角色要"独立运行待机、呼吸、眨眼"（用户要求 §二）
         playIdle()

@@ -31,12 +31,10 @@ import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.live2d.ModelActionCatalog
 import com.menghuan.app.live2d.ModelCapability
 import com.menghuan.app.live2d.StagePose
+import com.menghuan.app.live2d.fillNdcMatrix
 import java.io.File
-import kotlin.math.cos
+import kotlin.math.abs
 import kotlin.math.exp
-import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.sin
 
 /**
  * 一个 Live2D 角色（v0.58.0）。
@@ -53,8 +51,9 @@ import kotlin.math.sin
  *    它每帧把 [IParameterProvider.getParameter] 的值以 0.8 权重加到 `ParamMouthOpenY` 上，
  *    所以我们只负责把"电平"算准（平滑在这里，见 [MouthProvider]）。
  *
- * ⚠️ 除 [setMouthLevel] 与 [playAction] / [stopAction] 是跨线程写（volatile 语义）之外，
- * 其余方法都**必须在 GL 线程**调用（纹路与渲染器的创建/销毁都绑 EGL 上下文）。
+ * ⚠️ 除 [setMouthLevel] 与 [playAction] / [stopAction] / [resetFrameClock] 是跨线程写
+ * （字段都是 volatile）之外，其余方法都**必须在 GL 线程**调用
+ * （纹路与渲染器的创建/销毁都绑 EGL 上下文）。
  */
 class Live2dCharacter(
     private val baseDir: File,
@@ -74,7 +73,12 @@ class Live2dCharacter(
     private val lipSyncIds = ArrayList<CubismId>()
 
     private var motionUpdated = false
-    private var lastFrameNanos = 0L
+
+    /**
+     * 上一帧的时刻。`@Volatile` 是因为 [resetFrameClock] 由页面回前台那条路（主线程）调，
+     * 而读它的是渲染线程 —— 一个只会"往前提"的时间戳，跨线程读到旧值或新值都不影响正确性。
+     */
+    @Volatile private var lastFrameNanos = 0L
 
     private val mouth = MouthProvider()
 
@@ -126,14 +130,34 @@ class Live2dCharacter(
     private var stagePose = StagePose.NONE
 
     /**
-     * 命中检测用的投影矩阵（**不含舞台姿态**）。
+     * 角色中心在 NDC 里的位置（v0.67.0）。
      *
-     * 为什么要专门留一份：翻跟斗那类动作会把整张画布转起来，
-     * 而命中检测必须按"角色静止时画在哪"来算 —— 用转过的矩阵去反算触点，
-     * 结果会跟着转，用户点脸可能判成点身体。用基础投影算，位置永远对得上静止姿态。
+     * 由 [fitProjection] 每帧算好交给 [applyStagePose]：舞台旋转/缩放**绕这个点**做，
+     * 而不是绕 NDC 原点（= 屏幕正中）。分区布局里角色被抬到上半屏，绕屏幕中心转 360°
+     * 画出来是"贴着一条大圆弧转圈"，不是"在原地翻跟斗"。
      */
-    private val hitMvpArray = FloatArray(16)
-    private val hitMvp = CubismMatrix44.create()
+    private var pivotX = 0f
+    private var pivotY = 0f
+
+    /**
+     * 命中检测用的投影**四个数**（缩放 X/Y + 平移 X/Y，**不含舞台姿态**）。
+     *
+     * 为什么要专门留一份而不是直接拿那个 `CubismMatrix44`：
+     * ① 翻跟斗那类动作会把整张画布转起来，而命中检测必须按"角色静止时画在哪"来算 ——
+     *    用转过的矩阵去反算触点，结果会跟着转，用户点脸可能判成点身体；
+     * ② ⚠️ 触点是从 **UI 线程**来的（`hitRegion` 由点角色的那条路调），
+     *    而矩阵是 GL 线程每帧重写的。共享一个可变对象去读它，会读到"半新半旧"的一份 ——
+     *    不至于崩（都是 float），但会**偶发地点错区域**：用户点了头、判成身体。
+     *    四个 `@Volatile` 的 float（32 位写入本身是原子的）把这件事彻底消掉：
+     *    最坏只是这四个数来自相邻的两帧，对"点哪儿"这种判定毫无影响。
+     *
+     * 反算就是 `invertTransformX/Y` 的定义：`model = (ndc - t) / s`，
+     * 与原来交给 `CubismMatrix44` 做的是同一个式子，只是不再共享那个对象。
+     */
+    @Volatile private var hitScaleX = 0f
+    @Volatile private var hitScaleY = 0f
+    @Volatile private var hitTranslateX = 0f
+    @Volatile private var hitTranslateY = 0f
 
     /** 舞台姿态的矩阵（复用一个实例，别每帧 new —— 动作播放是每帧都在跑的） */
     private val stageMatrix = CubismMatrix44.create()
@@ -144,17 +168,25 @@ class Live2dCharacter(
 
     /**
      * 是否需要几何兜底命中检测：**只有当模型没定义 `Head`/`Body` 两个 HitArea 时才开**。
-     * 开着就意味着每帧多走一遍全部顶点求包围盒（几千次数组读），
-     * 而绝大多数正规模型都有 HitArea，不该为它们白付这份开销。
+     *
+     * 开着就要额外求一次模型包围盒（遍历全部顶点），所以刷新频率收在
+     * [BOUNDS_INTERVAL_SECONDS] 一次，不是每帧（见 [update] 里那段）。
+     * 而绝大多数正规模型都有 HitArea，压根不该为它们付这份开销。
      */
     private var needsGeometricHitTest = false
 
-    /** 几何兜底用的模型包围盒（模型坐标系，GL 线程每帧刷，UI 线程读） */
+    /** 几何兜底用的模型包围盒（模型坐标系，GL 线程刷，UI 线程读） */
     @Volatile private var boundLeft = 0f
     @Volatile private var boundRight = 0f
     @Volatile private var boundTop = 0f
     @Volatile private var boundBottom = 0f
     @Volatile private var boundsReady = false
+
+    /** 距离上一次刷新包围盒过了多少秒，见 [BOUNDS_INTERVAL_SECONDS] */
+    private var boundsAgeSeconds = Float.MAX_VALUE
+
+    /** [stageMatrix] 的临时数组，复用同一个：舞台动作是**每帧**都在跑的 */
+    private val stageMatrixArray = FloatArray(16)
 
     // ---- 加载 ----
 
@@ -350,6 +382,17 @@ class Live2dCharacter(
     }
 
     /**
+     * 把帧时钟 reset 成"就是现在"（GL 线程之外**不许**调）。
+     *
+     * 为什么单独立一条：从后台/锁屏回来那一刻，`lastFrameNanos` 还是几分钟前，
+     * 下一帧的 dt 会撞上上限（见 [update]），动作与口型各白跳一格。
+     * 时钟归零后第一帧只走正常时长，回来的那一下就是"接着动"而不是"抽一下"。
+     */
+    fun resetFrameClock() {
+        lastFrameNanos = System.nanoTime()
+    }
+
+    /**
      * `CubismRendererAndroid.create` 声明返回基类 `CubismRenderer`（框架自己的写法），
      * 但 Android 实现只有 `CubismRendererAndroid` 一个，取不到就是初始化失败 ——
      * 抛出去由调用方降级成头像，不许在这里返回 null 让后面 NPE。
@@ -413,8 +456,10 @@ class Live2dCharacter(
         isUpdated(false)
 
         val now = System.nanoTime()
-        val dt = if (lastFrameNanos == 0L) 1f / 60f
-            else ((now - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, 0.1f)
+        // dt 的上限与 ActionPlayer 用的是同一个常数：切后台/锁屏回来后 nanoTime 能差出几秒，
+        // 夹得太松（原来是 100ms）就等于**回前台那一帧白跳十分之一秒**，观感是"角色抽一下"。
+        val dt = if (lastFrameNanos == 0L) DEFAULT_FRAME_SECONDS
+            else ((now - lastFrameNanos) / 1_000_000_000f).coerceIn(0f, ActionPlayer.MAX_FRAME_SECONDS)
         lastFrameNanos = now
 
         motionUpdated = false
@@ -439,7 +484,17 @@ class Live2dCharacter(
         updateScheduler.onLateUpdate(model, dt)
 
         model.update()
-        if (needsGeometricHitTest) refreshModelBounds(model)
+        if (needsGeometricHitTest) {
+            // 包围盒**不用每帧算**：这个值只在用户点下去的那一刻用，
+            // 而算一次要把全部 drawable 的全部顶点读一遍（免费模型几千到几万次数组读）。
+            // 角色自己呼吸摆动让包围盒缓慢变形，但点的判档本来就带区间余量，
+            // 15Hz 与 60Hz 用户点起来没有任何区别。
+            boundsAgeSeconds += dt
+            if (boundsAgeSeconds >= BOUNDS_INTERVAL_SECONDS) {
+                boundsAgeSeconds = 0f
+                refreshModelBounds(model)
+            }
+        }
         isUpdated(true)
     }
 
@@ -460,7 +515,12 @@ class Live2dCharacter(
      * 实现方式（没有 `ParamBodyAngleY` 的模型照样能整体翻一圈）。
      *
      * 归一化值 → NDC 的换算：[StagePose.dx] 是"画面宽度的比例"，而 NDC 横跨 2 个单位，
-     * 所以乘 2。旋转是绕 NDC 原点（= 模型中心）转，缩放同理。
+     * 所以乘 2。
+     *
+     * ⚠️ 旋转与缩放的**中心是角色自己**（[pivotX] / [pivotY]，由 [fitProjection] 每帧算好交过来），
+     * 不是 NDC 原点。v0.64~v0.66 绕的是原点 = 屏幕正中，而通话页把角色整只抬到上半屏 ——
+     * 于是"翻跟斗"画出来是"贴着一条大圆弧绕屏幕转"，角色空间里拖到边上再翻也一样甩出去。
+     * 矩阵换算本身是纯函数（[fillNdcMatrix]，有 JVM 单测），这里只负责告诉它角色中心在哪。
      *
      * ⚠️ 一定要**乘进投影**而不是改 modelMatrix：modelMatrix 在 `fitProjection` 每帧重置，
      * 改它会被覆盖；投影同样是每帧新算的，所以在这里叠加不会累积。
@@ -468,17 +528,8 @@ class Live2dCharacter(
     private fun applyStagePose(projection: CubismMatrix44) {
         val pose = stagePose
         if (pose.isIdentity) return
-        val rad = Math.toRadians(pose.rotationDeg.toDouble())
-        val cs = cos(rad).toFloat() * pose.scale
-        val sn = sin(rad).toFloat() * pose.scale
-        stageMatrix.setMatrix(
-            floatArrayOf(
-                cs, sn, 0f, 0f,
-                -sn, cs, 0f, 0f,
-                0f, 0f, 1f, 0f,
-                pose.dx * 2f, pose.dy * 2f, 0f, 1f,
-            ),
-        )
+        pose.fillNdcMatrix(stageMatrixArray, pivotX, pivotY)
+        stageMatrix.setMatrix(stageMatrixArray)
         CubismMatrix44.multiply(stageMatrix.array, projection.array, projection.array)
     }
 
@@ -530,10 +581,22 @@ class Live2dCharacter(
         // 可用区域是 [2*inset-1, 1]，它的中点就是 inset。
         projection.translate(offsetX * 2f, inset + offsetY * 2f)
 
+        // **这一帧角色中心落在 NDC 的哪儿** —— 舞台旋转/缩放绕它做（见 applyStagePose）。
+        // 上面那句 translate 就是把模型本地原点（= 画布中心）放到的位置，所以两处必须同步改。
+        pivotX = offsetX * 2f
+        pivotY = inset + offsetY * 2f
+
         // 命中检测要用完整变换（modelMatrix × projection），且必须是**不含舞台姿态**的那一份，
-        // 见 [hitMvpArray] 的说明。存成数组是因为它只在点击那一刻读。
-        CubismMatrix44.multiply(modelMatrix.array, projection.array, hitMvpArray)
-        hitMvp.setMatrix(hitMvpArray)
+        // 见 [hitScaleX] 的说明。这里只把反算要用的四个数抄下来 —— 不再每帧做一次矩阵乘法，
+        // 也不再把一个可变对象交给 UI 线程去读。
+        val m = modelMatrix.array
+        val p = projection.array
+        hitScaleX = m[0] * p[0]
+        hitScaleY = m[5] * p[5]
+        // (M·P) 的平移列 = M 的缩放 × P 的平移 + M 自己的平移 —— 少加那一项的话，
+        // 一旦 modelMatrix 带过 setPosition（模型画布不居中）点击就会整体偏一位
+        hitTranslateX = m[0] * p[12] + m[12]
+        hitTranslateY = m[5] * p[13] + m[13]
     }
 
     // ---- v0.64.0：动作与互动 ----
@@ -632,11 +695,13 @@ class Live2dCharacter(
      */
     fun hitRegion(ndcX: Float, ndcY: Float): InteractionRegion {
         if (model == null) return InteractionRegion.OTHER
-        val mapped = runCatching {
-            hitMvp.invertTransformX(ndcX) to hitMvp.invertTransformY(ndcY)
-        }.getOrNull() ?: return InteractionRegion.OTHER
-        val mx = mapped.first
-        val my = mapped.second
+        // NDC → 模型坐标：与 `CubismMatrix44.invertTransformX/Y` 同一个式子，
+        // 但读的是四个 volatile 快照，不再跨线程共享那个每帧被重写的矩阵对象（见 [hitScaleX]）
+        val sx = hitScaleX
+        val sy = hitScaleY
+        if (abs(sx) < 1e-6f || abs(sy) < 1e-6f) return InteractionRegion.OTHER
+        val mx = (ndcX - hitTranslateX) / sx
+        val my = (ndcY - hitTranslateY) / sy
 
         val head = headHitId
         val body = bodyHitId
@@ -792,6 +857,12 @@ class Live2dCharacter(
 
         /** 底部 UI 最多能占掉多少画面：超过这个数角色只剩一条缝，那是布局算错了，不是需求 */
         private const val MAX_BOTTOM_INSET = 0.8f
+
+        /** 几何兜底的包围盒多久刷一次（秒）。见 [needsGeometricHitTest] 与 [update] */
+        private const val BOUNDS_INTERVAL_SECONDS = 1f / 15f
+
+        /** 第一帧还没有基准时刻时按多少秒推进（60fps 的一帧） */
+        private const val DEFAULT_FRAME_SECONDS = 1f / 60f
 
     }
 }

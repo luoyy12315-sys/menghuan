@@ -78,7 +78,8 @@ data class ModelCapability(
      * 这条轨道值最终该乘多少。
      *
      * 三层相乘，含义各自独立，别合并：
-     * · [GenericChannel] 里不需要系数 —— 归一化值本身就是"模型可用范围的 60%"，见 TrackKey；
+     * · [GenericChannel] 里不需要系数 —— 归一化值本身就是"模型可用范围的一个比例"
+     *  （那个比例是 [ActionPlayer.AMPLITUDE_SPAN]，见 TrackKey）；
      * · 动作的强度（用户调的那个滑块）；
      * · 模型能力系数（缺通道时的"降效果"）。
      */

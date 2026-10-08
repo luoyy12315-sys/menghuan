@@ -1,5 +1,6 @@
 package com.menghuan.app.ui.realtime
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -21,6 +22,9 @@ import com.menghuan.app.realtime.RealtimeCallRepository
 import com.menghuan.app.realtime.RealtimeCallState
 import com.menghuan.app.realtime.VoiceCallEngine
 import com.menghuan.app.data.CallVisualStore
+import com.menghuan.app.live2d.ActionSlot
+import com.menghuan.app.live2d.BuiltinActions
+import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.realtime.visual.CallVisualEngine
 import com.menghuan.app.realtime.visual.CallVisualEngines
 import com.menghuan.app.realtime.visual.Live2dStage
@@ -58,6 +62,14 @@ data class RealtimeCallUiState(
      * 页面据此回落到头像——**视觉坏了一定要能退回头像，通话照打**（方案文档 §二十四）。
      */
     val visualRuntime: VisualRuntime = VisualRuntime.Empty,
+    /**
+     * v0.67.0：这层的形象**能不能演动作**（只有 Live2D 能；伪视频是一组循环短片，
+     * 点它没有任何参数可写）。页面据此决定"点角色 / 动作胶囊"这两条要不要出现 ——
+     * 给了一个点了没反应的入口，比不给入口更糟。
+     */
+    val stageInteractive: Boolean = false,
+    /** v0.67.0：通话里可以**当场演**的那几条（收藏的 + 四个内置趣味动作，上限 [QUICK_ACTION_LIMIT]） */
+    val quickActions: List<Live2dAction> = emptyList(),
 )
 
 class RealtimeCallViewModel(
@@ -82,6 +94,17 @@ class RealtimeCallViewModel(
      */
     private var visual: CallVisualEngine? = null
     val visualEngine: CallVisualEngine? get() = visual
+
+    /**
+     * 视觉层的"可以演动作"那一面（v0.67.0）。**只在形象是 Live2D 时非空**。
+     *
+     * 单独存一份而不是每次 `(visual as? Live2dStage)`：这两件事在通话里被点来点去
+     * （点角色、点胶囊、右滑），转型失败的地方一旦写漏就是静默没反应。
+     */
+    private var stage: Live2dStage? = null
+
+    /** 这一角色的"动作幅度"档位（v0.67.0，会话设置里调）。播任何动作前乘上去 */
+    private var actionScale: Float = 1f
 
     private val _ui = MutableStateFlow(RealtimeCallUiState(videoMode = videoMode))
     val ui: StateFlow<RealtimeCallUiState> = _ui
@@ -222,12 +245,16 @@ class RealtimeCallViewModel(
         _ui.update { it.copy(visualRuntime = v.runtime.value) }
         viewModelScope.launch { v.runtime.collect { r -> _ui.update { it.copy(visualRuntime = r) } } }
         runCatching { v.load(personaId, asset) }.onFailure {
+            // 引擎内部已经 swallow 过了（§零.7），走到这里说明是引擎自己没兜住的抛出物。
+            // 必须记下来：这一路的表现只是"通话里只有头像"，看不出来是为什么。
+            Log.e("RealtimeCallVM", "visual load threw personaId=$personaId", it)
             _ui.update { it.copy(visualRuntime = VisualRuntime.Degraded("形象加载失败，本次通话只用头像")) }
         }
 
         // v0.64.0：动作系统接线。**只有 Live2D 形象才有动作**（伪视频是一组循环短片，
         // 没有可驱动的参数），所以这段只在 Live2dStage 上做。
         if (v is Live2dStage) {
+            stage = v
             // 模型加载完成后会从 GL 线程回调一次"自带动作 / 表情"的清单。
             // ⚠️ 回调里**只许转手**：磁盘与数据库操作一律丢到 viewModelScope，
             // 在 GL 线程上碰 Room 会把整条渲染线程堵住（表现为通话里画面卡住）。
@@ -236,11 +263,60 @@ class RealtimeCallViewModel(
                     runCatching { app.live2dActions.syncModelActions(personaId, catalog) }
                 }
             }
+            // 这一角色"动作幅度"档位（v0.67.0）：读一次存下来，之后每次往外播都乘它。
+            actionScale = withContext(Dispatchers.IO) { settings.callActionScaleFor(personaId) }
             // 四个状态的绑定在这里解析好再交给引擎 —— 引擎不认识数据库，
             // 通话页也不认识动作库（用户第 2 条：通话只负责调用动作）。
             val actions = withContext(Dispatchers.IO) { app.live2dActions.resolveAllSlots(personaId) }
-            v.setStateActions(actions)
+            v.setStateActions(actions.mapValues { it.value.scaledBy(actionScale) })
+            // 通话页的互动入口（v0.67.0）：能当场演的那几条 + 这条形象可以演动作这件事本身
+            val quick = withContext(Dispatchers.IO) { quickActions() }
+            _ui.update {
+                it.copy(
+                    stageInteractive = true,
+                    quickActions = quick,
+                )
+            }
         }
+    }
+
+    /**
+     * 通话里可以**当场演**的动作：收藏过的排前面，后面跟内置的四个趣味动作。
+     *
+     * 上限 [QUICK_ACTION_LIMIT] 是把一排胶囊压在角色脚下的硬约束 —— 再长就要换行，
+     * 而换行会把角色区吃掉一截（v0.60 那次"字幕与挂断被挤出屏幕"就是这么来的）。
+     * 模型自带动作与"我的动作"不进这一排：它们由用户在动作库里挑，不是通话时随手要演的东西。
+     */
+    private suspend fun quickActions(): List<Live2dAction> {
+        val all = runCatching { app.live2dActions.list(personaId) }.getOrDefault(emptyList())
+        val funKeys = BuiltinActions.funKeys.toSet()
+        val stateKeys = ActionSlot.entries.map { BuiltinActions.defaultKeyOf(it) }.toSet()
+        val picked = all.filter { it.builtinKey !in stateKeys && !it.isEmpty }
+            .sortedByDescending { it.favorite }
+            .filter { it.favorite || it.builtinKey in funKeys }
+        return picked.take(QUICK_ACTION_LIMIT)
+    }
+
+    /**
+     * 点了一下画面里的角色（v0.67.0，通话页的角色互动）。
+     *
+     * 与角色空间共用同一套判定与同一套"区域→动作"的绑定：点着头部是摇头、点着身体是摆手。
+     * 伪视频 / 语音通话走不到这里（页面只在 [RealtimeCallUiState.stageInteractive] 为真时才接手势）。
+     */
+    fun onStageTap(ndcX: Float, ndcY: Float) {
+        val s = stage ?: return
+        viewModelScope.launch {
+            val region = runCatching { s.hit(ndcX, ndcY) }.getOrNull() ?: return@launch
+            val action = runCatching {
+                app.live2dActions.resolveInteraction(personaId, region, System.currentTimeMillis())
+            }.getOrNull() ?: return@launch
+            s.playAction(action.scaledBy(actionScale))
+        }
+    }
+
+    /** 演一条"当场挑的"动作（动作胶囊）。演完由引擎接回当前状态那条 */
+    fun playQuickAction(action: Live2dAction) {
+        stage?.playAction(action.scaledBy(actionScale))
     }
 
     /**
@@ -304,10 +380,20 @@ class RealtimeCallViewModel(
         // 视觉层随页面一起释放：播放器、GL 渲染器、模型引用与 GPU 占用（方案文档 §二十八）
         runCatching { visual?.release() }
         visual = null
+        stage = null
         super.onCleared()
     }
 
     companion object {
+        /**
+         * 通话页那排动作胶囊最多几条。
+         *
+         * 定 4 不是随手挑的：这一排**刻意不做成可横滚**（横滚容器会跟"右滑进纯净态"抢同一根手指），
+         * 所以它必须保证在窄机器上也排得下 —— 4 颗 × 80dp 上限 + 3 段 8dp 间距 = 344dp，
+         * 360dp 宽的屏刚好放得下。要演别的动作去角色空间的动作库，那里整份都在。
+         */
+        const val QUICK_ACTION_LIMIT = 4
+
         fun Factory(
             personaId: Long,
             initiatedByAi: Boolean = false,

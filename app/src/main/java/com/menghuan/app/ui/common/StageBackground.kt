@@ -19,6 +19,8 @@ import androidx.compose.ui.layout.ContentScale
 import com.menghuan.app.ui.theme.BrandBlue
 import com.menghuan.app.ui.theme.BrandGreen
 import com.menghuan.app.ui.theme.NeuBackground
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 「舞台背景」= **角色空间**与**视频通话**共用的那一层（v0.66.0 抽出来，两处一套画法）。
@@ -66,18 +68,24 @@ private fun rememberStageImage(path: String) = produceState<ImageBitmap?>(
     value = if (path.isBlank()) {
         null
     } else {
-        runCatching {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            var sample = 1
-            while (bounds.outWidth / sample > MAX_STAGE_PX || bounds.outHeight / sample > MAX_STAGE_PX) {
-                sample *= 2
-            }
-            BitmapFactory.decodeFile(
-                path,
-                BitmapFactory.Options().apply { inSampleSize = sample },
-            )?.asImageBitmap()
-        }.getOrNull()
+        // ⚠️ `produceState` 的块默认跑在**主线程**（它挂在组合作用域上）。
+        // 相册里随手一张就是 8000×6000，即便降采样到 1600 边也要真的解一遍码 ——
+        // 留在主线程就是"进视频通话那一下卡一帧"，所以显式切到 IO。
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(path, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > MAX_STAGE_PX || bounds.outHeight / sample > MAX_STAGE_PX) {
+                    sample *= 2
+                }
+                BitmapFactory.decodeFile(
+                    path,
+                    BitmapFactory.Options().apply { inSampleSize = sample },
+                )?.asImageBitmap()
+            }.onFailure { Log.e("StageBackground", "stage image decode failed path=$path", it) }
+                .getOrNull()
+        }
     }
 }.value
 

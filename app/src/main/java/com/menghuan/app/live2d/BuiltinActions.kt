@@ -23,9 +23,9 @@ enum class ActionSlot(val key: String, val label: String) {
 }
 
 /**
- * 系统内置动作（v0.64.0）。
+ * 系统内置动作（v0.64.0 · v0.67.0 把四态默认调到"看得出来"）。
  *
- * 一共七条，分两组：
+ * 一共八条，分两组：
  *
  * **四个状态默认动作**（`builtin_state_*`，循环）——就是用户要求里"系统默认提供四套基础动作"。
  * 它们全是**程序化轨道**，不依赖模型的任何一套素材；模型自己那条 Idle 动作仍然在底下跑
@@ -34,12 +34,26 @@ enum class ActionSlot(val key: String, val label: String) {
  * ① 不用赌模型有没有 think/speak/listen 这几个组名 —— 免费模型十有八九没有；
  * ② 用户随时可以把任意状态换成动作库里的别的动作（含摆手这种大幅度动作）。
  *
- * **三个趣味动作**（`builtin_wave` / `builtin_split` / `builtin_flip`）。
+ * **四个趣味动作**（`builtin_wave` / `builtin_shake` / `builtin_split` / `builtin_flip`）。
  * 它们才是"动作库"的招牌：摆手靠手臂 + 头身摆动，劈叉靠身体侧倾 + 双臂，
  * 翻跟斗靠**舞台通道**（整体旋转 + 跳起落下），所以**任何模型都演得出来**。
  *
- * ⚠️ 内置动作一律**不写 `GENERIC_MOUTH`**：张嘴归实时语音的口型驱动，
- * 动作去抢这个参数就会出现"AI 没出声但嘴在动"。要表现情绪用 `GENERIC_MOUTH_FORM`（嘴型）。
+ * ⚠️ 内置动作一律**不写 [GenericChannel.MOUTH]**：张嘴归实时语音的口型驱动，
+ * 动作去抢这个参数就会出现"AI 没出声但角色一直张着嘴"。要表现情绪用 MOUTH_FORM（嘴型）。
+ *
+ * ⚠️ 四态默认也一律**不写 [GenericChannel.EYE]（睁眼）**：框架的 `CubismEyeBlink` 在
+ * "这一帧没有 motion 写参数"时是 `setParameterValue` **覆盖**眼睛的（不是叠加），
+ * 而免费模型根本没有 motion 文件 → 恰好每帧都走覆盖那一路 → 动作里写的睁眼**一句都不生效**。
+ * 同一份动作在有的模型上眼睛会睁大、在另一些模型上毫无反应，比"全都不可见"更难解释。
+ * 眼睛的戏改由眉毛（BROW）与视线（EYE_BALL_X/Y）承担 —— 那两个参数眨眼不碰。
+ *
+ * ## 幅度为什么是现在这个量级（v0.67.0）
+ *
+ * 用户点名"动作显示明显"。v0.64 那四套的轨道值只有 0.03–0.17，乘上
+ * [ActionPlayer.AMPLITUDE_SPAN] 之后只吃掉参数可用范围的百分之几 ——
+ * `ParamAngleZ` 典型 ±10° 时头只转 0.5°~1.5°，屏幕上基本读不出来"在动"。
+ * 现在四态默认的**峰值落在 0.16–0.42**：`±10°` 的头会转 3°~8°，
+ * 一眼能读出"它在听 / 在想 / 在说"，又远不到顶格（顶格会看到网格被拉坏）。
  */
 object BuiltinActions {
 
@@ -92,11 +106,16 @@ object BuiltinActions {
 
     // ---- 四态默认动作 ----
 
-    /** 待机：几乎看不出的微摆 + 视线游移。呼吸与眨眼由框架自己跑，这里不再插手 */
+    /**
+     * 待机：能读出来的轻摆 + 视线游移。呼吸与眨眼由框架自己跑，这里不再插手。
+     *
+     * 头与身体**反着摆**（Z 歪头时身体回正）是站姿的基本读法：同向摆看着像整体在晃，
+     * 反向才像"一个人在那儿轻轻换重心"。
+     */
     fun stateIdle(): Live2dAction = proc(
         name = "默认待机",
         builtinKey = defaultKeyOf(ActionSlot.IDLE),
-        durationMs = 5_200,
+        durationMs = 4_800,
         loop = true,
         fadeInMs = 420,
         fadeOutMs = 420,
@@ -106,66 +125,74 @@ object BuiltinActions {
             ParameterTrack.of(
                 GenericChannel.HEAD_Z,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.25f to 0.05f, 0.5f to 0f, 0.75f to -0.05f, 1f to 0f,
+                0f to 0f, 0.25f to 0.22f, 0.5f to 0f, 0.75f to -0.22f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.HEAD_X,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.3f to 0.06f, 0.65f to -0.05f, 1f to 0f,
+                0f to 0f, 0.3f to 0.20f, 0.65f to -0.16f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.BODY_Z,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.5f to 0.03f, 1f to 0f,
+                0f to 0f, 0.3f to -0.12f, 0.7f to 0.10f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.EYE_BALL_X,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.4f to 0.08f, 0.8f to -0.06f, 1f to 0f,
+                0f to 0f, 0.4f to 0.26f, 0.8f to -0.18f, 1f to 0f,
             ),
         ),
     )
 
-    /** 倾听：两次轻点头 + 微微歪头听的样子 */
+    /** 倾听：两次轻点头 + 歪着头看你 + 眉毛抬起来一点 */
     fun stateListening(): Live2dAction = proc(
         name = "默认倾听",
         builtinKey = defaultKeyOf(ActionSlot.LISTENING),
-        durationMs = 3_600,
+        durationMs = 3_400,
         loop = true,
         fadeInMs = 300,
         fadeOutMs = 320,
         required = emptySet(),
-        optional = setOf(GenericChannel.HEAD_Y, GenericChannel.HEAD_Z, GenericChannel.BROW, GenericChannel.EYE, GenericChannel.BODY_Y),
+        optional = setOf(
+            GenericChannel.HEAD_Y, GenericChannel.HEAD_Z, GenericChannel.BROW,
+            GenericChannel.EYE_BALL_Y, GenericChannel.BODY_Y, GenericChannel.BODY_Z,
+        ),
         tracks = listOf(
             ParameterTrack.of(
                 GenericChannel.HEAD_Y,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.18f to 0.17f, 0.34f to 0.02f, 0.62f to 0.15f, 0.8f to 0.02f, 1f to 0f,
+                0f to 0f, 0.16f to 0.34f, 0.32f to 0.05f, 0.5f to 0.28f, 0.68f to 0.04f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.HEAD_Z,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.4f to 0.1f, 1f to 0f,
+                0f to 0f, 0.4f to 0.24f, 0.8f to 0.18f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.BROW,
                 TrackEasing.IN_OUT,
-                0f to 0.14f, 0.5f to 0.28f, 1f to 0.14f,
+                0f to 0.16f, 0.4f to 0.34f, 1f to 0.16f,
             ),
             ParameterTrack.of(
-                GenericChannel.EYE,
+                GenericChannel.EYE_BALL_Y,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.25f to 0.06f, 0.75f to 0.06f, 1f to 0f,
+                0f to 0f, 0.35f to -0.16f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.BODY_Y,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.5f to 0.05f, 1f to 0f,
+                0f to 0f, 0.45f to 0.14f, 1f to 0f,
+            ),
+            ParameterTrack.of(
+                GenericChannel.BODY_Z,
+                TrackEasing.IN_OUT,
+                0f to 0f, 0.45f to -0.10f, 1f to 0f,
             ),
         ),
     )
 
-    /** 思考：仰头 + 视线飘到一边 + 眉微皱，是"在想事情"的通用读法 */
+    /** 思考：仰头 + 视线飘到一角 + 眉微皱，是"在想事情"的通用读法 */
     fun stateThinking(): Live2dAction = proc(
         name = "默认思考",
         builtinKey = defaultKeyOf(ActionSlot.THINKING),
@@ -177,66 +204,96 @@ object BuiltinActions {
         optional = setOf(
             GenericChannel.HEAD_Y, GenericChannel.HEAD_Z,
             GenericChannel.EYE_BALL_X, GenericChannel.EYE_BALL_Y, GenericChannel.BROW,
+            GenericChannel.BODY_X,
         ),
         tracks = listOf(
             ParameterTrack.of(
                 GenericChannel.HEAD_Y,
                 TrackEasing.IN_OUT,
-                0f to 0.06f, 0.35f to 0.24f, 0.75f to 0.06f, 1f to 0.06f,
+                0f to 0.10f, 0.35f to 0.38f, 0.75f to 0.12f, 1f to 0.10f,
             ),
             ParameterTrack.of(
                 GenericChannel.HEAD_Z,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.35f to -0.14f, 0.8f to -0.09f, 1f to 0f,
+                0f to 0f, 0.35f to -0.32f, 0.8f to -0.24f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.EYE_BALL_X,
                 TrackEasing.IN_OUT,
-                0f to 0.16f, 0.5f to 0.36f, 1f to 0.16f,
+                0f to 0.28f, 0.5f to 0.55f, 1f to 0.28f,
             ),
             ParameterTrack.of(
                 GenericChannel.EYE_BALL_Y,
                 TrackEasing.IN_OUT,
-                0f to -0.1f, 0.4f to -0.3f, 1f to -0.1f,
+                0f to -0.18f, 0.4f to -0.44f, 1f to -0.18f,
             ),
             ParameterTrack.of(
                 GenericChannel.BROW,
                 TrackEasing.IN_OUT,
-                0f to 0.26f, 0.6f to 0.1f, 1f to 0.26f,
-            ),
-        ),
-    )
-
-    /** 说话：头部小幅左右摆 + 身体跟着一点。嘴不碰（口型归实时语音） */
-    fun stateSpeaking(): Live2dAction = proc(
-        name = "默认说话",
-        builtinKey = defaultKeyOf(ActionSlot.SPEAKING),
-        durationMs = 2_600,
-        loop = true,
-        fadeInMs = 240,
-        fadeOutMs = 260,
-        required = emptySet(),
-        optional = setOf(GenericChannel.HEAD_X, GenericChannel.HEAD_Z, GenericChannel.HEAD_Y, GenericChannel.BODY_X),
-        tracks = listOf(
-            ParameterTrack.of(
-                GenericChannel.HEAD_X,
-                TrackEasing.IN_OUT,
-                0f to 0f, 0.2f to 0.1f, 0.5f to -0.07f, 0.8f to 0.06f, 1f to 0f,
-            ),
-            ParameterTrack.of(
-                GenericChannel.HEAD_Z,
-                TrackEasing.IN_OUT,
-                0f to 0f, 0.3f to 0.06f, 0.7f to -0.06f, 1f to 0f,
-            ),
-            ParameterTrack.of(
-                GenericChannel.HEAD_Y,
-                TrackEasing.IN_OUT,
-                0f to 0f, 0.5f to 0.05f, 1f to 0f,
+                0f to 0.36f, 0.6f to 0.14f, 1f to 0.36f,
             ),
             ParameterTrack.of(
                 GenericChannel.BODY_X,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.4f to 0.05f, 1f to 0f,
+                0f to 0f, 0.45f to 0.16f, 1f to 0f,
+            ),
+        ),
+    )
+
+    /**
+     * 说话：头随语句摆三下 + 身体跟着 + 嘴角提着。嘴**不碰**（口型归实时语音）。
+     *
+     * 这是四态里幅度最大的一档：说话时人是"有能量"的，读起来该比听和想更活。
+     * HEAD_X 三个来回用的是 IN_OUT 而不是 LINEAR —— 摆头要在两头有停顿才像说话打拍子，
+     * 线性会看着像钟摆（[BuiltinActions.wave] 里那条摆手才是该用 LINEAR 的地方）。
+     */
+    fun stateSpeaking(): Live2dAction = proc(
+        name = "默认说话",
+        builtinKey = defaultKeyOf(ActionSlot.SPEAKING),
+        durationMs = 2_400,
+        loop = true,
+        fadeInMs = 240,
+        fadeOutMs = 260,
+        required = emptySet(),
+        optional = setOf(
+            GenericChannel.HEAD_X, GenericChannel.HEAD_Z, GenericChannel.HEAD_Y,
+            GenericChannel.BODY_X, GenericChannel.BODY_Z, GenericChannel.BROW, GenericChannel.MOUTH_FORM,
+        ),
+        tracks = listOf(
+            ParameterTrack.of(
+                GenericChannel.HEAD_X,
+                TrackEasing.IN_OUT,
+                0f to 0f, 0.2f to 0.32f, 0.45f to -0.24f, 0.7f to 0.20f, 1f to 0f,
+            ),
+            ParameterTrack.of(
+                GenericChannel.HEAD_Z,
+                TrackEasing.IN_OUT,
+                0f to 0f, 0.3f to 0.20f, 0.7f to -0.18f, 1f to 0f,
+            ),
+            ParameterTrack.of(
+                GenericChannel.HEAD_Y,
+                TrackEasing.IN_OUT,
+                0f to 0f, 0.5f to 0.14f, 1f to 0f,
+            ),
+            ParameterTrack.of(
+                GenericChannel.BODY_X,
+                TrackEasing.IN_OUT,
+                0f to 0f, 0.4f to 0.16f, 0.8f to -0.12f, 1f to 0f,
+            ),
+            ParameterTrack.of(
+                GenericChannel.BODY_Z,
+                TrackEasing.IN_OUT,
+                0f to 0f, 0.35f to 0.12f, 0.75f to -0.12f, 1f to 0f,
+            ),
+            ParameterTrack.of(
+                GenericChannel.BROW,
+                TrackEasing.IN_OUT,
+                0f to 0f, 0.3f to 0.24f, 0.7f to 0.10f, 1f to 0f,
+            ),
+            ParameterTrack.of(
+                GenericChannel.MOUTH_FORM,
+                TrackEasing.IN_OUT,
+                0f to 0f, 0.25f to 0.30f, 0.8f to 0.30f, 1f to 0f,
             ),
         ),
     )
@@ -256,6 +313,9 @@ object BuiltinActions {
      * 手臂与手掌是**可选**通道：没有 `ParamArmRA` 的模型只演头身那一半（幅度会按
      * [ModelCapability.amplitudeScale] 收一点），不会"整个人僵住"。
      * 手臂用 [TrackEasing.LINEAR]：来回摆最怕被缓动抹平，摆到两头停一下就不像挥手了。
+     *
+     * v0.67.0：原来那条"眼睛睁大一点"（[GenericChannel.EYE]）删掉了 —— 它会被框架的
+     * 眨眼覆盖（见文件头那条警告），换模型就有、换模型就没有。眼神改用视线偏移表达。
      */
     fun wave(): Live2dAction = proc(
         name = "摆手",
@@ -268,7 +328,7 @@ object BuiltinActions {
         optional = setOf(
             GenericChannel.ARM_R, GenericChannel.HAND_R, GenericChannel.HEAD_Z,
             GenericChannel.HEAD_Y, GenericChannel.BODY_Z, GenericChannel.BROW,
-            GenericChannel.MOUTH_FORM, GenericChannel.EYE,
+            GenericChannel.MOUTH_FORM, GenericChannel.EYE_BALL_X,
         ),
         tracks = listOf(
             ParameterTrack.of(
@@ -286,17 +346,17 @@ object BuiltinActions {
             ParameterTrack.of(
                 GenericChannel.HEAD_Z,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.25f to 0.16f, 0.5f to -0.16f, 0.75f to 0.12f, 1f to 0f,
+                0f to 0f, 0.25f to 0.28f, 0.5f to -0.24f, 0.75f to 0.20f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.HEAD_Y,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.5f to 0.1f, 1f to 0f,
+                0f to 0f, 0.5f to 0.16f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.BODY_Z,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.3f to 0.06f, 0.7f to -0.06f, 1f to 0f,
+                0f to 0f, 0.3f to 0.14f, 0.7f to -0.14f, 1f to 0f,
             ),
             ParameterTrack.of(
                 GenericChannel.BROW,
@@ -309,9 +369,9 @@ object BuiltinActions {
                 0f to 0f, 0.25f to 0.7f, 0.75f to 0.7f, 1f to 0f,
             ),
             ParameterTrack.of(
-                GenericChannel.EYE,
+                GenericChannel.EYE_BALL_X,
                 TrackEasing.IN_OUT,
-                0f to 0f, 0.25f to 0.12f, 0.75f to 0.12f, 1f to 0f,
+                0f to 0f, 0.3f to 0.22f, 0.8f to 0.16f, 1f to 0f,
             ),
         ),
     )

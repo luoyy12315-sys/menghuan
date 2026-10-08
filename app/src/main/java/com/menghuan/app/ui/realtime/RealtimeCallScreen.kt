@@ -10,10 +10,12 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -22,7 +24,8 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +41,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -50,6 +54,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -104,11 +109,13 @@ import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.personaBrush
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 /**
- * 实时通话页（v0.47.0 重构 · v0.60 全屏铺满 · **v0.64.0 改分区 + 右滑纯净态**）。
+ * 实时通话页（v0.47.0 重构 · v0.60 全屏铺满 · v0.64.0 改分区 + 右滑纯净态 · **v0.67.0 角色能点**）。
  *
  * ## 这一版的布局（用户拍板）
  *
@@ -119,15 +126,16 @@ import kotlinx.coroutines.launch
  * │         [角色区]              │ ← 角色完整落在这里；
  * │      Live2D / 伪视频          │    任何 UI 都不进入这一块
  * │                              │
+ * │ (摆手)(摇头)(翻跟斗)          │ ← 动作胶囊：**只有 Live2D 才有**，点一下当场演
  * ├──────────────────────────────┤ ← 对话台（页面底色）
  * │  你 今天想聊点什么呀           │
  * │  阿布 我在听呢，你慢慢说       │ ← 字幕最多 3 行，上滑看历史
  * │      ( 🎤 )    ( 📞 )        │ ← 静音 / 挂断
  * └──────────────────────────────┘
- *      ← 右滑：整块对话台滑到右边去，角色铺满全屏，顶栏仍在
+ *      ← 右滑：对话台与动作胶囊一起滑到右边去，角色铺满全屏，顶栏仍在
  * ```
  *
- * ## 三条设计决定（都跟"不遮挡人物"有关）
+ * ## 四条设计决定
  *
  * 1. **字幕与按钮不压在角色身上，是结构性的，不是靠蒙版救的。**
  *    v0.61.1 删掉三层暗色蒙层之后，字幕压在浅色角色上就时常读不清（灰字压灰面）。
@@ -138,11 +146,15 @@ import kotlinx.coroutines.launch
  *    否则右滑那 320ms 里 GL 表面要重新量几十次，`setRenderTargetSize` 每次重建离屏缓冲，
  *    观感是"滑动时画面抖"（v0.60 那轮把画面改成全屏时踩过尺寸反复变的坑）。
  * 3. **右滑进纯净态、左滑唤回**。用户点名要的表现是"下面的 UI 都不见、好像是移到了右边"，
- *    所以这里是**横移出场**（不是淡出），并且用 [Animatable] 跟手 —— 手指走多远就移多远，
+ *    所以这里是**横移出场**（不是淡出），并且跟手 —— 手指走多远就移多远，
  *    松手按位置与方向弹簧归位。**顶栏在纯净态里保留**（用户点名"顶部栏的 UI 还要"）。
+ * 4. **点角色有反应，但只有角色那一块算**（v0.67.0，用户点名要通话里的互动入口）：
+ *    点按判定挂在整页（用户的手会落在画面中间），但**落在对话台那一条上不算** ——
+ *    点字幕是想读字，不是想让 TA 摆手。判定与"点哪儿演什么"都复用角色空间那一套
+ *    （`Live2dStage.hit` + `resolveInteraction`），不另立第二份规矩。
  *
  * 语音通话（没有形象）走的还是原来的居中大头像那一套，只是底下同样挂了对话台；
- * 两条路共用同一套字幕与操作钮。
+ * 两条路共用同一套字幕与操作钮。**语音通话完全不碰视觉层与动作**（AGENTS §零.7）。
  */
 @Composable
 fun RealtimeCallScreen(
@@ -224,10 +236,35 @@ fun RealtimeCallScreen(
     // v0.66.0：这一角色的**视频通话背景**档位（`preset` / `file:<名字>`；没配过=按预设画）。
     // 表很小（每个角色一行），整表收集一次不贵；文件 stat 放在 keyed remember 里，
     // 档位没变就不碰磁盘（同一个角色反复重组不该反复 stat）。
-    val callBgMap by appContainer.settingsRepository.callBackground.collectAsState(initial = emptyMap())
-    val callBg = callBgMap[personaId].orEmpty()
+    // ⚠️ **语音通话一个字都不碰这一层**（AGENTS §零.7）：背景只有视频通话会画，
+    // 所以连订阅都要门掉 —— 否则语音通话白挂一条 DataStore 流、还要在组合期 stat 一次。
+    // flow 用 remember(videoMode) 钉住：每次重组换新实例会让 collectAsState 重新订阅一遍。
+    val callBgFlow = remember(videoMode) {
+        if (videoMode) appContainer.settingsRepository.callBackground
+        else flowOf(emptyMap<Long, String>())
+    }
+    val callBgMap by callBgFlow.collectAsState(initial = emptyMap())
+    val callBg = if (videoMode) callBgMap[personaId].orEmpty() else ""
     val callBgFile = remember(personaId, callBg) {
-        runCatching { CallBackgroundStore.backgroundFile(context, personaId, callBg) }.getOrNull()
+        if (callBg.isBlank()) null
+        else runCatching { CallBackgroundStore.backgroundFile(context, personaId, callBg) }.getOrNull()
+    }
+    // 字幕按固定节拍刷，不跟着每一个 token 走：
+    // AiDelta 一秒能来几十次，而 buildLines 每次都要把最近 200 条整表重铺一遍
+    //（每秒上万个临时对象 + 整列重组），换来的只是"字变得慢一点"。
+    // 字幕是给人跟读的，80ms 一刷看着完全连续。与同页推 inset 用 snapshotFlow 是同一套思路。
+    // 先比"签名"（条数 + 两段进行中的原文）再决定要不要重铺，所以**没人说话时一次都不铺**。
+    var subtitleLines by remember { mutableStateOf(buildLines(ui)) }
+    var subtitleSig by remember { mutableStateOf(ui.turns.size to (ui.userPartial to ui.aiPartial)) }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            delay(SUBTITLE_TICK_MS)
+            val sig = ui.turns.size to (ui.userPartial to ui.aiPartial)
+            if (sig != subtitleSig) {
+                subtitleSig = sig
+                subtitleLines = buildLines(ui)
+            }
+        }
     }
     var dialPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     var dialFallback by remember { mutableStateOf<android.media.Ringtone?>(null) }
@@ -305,52 +342,114 @@ fun RealtimeCallScreen(
     val videoPictureOn = videoVisual?.second?.drawn == true
 
     // 纯净态进度：0 = 正常分区，1 = 对话台完全滑到右边、角色铺满全屏。
-    // 用 Animatable 是为了"跟手"—— 手指走多远就移多远（见下面的手势）。
     // ⚠️ 这两个必须声明在 BoxWithConstraints **之外**：手势挂在 BoxWithConstraints 自己的
     // modifier 上，那个位置的 lambda 还没进 BoxWithConstraintsScope，读不到里面声明的状态。
     val spread = remember { Animatable(0f) }
+    /**
+     * 手指拖动期间的**实时位移**（像素）。
+     *
+     * 为什么不直接用 `spread.snapTo`：`awaitEachGesture` 那个 lambda 带 `@RestrictSuspension`
+     * （Compose 1.6 起的规矩），在里面调任何外部挂起函数**编译就过不去**；
+     * 而绕开它的老办法 —— 每个事件 `scope.launch { snapTo }` —— 一次拖动能报 60~120 个事件，
+     * 就是原来"滑动的时候画面跟着抖"的来源（主线程被这些一次性协程排满）。
+     * 所以拖动期间写这一个普通浮点（非挂起、随便写），松手时才把合起来的值交还给
+     * [spread] 去跑弹簧。两处读数（graphicsLayer / snapshotFlow）都是把两者相加，
+     * 观感上是一条连续的跟手位移，切换所有权那一帧也不会跳。
+     */
+    var dragPx by remember { mutableFloatStateOf(0f) }
     val scope = rememberCoroutineScope()
 
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .background(NeuBackground)
-            // 右滑进纯净态 / 左滑唤回。**挂在整页**而不是只挂在对话台上：
+            // 右滑进纯净态 / 左滑唤回 + 点角色有反应。**都挂在整页**而不是只挂在对话台上：
             // 用户想收起 UI 时，手会落在画面中间那块（角色身上），
             // 只让底下那条窄面板响应等于让他们猜"要从哪儿滑"。
-            // ⚠️ 与字幕的上下滚动不冲突：水平拖动要跨过 touchSlop 才成立，
-            // 竖直手势仍然被 LazyColumn 拿走（手势竞技场自己判方向）。
-            .pointerInput(videoPictureOn) {
+            //
+            // ⚠️ 点按与横滑**写在同一个 awaitEachGesture 里**，不是两个 pointerInput：
+            // ①`detectTapGestures` 与 `detectHorizontalDragGestures` 分挂两个通道时，
+            //    点按那条会先把 Down 消费掉，横滑要等下一个 Move 才发现自己被判死 ——
+            //    表现是"得先滑一下、第二下才跟着动"；② 挂在整页时两者抢的本来就是同一根手指。
+            //    合成一个循环最省事：水平越过阈值就是滑、没越过就是点，一次判定。
+            //    竖直不在这儿管 —— 越过阈值的是水平位移，翻字幕仍然归 LazyColumn。
+            // ⚠️ 滑动期间只写 [dragPx]（普通浮点），松手才交给 [spread] 跑弹簧：
+            //    `awaitEachGesture` 的 lambda 带 `@RestrictSuspension`，在里面调 `snapTo` 编译不过，
+            //    而"每个事件 launch 一条协程去 snapTo"正是上一版滑动发抖的来源（见 dragPx 的注释）。
+            .pointerInput(videoPictureOn, ui.stageInteractive) {
                 if (!videoPictureOn) return@pointerInput
                 // PointerInputScope 自己就是 Density 且带 size，所以这里不需要外层的屏宽
                 val widthPx = size.width.toFloat().coerceAtLeast(1f)
-                detectHorizontalDragGestures(
-                    onDragEnd = {
-                        // 松手归位：过了一半就往那个方向去，否则弹回原处。
-                        // 用弹簧而不是 tween —— 与全项目"状态走弹簧"的语言一致，
-                        // 也与底栏横滑切页那套手感同源。
-                        val target = if (spread.value >= 0.5f) 1f else 0f
+                val heightPx = size.height.toFloat().coerceAtLeast(1f)
+                // 对话台那一条不算"角色区"：点它是想读字幕，不该让角色突然摆手
+                //（InteractionRules 留 OTHER 那一档就是为了挡这个）
+                val characterBottomPx = (heightPx - CallConsoleHeight.toPx()).coerceAtLeast(1f)
+                val slop = viewConfiguration.touchSlop
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    var lastX = down.position.x
+                    var accX = 0f
+                    var dragging = false
+                    // 松手归位：过了一半就往那个方向去，否则弹回原处。
+                    // 用弹簧而不是 tween —— 与全项目"状态走弹簧"的语言一致，
+                    // 也与底栏横滑切页那套手感同源。
+                    // 先把拖出来的那段位移**并进** spread（snapTo 到合起来的值），
+                    // 再把 dragPx 清零 —— 顺序反了会看见面板在松手那一帧跳一下。
+                    fun settleDrag() {
+                        if (!dragging) return
+                        val total = (spread.value + dragPx / widthPx).coerceIn(0f, 1f)
                         scope.launch {
+                            spread.snapTo(total)
+                            dragPx = 0f
                             spread.animateTo(
-                                target,
-                                androidx.compose.animation.core.spring(
-                                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioLowBouncy,
-                                    stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow,
+                                if (total >= 0.5f) 1f else 0f,
+                                spring(
+                                    dampingRatio = Spring.DampingRatioLowBouncy,
+                                    stiffness = Spring.StiffnessMediumLow,
                                 ),
                             )
                         }
-                    },
-                    onDragCancel = {
-                        scope.launch { spread.animateTo(if (spread.value >= 0.5f) 1f else 0f) }
-                    },
-                    onHorizontalDrag = { change, dragAmount ->
-                        // 手指走多远就移多远 —— "跟手"感全靠这一句
-                        change.consume()
-                        scope.launch {
-                            spread.snapTo((spread.value + dragAmount / widthPx).coerceIn(0f, 1f))
+                    }
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id }
+                        if (change == null) {
+                            // 这根手指的事件流断了（被别的层抢走、指针消失…）。
+                            // 必须按"已经松手"收一次：否则 dragPx 永远留在一半的位移上，
+                            // 对话台就卡在那个位置不回弹了。
+                            settleDrag()
+                            break
                         }
-                    },
-                )
+                        if (!change.pressed) {
+                            if (dragging) {
+                                settleDrag()
+                            } else if (ui.stageInteractive) {
+                                val p = change.position
+                                // 落在对话台那一条上就当没点：角色区只有上面那块
+                                if (p.y <= characterBottomPx) {
+                                    vm.onStageTap(
+                                        ndcX = p.x / widthPx * 2f - 1f,
+                                        // 屏幕 y 向下、NDC y 向上，所以要 1 - …
+                                        ndcY = 1f - p.y / heightPx * 2f,
+                                    )
+                                }
+                            }
+                            break
+                        }
+                        val x = change.position.x
+                        val dx = x - lastX
+                        lastX = x
+                        accX += dx
+                        if (!dragging) {
+                            // 只认**水平**越过阈值
+                            if (abs(accX) < slop) continue
+                            dragging = true
+                        }
+                        change.consume()
+                        // 手指走多远就移多远 —— "跟手"感全靠这一句（非挂起，见 dragPx 的注释）
+                        dragPx += dx
+                    }
+                }
             },
     ) {
         val avatarSize = maxWidth * 0.59f
@@ -362,13 +461,17 @@ fun RealtimeCallScreen(
         // 对话台占屏幕的比例。它是"角色区让出来的那一块"，也就是引擎要留的底部可视余量。
         val consoleFraction = (CallConsoleHeight / maxHeight).coerceIn(0f, 0.72f)
         val screenWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
+        // 进度 = 已归位的那段 + 手指正拖着的那段。两处都要读这个和，
+        // 否则松手交接所有权的那一帧面板会跳。
+        // （写成局部函数而不是 `val … get()`：局部属性没有 getter，编译不认。）
+        fun spreadTotal() = (spread.value + dragPx / screenWidthPx).coerceIn(0f, 1f)
 
         // 每帧把"角色可用区"推给引擎。走 snapshotFlow 而不是在组合里读 spread.value：
         // 后者会让整页每帧重组一次（320ms ≈ 20 帧），而这里只是把矩阵算对，
         // 不需要重新组合任何东西。
         LaunchedEffect(videoVisualOn, consoleFraction) {
             val engine = videoVisual?.first ?: return@LaunchedEffect
-            snapshotFlow { spread.value }.collect { p ->
+            snapshotFlow { spreadTotal() }.collect { p ->
                 engine.setViewportBottomInset(consoleFraction * (1f - p))
             }
         }
@@ -503,6 +606,36 @@ fun RealtimeCallScreen(
             }
         }
 
+        // ③′ 动作胶囊（v0.67.0，用户点名"通话页要有让 TA 当场做一个动作的入口"）。
+        //
+        // 浮在**角色区下沿**、对话台上面那一横条：它属于"看角色"那一半，
+        // 所以跟着对话台一起右滑出场（纯净态里不留任何控件，那才叫纯净）。
+        //
+        // ⚠️ **刻意用居中的普通 Row，不是 LazyRow / horizontalScroll**：可横滚的容器会把自己
+        // 那条横向手势吃掉，而"右滑进纯净态"是挂在整页上的 —— 两条抢同一根手指的结果
+        // 就是"在这一排胶囊上滑不动、通话收不干净"（v0.67 自检时踩到，别改回去）。
+        // 换成不滚的 Row 之后，条数上限收到 4（`QUICK_ACTION_LIMIT`），长名字用省略号截，
+        // 一整排最宽也就 344dp，360dp 宽的机器也放得下。
+        // ⚠️ 只有 Live2D 形象才出现这一排（`stageInteractive`）：伪视频是一组循环短片，
+        // 点它一个参数都写不进去 —— 给一条点了没反应的胶囊比不给更糟。
+        if (videoPictureOn && ui.stageInteractive && ui.quickActions.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 18.dp)
+                    .padding(bottom = CallConsoleHeight + 8.dp)
+                    .graphicsLayer {
+                        // 与对话台同步横移：纯净态里这块也该收走
+                        translationX = spread.value * screenWidthPx + dragPx
+                    },
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ui.quickActions.forEach { action ->
+                    CallQuickChip(name = action.name) { vm.playQuickAction(action) }
+                }
+            }
+        }
+
         // ④ 对话台：字幕 + 操作钮。右滑时整块横移出场。
         //
         //    为什么会遮不住角色：角色已经被 ③/① 的 bottomInset 收进上方那块了，
@@ -519,15 +652,15 @@ fun RealtimeCallScreen(
                 .fillMaxWidth()
                 .graphicsLayer {
                     // 延迟读：滑动期间只刷渲染层，不重组这张面板（一重组就要重排字幕列表）
-                    translationX = spread.value * screenWidthPx
-                    alpha = 1f - spread.value * 0.35f
+                    translationX = spread.value * screenWidthPx + dragPx
+                    alpha = 1f - spreadTotal() * 0.35f
                 }
                 .then(if (videoPictureOn) Modifier else Modifier.background(NeuBackground))
                 .staggerEnter(1, stepMs = 60, slideDp = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             CallSubtitlePanel(
-                lines = remember(ui.turns, ui.userPartial, ui.aiPartial) { buildLines(ui) },
+                lines = subtitleLines,
                 name = name,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -598,6 +731,14 @@ private val CallSubtitleViewportHeight = 96.dp
  * v0.60.1 起头像边长改成屏宽比例，画布就按这个比值跟着等比放大。
  */
 private const val CallAvatarCanvasRatio = 196f / 124f
+
+/**
+ * 字幕重铺的节拍（v0.66.x）。
+ *
+ * 不是为了"看起来连续"——80ms 完全够；是为了把 `buildLines` 从"每一个流式增量跑一次"
+ * 降到每秒 12.5 次。整表重铺跑在主线程，而通话主线程还要接手势与滑动。
+ */
+private const val SUBTITLE_TICK_MS = 80L
 
 /**
  * 字幕面板（v0.54.0）：歌词式排版 + 可滚动完整记录。
@@ -765,6 +906,42 @@ private fun stateLabel(ui: RealtimeCallUiState): String = when (ui.state) {
     RealtimeCallState.DISCONNECTING -> "正在挂断…"
     RealtimeCallState.ENDED -> "通话已结束"
     RealtimeCallState.ERROR -> "通话出错"
+}
+
+/**
+ * 通话里"当场演一个"的胶囊（v0.67.0）。
+ *
+ * 三件事决定了它长这样：
+ * · **白面细线、不加底色** —— 它浮在画面上，任何实底色块都会变成压在角色身上的一条白条
+ *   （v0.65.0 用户点名把对话台的白膜换成透明，同一个理由）；
+ * · **无涟漪、按压缩放** —— 全 App 的输入语言（§四"输入区按钮一律走缩放反馈"）；
+ * · **只有名字，没有图标** —— 这一排要读的是"演哪个"，图标只会把六个字挤成三个。
+ */
+@Composable
+private fun CallQuickChip(name: String, onClick: () -> Unit) {
+    val press = rememberNeuPressState()
+    Box(
+        Modifier
+            .scale(press.scale)
+            // 名字是用户自己起的（最长 12 字）。封顶 80dp 让一排四颗在 360dp 宽的机器上也放得下，
+            // 超了就省略号 —— 宁可少看两个字，也不要这一排把角色区挤没。
+            .widthIn(max = 80.dp)
+            .neuSurface(999.dp, color = NeuSurface)
+            .clickable(
+                interactionSource = press.interactionSource,
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 15.dp, vertical = 9.dp),
+    ) {
+        Text(
+            name,
+            fontSize = 13.sp,
+            color = TextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 /**

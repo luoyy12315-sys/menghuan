@@ -969,7 +969,9 @@ class AiPromptsTest {
         // 通话动作（四态绑定）
         assertTrue(manual.contains("**会话设置 → 「通话动作」**"))
         assertTrue(manual.contains("默认那四套是**系统自带的动作**"))
-        assertTrue(manual.contains("这一页**只做绑定**，不能编辑动作"))
+        // ⚠️ 这句在 v0.67.0 被改写（那一页顶上多了一行「动作幅度」，"只做绑定"的说法不再完整）：
+        // 守的是"这页不能编辑动作"这个事实还在，措辞见 `v0670 …` 那条的成对断言。
+        assertTrue(manual.contains("这一页只做挑选，不做编辑动作"))
         // 角色空间
         assertTrue(manual.contains("**会话设置 → 「角色空间」**"))
         assertTrue(manual.contains("点头部 → 摇头；点身体 → 摆手；点到旁边空白 → 随机播一个趣味动作"))
@@ -1039,5 +1041,35 @@ class AiPromptsTest {
         // 旧措辞（只给自定义那一家发过保证）
         assertFalse(manual.contains("自定义家有**独立的一份 Key**，切回博查 / Tavily 不会互相覆盖掉。"))
         assertFalse(manual.contains("「视频通话形象」「角色空间」「通话动作」「聊天背景」四行都是**一行高的纯入口**"))
+    }
+
+    /**
+     * v0.67.0（用户点名"全面优化视频通话 / Live2D"）：通话里能点角色、多一排动作胶囊、
+     * 会话设置「通话动作」页多一行「动作幅度」，以及这一轮修掉的四个观感问题要答得出口。
+     *
+     * 「只做绑定，不能编辑动作」那句是**改写**，所以配成对：旧句必须消失、新句必须在了
+     * （AGENTS §零.5：只写一边守不住 replace 静默落空）。
+     * 纯追加的那两条只需要断新句在了 —— 锚点没匹配上时新句就不会出现，一样抓得住。
+     */
+    @Test
+    fun `v0670 通话里点角色与动作胶囊与动作幅度 进手册`() {
+        // ① 通话页新增的两样（点角色 / 胶囊）
+        assertTrue(manual.contains("- **点角色有反应**（v0.67.0）"))
+        assertTrue(manual.contains("**角色脚边那一排胶囊**（v0.67.0）"))
+        assertTrue(manual.contains("**只有 Live2D 形象有这一排**"))
+        // ② 动作幅度那一行，以及它和每条动作「强度」的关系
+        assertTrue(manual.contains("- **动作幅度**（v0.67.0）：这一页最上面那行，四档 **小 / 标准 / 大 / 特大**"))
+        assertTrue(manual.contains("两个是相乘的关系"))
+        // ③ 「只做绑定」整句被改写
+        assertTrue(manual.contains("- ⚠️ 这一页只做挑选，不做编辑动作。"))
+        assertFalse(manual.contains("- ⚠️ 这一页**只做绑定**，不能编辑动作。"))
+        // ④ 角色空间那句点角色的说明，后面紧跟的是"同一套"而不是原来的括号注解
+        assertTrue(manual.contains("**v0.67.0 起视频通话里也是同一套**"))
+        assertFalse(manual.contains("随机播一个趣味动作。（模型自己画了点击区域"))
+        // ⑤ 这一轮修掉的四个观感问题：助手要能说出为什么以前怪
+        assertTrue(manual.contains("【v0.67.0：动作看起来比从前自然，也更有力】"))
+        assertTrue(manual.contains("**切动作不再弹回原位**"))
+        assertTrue(manual.contains("**翻跟斗绕的是角色自己**"))
+        assertTrue(manual.contains("**画面封顶 60 帧**"))
     }
 }

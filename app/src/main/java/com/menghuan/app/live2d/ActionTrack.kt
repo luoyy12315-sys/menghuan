@@ -1,14 +1,15 @@
 package com.menghuan.app.live2d
 
+import kotlin.math.cos
 import kotlin.math.pow
+import kotlin.math.sin
 
 /**
  * 关键帧之间的过渡方式（v0.64.0，纯函数）。
  *
  * 刻意只有三种：普通用户面对的是「强度 / 速度 / 时长」三个滑块，
  * 过渡曲线是模板自带的质感，不该变成第四个要用户理解的东西。
- */
-enum class TrackEasing {
+ */enum class TrackEasing {
     /** 线性：机械感，适合"摆"这种来回动作的中间段 */
     LINEAR,
 
@@ -34,7 +35,8 @@ enum class TrackEasing {
  * `value` 是归一化幅度。
  *
  * 关于归一化值的约定（这是整套系统的地基，别在别处另立一套）：
- * - 参数通道：**0 是"这个模型此参数的默认值"**，±1 是"可用范围的 60%"。
+ * - 参数通道：**0 是"这个模型此参数的默认值"**，±1 是"可用范围的 [ActionPlayer.AMPLITUDE_SPAN]"
+ *   （v0.65.0 起是 0.9；写这里是为了让注释和代码是同一个数）。
  *   也就是说 `1.0` 永远表示"这个角色能做到的、幅度最大的自然动作"，
  *   换一张参数范围 ±10° 的模型不会突然把头甩掉。
  * - 舞台通道：1.0 的换算见 [GenericChannel.stageUnit]，允许超出 ±1（翻跟斗写 2.0）。
@@ -120,4 +122,45 @@ data class StagePose(
     companion object {
         val NONE = StagePose()
     }
+}
+
+/**
+ * 把舞台姿态摊成一张 4×4 矩阵写进 [a]（**列主序**，与 `CubismMatrix44.getArray()` 同一种摆法：
+ * 平移在第 12/13 位、`transformX = m[0]*x + m[12]`）。
+ *
+ * ## 为什么必须绕 [pivotX] / [pivotY] 而不是绕 NDC 原点
+ *
+ * 绕原点 = **绕屏幕正中**。而通话页是分区布局：角色被 `bottomInset` 整只抬到上半屏，
+ * 这时绕屏幕中心转 360°，画面上是"角色贴着一条大圆弧转圈"，不是"在原地翻跟斗"
+ * （v0.64~v0.66 真机上那条最怪的观感就是它）。
+ * 角色空间里拖动过角色也是同一件事 —— 拖到边上再翻，人就绕着屏幕中心甩出去了。
+ *
+ * 数学上就是 `T(c) · M · T(-c) · projection`：先把角色中心挪到原点、做姿态、再挪回去。
+ * 展开后只改平移那一列，旋转与缩放部分一字不动，所以**每帧只多四次乘法**，没有分配。
+ *
+ * [pivotX] / [pivotY] 是角色中心在 NDC 里的位置（-1..1 跨整块画面），
+ * 由渲染层在摆投影时算出来交给这里（`Live2dCharacter.fitProjection`）。
+ */
+fun StagePose.fillNdcMatrix(a: FloatArray, pivotX: Float, pivotY: Float) {
+    require(a.size == 16) { "舞台矩阵必须是 4×4" }
+    val rad = Math.toRadians(rotationDeg.toDouble())
+    val cs = cos(rad).toFloat() * scale
+    val sn = sin(rad).toFloat() * scale
+    a[0] = cs
+    a[1] = sn
+    a[2] = 0f
+    a[3] = 0f
+    a[4] = -sn
+    a[5] = cs
+    a[6] = 0f
+    a[7] = 0f
+    a[8] = 0f
+    a[9] = 0f
+    a[10] = 1f
+    a[11] = 0f
+    // T(c) · [A | t] · T(-c) 的平移列 = t + c - A·c
+    a[12] = dx * 2f + pivotX - (cs * pivotX - sn * pivotY)
+    a[13] = dy * 2f + pivotY - (sn * pivotX + cs * pivotY)
+    a[14] = 0f
+    a[15] = 1f
 }

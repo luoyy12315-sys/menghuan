@@ -4,8 +4,10 @@ import com.menghuan.app.data.AiActionGenerator
 import com.menghuan.app.data.Live2dSpaceStore
 import com.menghuan.app.data.model.Live2dActionMapper
 import com.menghuan.app.live2d.ActionCodec
+import com.menghuan.app.live2d.ActionBlender
 import com.menghuan.app.live2d.ActionComposer
 import com.menghuan.app.live2d.ActionPart
+import com.menghuan.app.live2d.ActionScale
 import com.menghuan.app.live2d.ActionSlot
 import com.menghuan.app.live2d.ActionSource
 import com.menghuan.app.live2d.ActionType
@@ -21,6 +23,7 @@ import com.menghuan.app.live2d.ParameterTrack
 import com.menghuan.app.live2d.StagePose
 import com.menghuan.app.live2d.TrackEasing
 import com.menghuan.app.live2d.TrackKey
+import com.menghuan.app.live2d.fillNdcMatrix
 import com.menghuan.app.realtime.RealtimeCallState
 import com.menghuan.app.realtime.visual.CallVisualState
 import com.menghuan.app.realtime.visual.toActionSlot
@@ -40,8 +43,12 @@ import kotlin.math.abs
  * 动作编解码、能力探测与降级、互动分区、拼装器、AI 输出解析 —— 这些才是
  * "动作会不会播歪、会不会崩"的真正决策点，而且 JVM 就能跑。
  *
- * 真正需要 GPU 的那两层（`ActionPlayer` 每帧写参数、舞台矩阵叠加）在真机上验，
- * 不是这里能覆盖的，所以不写假测试充数。
+ * v0.67.0 起把两件原本"只能上真机看"的事也抽成了纯函数、纳进来了：
+ * [ActionBlender]（换动作/停动作/循环接缝的承接）与 [fillNdcMatrix]（舞台姿态的矩阵）。
+ * 这两处错了的表现恰好是"说不清但一眼看得出"——弹一下、绕着屏幕转圈，
+ * 而真机上没人能凭肉眼判断是哪一帧哪个数错，所以必须在 JVM 上钉住。
+ *
+ * 剩下真正要 GPU 的那一层（每帧往 `CubismModel` 里写参数）在真机上验，不写假测试充数。
  */
 class Live2dActionTest {
 
@@ -602,5 +609,210 @@ class Live2dActionTest {
     fun `TrackKey 落盘精度是两位小数`() {
         assertEquals(0.33f, TrackKey.round(0.33333f), 1e-4f)
         assertEquals(1f, TrackKey.round(1.004f), 1e-4f)
+    }
+
+    // ---------------------------------------------------------------
+    // 承接层（v0.67.0）——"换动作啪一下"这一族的回归保护
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `换动作那一帧输出还是上一帧的值，不跳回静止位`() {
+        val b = ActionBlender()
+        // 旧动作把头摆在 +0.5
+        b.beginFrame(); b.addTarget(GenericChannel.HEAD_Z, 0.5f); b.advance(16f); b.settle()
+        assertEquals(0.5f, b.valueOf(GenericChannel.HEAD_Z), 1e-4f)
+
+        // 换动作：新动作这一帧要写 -0.3
+        b.startFade(200f)
+        b.beginFrame(); b.addTarget(GenericChannel.HEAD_Z, -0.3f); b.advance(0f); b.settle()
+        // 起点仍然是上一帧那一头（v0.64 的写法在这里会直接写 0 = 弹回中间）
+        assertEquals(0.5f, b.valueOf(GenericChannel.HEAD_Z), 1e-4f)
+
+        b.beginFrame(); b.addTarget(GenericChannel.HEAD_Z, -0.3f); b.advance(200f); b.settle()
+        assertEquals(-0.3f, b.valueOf(GenericChannel.HEAD_Z), 1e-4f)
+    }
+
+    @Test
+    fun `从静止起播与旧的淡入包络一模一样`() {
+        val b = ActionBlender()
+        b.startFade(100f)
+        b.beginFrame(); b.addTarget(GenericChannel.HEAD_X, 1f); b.advance(50f); b.settle()
+        // smoothstep(0.5) = 0.5 → 与旧实现 (elapsed / fadeIn) 在中点同值，
+        // 差别只在两头（旧实现是直线，这里是缓动）—— 不许因为它改动"从静止起"的观感
+        assertEquals(0.5f, b.valueOf(GenericChannel.HEAD_X), 1e-3f)
+        b.beginFrame(); b.addTarget(GenericChannel.HEAD_X, 1f); b.advance(50f); b.settle()
+        assertEquals(1f, b.valueOf(GenericChannel.HEAD_X), 1e-3f)
+    }
+
+    @Test
+    fun `新动作没写的通道淡回静止，淡完就把控制权还给模型`() {
+        val b = ActionBlender()
+        b.beginFrame(); b.addTarget(GenericChannel.HEAD_X, 0.4f); b.advance(16f); b.settle()
+        b.startFade(100f)
+        // 新动作完全不写 HEAD_X
+        b.beginFrame(); b.advance(50f); b.settle()
+        assertTrue("淡到一半还得继续写，否则参数会被钉在静止位", b.owns(GenericChannel.HEAD_X))
+        assertEquals(0.2f, b.valueOf(GenericChannel.HEAD_X), 1e-3f)
+
+        b.beginFrame(); b.advance(50f); b.settle()
+        assertEquals(0f, b.valueOf(GenericChannel.HEAD_X), 1e-4f)
+        // ⚠️ 这一条是"播过一次摆手，角色自己的待机动作从此没了"的防线：
+        // 淡完了还继续写 = 每帧把这个参数按在静止值上，模型自己的 motion 再也摆不动它
+        assertFalse(b.owns(GenericChannel.HEAD_X))
+        assertTrue(b.isSettled())
+    }
+
+    @Test
+    fun `循环绕回起点那一刻被摊平，不硬跳一格`() {
+        val b = ActionBlender()
+        // 上一圈末尾摆在 0.8
+        b.beginFrame(); b.addTarget(GenericChannel.EYE_BALL_X, 0.8f); b.advance(16f); b.settle()
+        // 绕回起点：新圈首帧是 0.2（用户/AI 生成的动作里首尾不等是常态）
+        b.startFade(120f)
+        b.beginFrame(); b.addTarget(GenericChannel.EYE_BALL_X, 0.2f); b.advance(0f); b.settle()
+        assertEquals(0.8f, b.valueOf(GenericChannel.EYE_BALL_X), 1e-4f)
+        b.beginFrame(); b.addTarget(GenericChannel.EYE_BALL_X, 0.2f); b.advance(120f); b.settle()
+        assertEquals(0.2f, b.valueOf(GenericChannel.EYE_BALL_X), 1e-4f)
+    }
+
+    @Test
+    fun `旋转起点折到最近的那一圈，翻到 350 度不该倒着转回去`() {
+        val b = ActionBlender(rotPeriod = 360f)
+        assertEquals(-10f, b.snapToNearestTurn(350f, 360f), 1e-4f)
+        assertEquals(0f, b.snapToNearestTurn(720f, 360f), 1e-4f)
+        // 半圈是**真的**姿势差，不许被折成 0。
+        // （落点正负号看 round-half-up：`roundToInt(0.5f)=1` 会把 +180 折成 -180 ——
+        //  两者画面上是同一个姿势，这条要守的是"别折成 0"，不是符号）
+        assertEquals(180f, abs(b.snapToNearestTurn(180f, 360f)), 1e-4f)
+        assertEquals(45f, b.snapToNearestTurn(-315f, 360f), 1e-4f)
+    }
+
+    @Test
+    fun `舞台姿态的淡出是把位移与旋转一起收干净`() {
+        val b = ActionBlender(rotPeriod = 360f)
+        b.beginFrame(); b.addStageTarget(0.3f, 0.1f, 200f, 0.2f); b.advance(16f); b.settle()
+        assertEquals(StagePose(0.3f, 0.1f, 200f, 1.2f), b.stagePose())
+        // 演完了：目标全空，开一段淡出
+        b.startFade(100f)
+        b.beginFrame(); b.advance(100f); b.settle()
+        assertTrue(b.stagePose().isIdentity)
+    }
+
+    @Test
+    fun `舞台缩放那道夹子不能丢`() {
+        // 轨道值不设上限（翻跟斗的旋转要写 2.0），所以缩放必须在这里夹住：
+        // 用户拼的动作或 AI 生成的垃圾值一旦把它推到 3 倍，角色会整只冲出屏幕，
+        // 淡回来的那半秒里通话上根本看不见人。v0.64 的夹子在 ActionPlayer 里，
+        // v0.67 把承接搬进 ActionBlender 时这道夹子必须跟着搬。
+        val b = ActionBlender()
+        b.beginFrame(); b.addStageTarget(0f, 0f, 0f, 5f); b.advance(16f); b.settle()
+        assertEquals(ActionBlender.MAX_STAGE_SCALE, b.stagePose().scale, 1e-4f)
+        b.beginFrame(); b.addStageTarget(0f, 0f, 0f, -5f); b.advance(16f); b.settle()
+        assertEquals(ActionBlender.MIN_STAGE_SCALE, b.stagePose().scale, 1e-4f)
+    }
+
+    // ---------------------------------------------------------------
+    // 舞台矩阵绕角色中心（v0.67.0）
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `旋转绕的是角色中心 —— 那一点在变换后纹丝不动`() {
+        val pivotX = 0.2f
+        val pivotY = 0.6f   // 分区布局里角色被抬到上半屏，中心就是这个位置
+        val pose = StagePose(dx = 0f, dy = 0f, rotationDeg = 90f, scale = 1f)
+        val a = FloatArray(16)
+        pose.fillNdcMatrix(a, pivotX, pivotY)
+        // 与 CubismMatrix44 同一套摆法：x' = m[0]*x + m[4]*y + m[12]
+        val tx = a[0] * pivotX + a[4] * pivotY + a[12]
+        val ty = a[1] * pivotX + a[5] * pivotY + a[13]
+        assertEquals(pivotX, tx, 1e-5f)
+        assertEquals(pivotY, ty, 1e-5f)
+    }
+
+    @Test
+    fun `中心在原点时与旧实现（绕屏幕正中）逐元素相同`() {
+        // 这条是"语音通话 / 不分区那条老路径行为一个字都没变"的回归保护
+        val pose = StagePose(dx = 0.3f, dy = -0.15f, rotationDeg = 37f, scale = 1.25f)
+        val a = FloatArray(16)
+        pose.fillNdcMatrix(a, 0f, 0f)
+        val rad = Math.toRadians(37.0)
+        val cs = kotlin.math.cos(rad).toFloat() * 1.25f
+        val sn = kotlin.math.sin(rad).toFloat() * 1.25f
+        assertEquals(cs, a[0], 1e-5f)
+        assertEquals(sn, a[1], 1e-5f)
+        assertEquals(-sn, a[4], 1e-5f)
+        assertEquals(cs, a[5], 1e-5f)
+        assertEquals(0.6f, a[12], 1e-5f)   // dx × 2（NDC 横跨 2 个单位）
+        assertEquals(-0.3f, a[13], 1e-5f)
+        assertEquals(1f, a[10], 1e-5f)
+        assertEquals(1f, a[15], 1e-5f)
+    }
+
+    @Test
+    fun `只有位移的动作不受中心影响`() {
+        val a = FloatArray(16)
+        StagePose(dx = 0.25f, dy = 0.1f).fillNdcMatrix(a, 0f, 0.7f)
+        assertEquals(0.5f, a[12], 1e-5f)
+        assertEquals(0.2f, a[13], 1e-5f)
+    }
+
+    // ---------------------------------------------------------------
+    // 动作幅度档位（v0.67.0）
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `倍率只改强度不改轨道值，而且绝不越过 MAX_AMPLITUDE`() {
+        val base = BuiltinActions.wave()
+        val tracksBefore = base.tracks.map { it.keys.map { k -> k.value } }
+        val big = base.scaledBy(1.8f)
+        assertEquals(tracksBefore, big.tracks.map { it.keys.map { k -> k.value } })
+        assertEquals(1.8f, big.safeAmplitude, 1e-4f)
+        // 已经很强的动作再乘一档，必须被那道夹子拦住（"任何模型都不该被甩到破图"）
+        assertEquals(
+            Live2dAction.MAX_AMPLITUDE,
+            base.copy(amplitude = 1.5f).scaledBy(1.8f).safeAmplitude,
+            1e-4f,
+        )
+        // 1.0 档原样返回：通话每帧都在拿动作，白复制一份数据类没道理
+        assertTrue(base.scaledBy(1f) === base)
+    }
+
+    @Test
+    fun `档位键认不出来就落回标准档`() {
+        assertEquals(ActionScale.STANDARD, ActionScale.fromKey(null))
+        assertEquals(ActionScale.STANDARD, ActionScale.fromKey("垃圾"))
+        assertEquals(ActionScale.STANDARD, ActionScale.fromKey(ActionScale.STANDARD.key))
+        assertEquals(1.4f, ActionScale.LARGE.multiplier, 1e-4f)
+    }
+
+    // ---------------------------------------------------------------
+    // 四态默认的幅度（v0.67.0 "动作要看得出来"）
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `四态默认动作的峰值都在看得出来那一档`() {
+        ActionSlot.entries.forEach { slot ->
+            val action = BuiltinActions.stateDefault(slot)
+            val peak = action.tracks.maxOf { t -> t.keys.maxOf { k -> abs(k.value) } }
+            assertTrue(
+                "${action.name} 峰值只有 $peak —— 又回到「看不见在动」那一档了",
+                peak >= 0.18f,
+            )
+            // 也不能一路拉到顶格：那是"扯变形"那一档
+            assertTrue("${action.name} 峰值过头：$peak", peak <= 0.6f)
+        }
+    }
+
+    @Test
+    fun `任何内置动作都不写睁眼通道`() {
+        // 框架的 CubismEyeBlink 在"这一帧没有 motion 写参数"时是 setParameterValue **覆盖**眼睛，
+        // 而免费模型没有 motion 文件 → 恰好每帧走覆盖那一路。写了 = 在这批模型上静默失效，
+        // 而且换一张有 motion 的模型又突然生效，比一直不可见更难解释（见 BuiltinActions 文件头）。
+        BuiltinActions.all().forEach { action ->
+            assertFalse(
+                "${action.name} 写了睁眼通道，它会被框架的眨眼覆盖掉",
+                action.tracks.any { it.channel == GenericChannel.EYE },
+            )
+        }
     }
 }

@@ -228,6 +228,59 @@
      3. **这类静默失败必须当场判死**：`Live2dVisualEngine` 首帧探针先查
         `Live2dBootstrap.shaderLoadFailure`，非空就 `Degraded("Live2D 着色器资源没打进包…")`
         回落到头像并把原因写在页面上。**别再靠"看着是白屏"猜**。
+   - ⚠️ **v0.66.1 三条新的"不许回退"（都还是"ready=true 却画不出东西"这一族）**：
+     1. **`onSurfaceCreated` 里只许 `CubismShaderAndroid.deleteInstance()`，绝对不要先 `getInstance()`**：
+        `getInstance()` 一被调用就 `generateShaders()`，而 `releaseInvalidShaderProgram()` 只 `clear()`、
+        不 `glDeleteProgram` —— "先编译 → 再清表 → 再拆"等于每次数序变化留下一批没人认领的 GPU program，
+        还白编译一遍。框架自己的口径是 `CubismRendererAndroid.doStaticRelease()`，里面只有 delete。
+     2. **视图有"代数"**：`AndroidView` 的 factory 会重跑（旋转 / 分屏 / 重进），而每块 `GlTextureView`
+        自带一条 EGL 线程与上下文。`viewGeneration` + `rendererFor(gen)` 让旧视图的回调不碰模型，
+        否则旧那块会走进 `reloadRenderer`，同一个模型被两个上下文各建一份渲染器与纹理——又是空白且零报错。
+        `onCreateView` 里先 `quitSoon()`（只置标志，组合期不许等 join）。
+     3. **暂停是 `LockSupport.parkNanos` 睡着，不是"每 20ms 醒来看一眼"**：`eglMakeCurrent` 必须排在暂停判断**之后**
+        （`setPaused(false)` 与 `quit()` 都 `unpark` 立刻叫醒）；`pausedByPage` 要交给新建的那条线程，
+        否则"切后台 + 转屏"会在后台偷偷跑渲染。
+        同理两条：`suspend fun load` 内部 swallow 但**必须当场写 Degraded + 日志**（角色空间页现在把原因
+        显示在页面中央），`release()` 只有在 `shutdown()` 报告"线程真退了"时才许拆模型。
+        ⚠️ 这里**不要用 `synchronized`/`wait`**：Kotlin 的 `Any` 类型看不见 `wait`/`notify`，
+        编译就过不去（第一版就是这么写的）。
+   - ⚠️ **v0.67.0 五条新的"不许回退"**（都在 `live2d/` + `realtime/visual/live2d/`，改之前先读
+     `docs/CHANGELOG.md` 的 v0.67.0 那一节，每条都写着"原来那样为什么是错的"）：
+     1. **换动作不许"先丢姿势再淡进来"**：`CubismModel.loadParameters()` 每帧把参数**恢复成模型
+        自己的姿态**，所以"没有动作在写这个参数"在屏幕上不是停在最后一帧，而是**立刻弹回静止位**。
+        四态来回切时脖子抖一下就是这个。唯一正确的形状是新增的 `live2d/ActionBlender`：
+        **从上一帧真正写出去的值淡到这一帧该写的值**，起点在 `startFade` 那一刻冻结。
+        换动作 / 停动作 / 循环绕回起点全走这一条路。⚠️ `ActionPlayer` 里**不要再自己算 envelope**
+        （`elapsed / fadeIn` 那一套已经被承接层取代；从静止起播时两者同值，所以这不是行为改动，
+        但两处各算一份迟早会打架）。
+     2. **淡完必须把参数"还给模型自己"**：`ActionBlender.owns()` 返回 false 之后 `ActionPlayer`
+        就不再写那个通道。淡完了还继续写 0，等于每帧把这个参数**按在静止值上** ——
+        表现是"播过一次摆手，角色自己的待机动作从此没了"，而这条只在**有 Idle motion 的模型**上才看得出，
+        最容易漏。有单测守着（`Live2dActionTest`）。
+     3. **舞台旋转/缩放绕的是角色中心**（`StagePose.fillNdcMatrix(a, pivotX, pivotY)`，pivot 由
+        `fitProjection` 每帧算好）：绕 NDC 原点 = **屏幕正中**，而通话页把角色整只抬到上半屏，
+        于是"翻跟斗"画出来是"贴着大圆弧绕屏幕转"。pivot 传 0 时结果必须与旧实现逐元素相同
+        （语音通话那条不分区的路径 —— 单测钉着这条）。
+     4. **渲染循环要有帧节拍**：`GlTextureView.loop` 里 `pace()` 按 60fps 起表。
+        删掉它不会报错、不会崩，只会在 120Hz 机器上**满速跑一百多帧**，GPU 翻倍、机身发热、
+        热到降频就是"通话打久了越来越卡"（用户报的"卡顿"多半是这条）。
+        同理两条小的：`update()` 的 `dt` 上限是 **1/30 秒**（不是 100ms：回前台那一帧白跳十分之一秒
+        就是那么来的），`resume()` 必须先 `character.resetFrameClock()`。
+     5. **内置动作一律不许写 `GENERIC_EYE`（睁眼）**：框架的 `CubismEyeBlink` 在"这一帧没有 motion
+        写参数"时是 `setParameterValue` **覆盖**眼睛（`CubismEyeBlinkUpdater:49-52`），
+        而免费模型根本没有 motion 文件 → 恰好每帧走覆盖那一路，写了静默失效；换一张有 motion 的
+        模型又突然生效 —— 比一直不可见更难解释。眼睛的戏用 `BROW` + `EYE_BALL_X/Y`（眨眼不碰这两个）。
+        有单测守着"任何内置动作都不写睁眼"。
+   - ⚠️ **通话页的两条形状**（v0.67.0）：① 点角色与动作胶囊**只在 Live2D 上出现**
+     （伪视频没有可驱动的参数，给一条点了没反应的入口比不给更糟），且落在**对话台那一条**上的点
+     不算互动（点字幕是想读字）。② 一次性动作演完要**接回当前状态绑的那条**，机制是
+     `ActionPlayer.finishedCount` 读数由 GL 线程自己比 —— **不要新增从渲染线程往外打的回调**
+     （项目里已经有 `onCatalogReady` 那条"只许转手"的规矩，不想再来第二条）。
+   - ⚠️ **右滑手势别改回两个 `pointerInput`**：点按与横滑合在**一个 `awaitEachGesture`** 里。
+     分挂两个通道时点按那条会先吃掉 Down，横滑要等下一个 Move 才发现自己被判死（"得先滑一下、
+     第二下才跟着动"）。⚠️ `awaitEachGesture` 的 lambda 带 `@RestrictSuspension`，
+     **在里面调 `Animatable.snapTo` 直接编译不过**；所以拖动期间写普通浮点 `dragPx`，
+     松手时先 `snapTo(total)` 再清 `dragPx`（顺序反了会在松手那一帧跳一下）。
    - **下面两条也是真 bug（v0.60.1 修的），但都不是"看不见"的那一个**，别把它们当根因写回去：
      1. **模型加载必须在 `onSurfaceChanged`，不许挪回 `onSurfaceCreated`**。`GLSurfaceView` 保证
         created 先于 changed，**created 时窗口尺寸还是 0**，而 `CubismRendererAndroid.create(w, h)`

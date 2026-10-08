@@ -4,7 +4,284 @@
 > 老用户升级路径：先在 v0.35.3 里「设置 · 数据与隐私 · 导出全部数据」，装新版后「导入数据」；
 > API Key 因 Keystore 与包名绑定必须重填。
 
-## v0.66.0（versionCode 154）
+## v0.67.0（versionCode 156）
+
+**视频通话与 Live2D 全面优化：动作承接层（不再"弹一下"）、舞台绕角色自己转、帧节拍封顶 60fps、
+四态默认动作提亮，通话页新增点角色与动作胶囊，动作设计系统去掉说明性小字。**
+
+范围是用户点名"全做（推荐）+ 明显档 + 点角色与动作胶囊 + 自检完就出包"那一圈。
+施工前只做了一件事：把 `live2d/`、`realtime/visual/`、`ui/realtime/`、`ui/live2d/` 全读了一遍，
+下面每一条都对着文件:行号，不是"看起来应该改"。
+
+### 一、动作承接层（新增 `live2d/ActionBlender.kt`，`ActionPlayer` 重写）
+
+**这是"动作不自然"这一族里唯一的根因。** `CubismModel.loadParameters()` 每帧都把参数**恢复成模型
+自己的姿态**，所以"没有动作在写这个参数"在屏幕上不是"停在最后一帧"，而是**立刻弹回静止位**。
+v0.64 的写法有三处都踩在这上面：
+
+- 换动作时新包络从 0 起（`envelope = elapsed / fadeIn`）→ 旧动作正把头摆在 +0.3，新动作第一帧写成
+  `rest + 0`，**先弹回中间再淡进来**。通话里四态来回切，每切一次脖子抖一下。
+- 一次性动作播完直接 `current = null`、舞台返回 `NONE` → 翻跟斗转到一半被打断，角色**瞬间转正**。
+- 循环动作绕回起点那一下，首尾关键值不等时**硬跳一格**（内置的凑巧相等，用户拼的、AI 生成的几乎必然不等）。
+
+改法只有一个机制：**从"上一帧真正写出去的值"淡到"这一帧该写的值"**，起点在 `startFade` 那一刻冻结。
+四态切换 / 停止 / 循环接缝 / 强度改档全走这一条路。三条刻意的设计：
+
+1. **从静止起播时输出 = 目标 × 权重**，与旧的淡入包络同值 —— 所以"从零开始"的动作观感一个字没变，
+   改动只落在"从别的姿态接手"的那三种情况。
+2. **淡完就不再"拥有"那个通道**（`owns()` 返回 false，`ActionPlayer` 随即停止写它）。
+   淡完还继续写 0，等于每帧把这个参数**按在静止值上**，模型自己的 Idle 动作再也摆不动它 ——
+   表现是"播过一次摆手，角色自己的待机动作从此没了"。这条有单测守着。
+3. **旋转起点折到最近的那一整圈**（`snapToNearestTurn`）：350° 与 -10° 画面上是同一个姿势，
+   从 350° 淡回 0 会**倒着转大半圈**，从 -10° 淡回 0 才是"翻过去差一点站稳"。
+
+全部是定长数组、每帧零分配（渲染线程每秒 60 次，这里 new 一个 Map 都是负担）。
+`ActionBlender` 与 `fillNdcMatrix` 都是纯函数，进了 `Live2dActionTest`（9 条新用例）。
+
+### 二、舞台旋转绕的是**角色中心**，不是 NDC 原点（`Live2dCharacter` + `StagePose.fillNdcMatrix`）
+
+`applyStagePose` 原来叠的是 `T(offset) · R · S · projection`，绕 NDC 原点 = **屏幕正中**。
+而通话页是分区布局：角色被 `bottomInset` 整只抬到上半屏 —— 于是"翻跟斗"画出来是
+"贴着一条大圆弧绕屏幕转"，角色空间里把角色拖到边上再翻也一样甩出去。
+改成 `T(c) · M · T(-c) · projection`（c = 角色中心，由 `fitProjection` 每帧算好交过来）。
+展开后只动平移那一列，所以**每帧只多四次乘法、没有分配**。矩阵换算抽成纯函数 `fillNdcMatrix`，
+单测钉住两条：角色中心那一点在变换后纹丝不动；**pivot 为 0 时与旧实现逐元素相同**
+（语音通话那条不分区的路径行为不变的凭据就在这条断言里）。
+
+### 三、帧节拍：渲染循环原来在 120Hz 机器上满速跑（`GlTextureView.loop`）
+
+原来只靠 `eglSwapBuffers` 的缓冲队列背压限速，而 TextureView 那条队列有 2~3 块缓冲 ——
+结果**满速跑一百多帧每秒**：Live2D 的顶点变形 + 全图元绘制白做两倍，GPU 占用翻倍、机身发热，
+热到降频就是"通话打久了越来越卡"。用户报的"卡顿"多半是这条，不是单帧太慢。
+现在按 60fps 起表，睡不满就 park，落后太多重新起表而不追帧（追帧的表现是"回前台那几秒飞快地抖"）。
+定 60 而不是跟屏幕刷新率走：动作本来就是按墙钟 + 60fps 设计的，120Hz 上多画的帧只是把同一份姿态差插一遍。
+
+### 四、回前台不再跳帧（`Live2dCharacter.update` + `resetFrameClock`）
+
+`dt` 的上限从 **100ms 收到 1/30s**：切后台/锁屏回来那一刻 `nanoTime` 差出几秒，
+夹在 100ms 就等于**白跳十分之一秒**，观感是"角色抽一下"；1/30 已经是两帧的量，够吸收偶发丢帧。
+另外 `resume()` 现在先 `resetFrameClock()`（字段改 `@Volatile`，因为调它的是主线程那条生命周期回调）。
+
+### 五、四态默认动作按"看得出来"重写（`BuiltinActions`）
+
+原来轨道值只有 0.03–0.17，乘上 `AMPLITUDE_SPAN 0.9` 之后只吃掉参数可用范围的百分之几 ——
+`ParamAngleZ` 典型 ±10° 时头只转 0.5°~1.5°，屏幕上基本读不出"在动"。
+现在峰值落在 **0.16–0.42**（头的部分 3°~8°），四态各自补了读法：倾听=两次点头 + 歪头 + 抬眉、
+思考=仰头 + 视线飘到一角 + 皱眉、说话=头随语句摆三下 + 提嘴角。
+顺带把**所有内置动作里的 `GENERIC_EYE`（睁眼）轨删掉**：框架的 `CubismEyeBlink` 在
+"这一帧没有 motion 写参数"时是 `setParameterValue` **覆盖**眼睛，而免费模型根本没有 motion 文件
+→ 恰好每帧走覆盖那一路，写了等于在这批模型上静默失效、换一张有 motion 的模型又突然生效。
+眼睛的戏改由眉毛与视线承担（这两个参数眨眼不碰）。有单测守着"任何内置动作都不写睁眼"。
+
+### 六、通话页新增互动入口（用户挑"点角色 + 动作胶囊"）
+
+- **点角色**：判定与绑定完全复用角色空间那套（`Live2dStage.hit` + `resolveInteraction`），
+  点着头部 → 摇头、点着身体 → 摆手、点旁边空白 → 随机一个趣味动作。
+  **落在对话台那一条上不算** —— 点字幕是想读字，不是想让 TA 摆手。
+- **角色脚边一排胶囊**：收藏的排前面 + 内置四个趣味动作，**上限 4 条**。
+  刻意不做成可横滚的 `LazyRow`：横滚容器会跟"右滑进纯净态"抢同一根手指（这一条是自检时发现的，
+  第一版就是写成 LazyRow 的）。4 颗 × 80dp 上限 + 间距 = 344dp，360dp 宽的机器排得下，
+  长名字用省略号截。要演别的动作去角色空间的动作库。
+  只有 Live2D 才出现（伪视频没有可驱动的参数，给一条点了没反应的入口比不给更糟）。
+- **演完接得回去**：`ActionPlayer` 只露一个 `finishedCount` 读数，引擎每帧比一下就知道
+  "刚演完一条临时动作"，然后把当前状态绑的那条接上。刻意**不做从渲染线程往外打的回调**
+  （项目里已经有 `onCatalogReady` 那条"只许转手"的规矩，不想再来第二条）。
+  摆完三次手之后角色不会僵在原地等 AI 说下一句。
+
+### 七、右滑手势：一次拖动不再排 60~120 条协程（`RealtimeCallScreen`）
+
+原来每个拖动手件都 `scope.launch { spread.snapTo(…) }`。现在点按与横滑合进**一个
+`awaitEachGesture` 循环**：拖动只写一个普通浮点 `dragPx`（非挂起），松手才把它并进 `spread` 去跑弹簧。
+两处细节：`awaitEachGesture` 的 lambda 带 `@RestrictSuspension`，在里面调 `snapTo` **编译不过**
+（这就是不能照原样"直接在这条协程里 snapTo"的原因）；以及**先 `snapTo(total)` 再清 `dragPx`**，
+顺序反了会在松手那一帧跳一下。
+
+### 八、动作幅度档位（`live2d/ActionScale.kt` + 会话设置「通话动作」页顶那一行）
+
+四档 **小 / 标准 / 大 / 特大**（0.7 / 1.0 / 1.4 / 1.8），按角色记，存在 DataStore 的
+`call_action_scale`（`id\t档位键` 行式表，与「通话背景」同一套）。
+做成四档而不是滑块：每条动作自己已经有一个"强度"滑块，再来一个连续的"全局幅度"，
+用户就没法回答"最终这个动作用了多少力是谁定的"。倍率只乘强度、不碰轨道值，
+且仍被 `MAX_AMPLITUDE` 夹住（那道夹子是"任何模型都不该被甩到破图"的保险）。
+
+### 九、动作设计系统收紧（AGENTS §四"界面不写说明性小字"）
+
+- 删掉四处说明：动作库"点一行就在角色身上试播…"、编辑器"选一个基础动作，调一下手感就行…"、
+  AI 生成那整段流程说明 + "正在让 AI 设计动作…这一步会联网，等一下就好"、
+  角色空间"拖动可移动角色 · 点头部 / 身体有反应"、空态那句解释为什么要 Live2D。
+  行首那颗播放三角就是"点它会播"的交代。
+- 「通话动作」的选择器**不再列出四态默认动作** —— 它们就是第一项「系统默认」本身，
+  列出来等于可以把"默认待机"绑给"说话"，那一档播起来和没绑一样。
+- 编辑器的强度/速度滑块上限**改取数据层常数**（`MIN/MAX_AMPLITUDE`、`MIN/MAX_SPEED`）：
+  原来写死 1.8，比 `MAX_AMPLITUDE = 2.0` 小一号，两套上限并存就是两个东西在说话。
+- `TrackKey` / `ModelCapability` 两处注释里那句"±1 = 可用范围的 60%"是 v0.65 把常数提到 0.9 时
+  漏改的，现在指回 `ActionPlayer.AMPLITUDE_SPAN` 本身。
+
+### 十、查过、确认不是问题（免得下一轮又被翻出来）
+
+- `CubismEyeBlinkUpdater` 的门是 `if (!motionUpdated) blink()` —— 免费模型没有 motion 文件时
+  `motionUpdated` 恒为 false，眨眼照常跑，**不存在"永远不眨"**（读过框架源码 `:49-52`）。
+- `Live2dSpaceScreen` 直接写 `statusBarsPadding()` / `navigationBarsPadding()` **不是违规**：
+  那条路由刻意不套 `AdaptiveScreen`（`MainActivity:501-503` 写了理由：空间是要铺满的舞台，
+  版心会把角色夹窄），insets 由页面自己处理是唯一正确的做法。
+- 动作库里预览用的动作 id=0 不会把整列点亮：库里的行都是落过库的（id>0），
+  `playing = action.id == playingId` 在 playingId=0 时匹配不到任何一行，正是想要的。
+- **命中检测的跨线程共享只剩一处、且是既有的**：`hitRegion` 现在反算用的是四个 `@Volatile` 的
+  float 快照（`hitScaleX/Y`、`hitTranslateX/Y`）而不是那个每帧被 GL 重写的 `CubismMatrix44`
+  —— 读一个可变矩阵会拿到"半新半旧"的一份，表现为**偶发点错一档**（点了头判成身体）。
+  剩下 `isHit(id, mx, my)` 那一路（模型**自带 HitArea** 时才走）仍然在 UI 线程读 drawable 透明度，
+  这是 v0.64 起就有的既有共享、不是本轮引入的：它的后果最多是判错一档而不是崩，
+  而要彻底消掉就得给 GL 线程加一条事件队列 —— 那是另一个量级的改动，**本轮刻意不做**，
+  写在这是为了让下一轮别再把它当"新发现的 bug"翻出来。免费模型（没有 HitArea）走几何兜底那一路，
+  全程只读 volatile，已经没有这个问题了。
+
+### 交付与验证
+
+- 编译：`compileDebugKotlin` + `compileDebugUnitTestKotlin` + `assembleRelease` 都通过。
+- 单测：`Live2dActionTest`(53) / `AiPromptsTest`(54) / `CallVisualTest`(20) 共 127 条全绿
+  （其中 10 条是本轮新增的承接层、舞台矩阵与幅度档位用例）。
+  全量 `testDebugUnitTest` 没追：Robolectric 那批（`UiRenderTest` 等）历史上有 7 项环境性红，
+  与本轮无关（v0.65 那轮就记过），按"一次定性就停"的口径不往里钻。
+- 手册：`DEFAULT_ASSISTANT_PROMPT` 尾部加 4 条定点 replace（§零.5），
+  `AiPromptsTest` 配了 `v0670 通话里点角色与动作胶囊与动作幅度 进手册` 一整条，
+  并把 v0.64 那条里被改写的"只做绑定"断言同步成新措辞。
+- 出包：**`梦欢-v0.67.0-release.apk`**（versionCode 156，38,067,067 字节）。
+  根目录只留当前版，`梦欢-v0.66.1-release.apk` 同一步移入 `archive/`（不删）。
+  证书 SHA-256 `486d6e776e573b58…3cd5717a` 与历次同一张 debug 证书 → **直接覆盖安装**。
+- ⚠️ **本轮全部改动都没上真机**：动作是否"看得出来"、翻跟斗是否真的在原地翻、
+  滑动跟手是否不抖、发热是否降下来，都要装机才能定论（AGENTS §零.7 这一族的教训就是
+  "看着是白屏"猜掉三个版本）。测试形象仍用**小柚铃**（奶娃要从人设管理卡片右端那颗气泡找回）。
+  装机最值得盯的四件事：① 四态来回切时脖子还弹不弹；② 点角色有反应、点字幕没反应；
+  ③ 翻跟斗是原地翻还是绕着屏幕转；④ 打到十分钟后有没有变卡（帧节拍那条的疗效）。
+
+### 自检轮次（用户要求"至少 20 轮迭代才能出包"）
+
+改完之后按"一次只盯一个视角"读了 22 轮，抓到并修掉的实际问题（不是走流程刷计数）：
+
+| 轮 | 视角 | 结果 |
+|---|---|---|
+| 1–4 | 承接层的每帧协议（startFade/beginFrame/advance/settle 的先后） | 协议自洽；确认从静止起播与旧包络同值 |
+| 5 | ActionPlayer 的 phase 状态机 | 停/播同帧到达的判序写清楚（`play()` 清 stopRequested，后写的赢） |
+| 6 | 四态默认与趣味动作的**循环首尾连续性** | 逐条核对 first==last，接缝靠承接层摊平 |
+| 7 | GlTextureView 帧节拍与暂停唤醒 | 唤醒后重新起表（追帧会表现成"回前台狂抖"） |
+| 8 | 引擎的演完接回 | `finishedCount` 只在 GL 线程读写；`awaitingRestore` 不会被状态切换误置 |
+| 9 | **点击判定的跨线程撕裂** | 抓到：UI 线程在读 GL 每帧重写的 `CubismMatrix44` → 改成四个 volatile 数 |
+| 10 | 舞台缩放的夹子 | 抓到：v0.64 的 `coerceIn(0.6,1.6)` 在搬迁时**丢了** → 补回 + 新增单测 |
+| 11 | 手势事件流断掉（change==null） | 抓到：`dragPx` 会永远留在一半位移、对话台卡住 → 按已松手收一次 |
+| 12 | **胶囊那一排与右滑抢手势** | 抓到：`LazyRow` 横向可滚会吃掉右滑 → 改居中 `Row`、上限 6→4、长名省略号 |
+| 13 | 语音通话隔离 | 点角色/胶囊都挂在 `videoPictureOn && stageInteractive` 上，语音路径零改动 |
+| 14 | 设计语言一致性 | 抓到：`ScaleRow` 未选中用了 `NeuTrack` → 改回 `NeuSurface`（选中=黑药丸） |
+| 15 | 未使用 import / 编译器警告 | touched 文件零新警告 |
+| 16 | 手册锚点是否会被前面的 replace 吃掉 | 四条锚点全取自链上更早那条的**产出**；跑 `AiPromptsTest` 实证 |
+| 17 | 文档与代码口径 | 抓到：CHANGELOG/ROADMAP 还写着"上限 6 条" → 跟着改成 4 并写清为什么 |
+| 18 | 命中检测剩下的那一处共享 | 定性为既有风险（模型自带 HitArea 才走），记进"查过不是问题"，不扩范围 |
+| 19 | `owns()` 与"淡完写 0"的反面 | 确认不会把参数按在静止位（模型自己的 Idle 动作保得住） |
+| 20 | 单测数量与结论 | 从"126 条"核实成 53+54+20=127 条 |
+| 21 | release 构建（R8）与产物 | 出包成功、签名与历次同证书、体积 +16KB（Live2D 那批没有新依赖） |
+| 22 | 归档流程 | 老包进 `archive/`、根目录只留当前版，同一步做完 |
+
+## v0.66.1（versionCode 155）
+
+**Live2D 通话这条线做一次体检：修 shader 单例与双视图互踩、把静默失败判死、暂停与主线程减负。纯优化，没有新功能。**
+
+审计范围是 `realtime/visual/`（Live2D 引擎 + `GlTextureView`）、`live2d/`（动作系统）与通话页。
+下面每条都有文件:行号与"为什么原来那样是错的"，因为这一条线历史上四次返工里有三次是把
+"看不见东西"猜成了别的原因（AGENTS §零.7）。
+
+### 一、shader 单例：原来"先编译、再清表、再拆"（`Live2dVisualEngine.onSurfaceCreated`）
+- 原来是 `getInstance().releaseInvalidShaderProgram()` 紧跟 `deleteInstance()`。
+  框架源码 `CubismShaderAndroid:53-62` 里 **`getInstance()` 一被调用就 `generateShaders()`**，
+  于是先在**新上下文**里编译一批 program；而 `releaseInvalidShaderProgram()` 只做
+  `shaderSets.clear()`、**不 `glDeleteProgram`**，清完表之后 `deleteInstance()` 就再也找不到它们
+  —— 那批 program 成了没人认领的 GPU 对象，**旋转 / 分屏 / 回前台每来一次漏一份**，
+  而且还白编译一遍（编译发生在根本用不上它的时刻）。
+- 现在只留 `deleteInstance()`：把绑在死上下文上的那份整丢掉，真正的编译由首帧绘制时
+  渲染器自己的 `getInstance()` 完成（那一刻上下文是活的、也确实要画）。
+  框架自己也是这个口径——`CubismRendererAndroid.doStaticRelease()` 里就只有 `deleteInstance()`。
+
+### 二、两块视图同时驱动同一个模型（同上文件，新增"视图代数"）
+- `AndroidView` 的 factory 会重跑（旋转、分屏、页面重进），而每一块 `GlTextureView`
+  自带一条 EGL 线程、一个上下文。旧那块不认得"我已经不是当前这块"，
+  它的 `onSurfaceCreated` 会因为 `c.ready==true && viewWidth>0` 走进 `reloadRenderer`
+  —— **同一个模型被两个上下文各建一份渲染器与纹理**，表现又是"ready=true、零报错、屏幕空白"。
+- 修法：`viewGeneration`（`@Volatile`）每次 `onCreateView` 自增，renderer 改成 `rendererFor(gen)`，
+  三个回调进来先比代数，不是当前那代就只收摊、不碰模型；同时 `onCreateView` 先叫旧视图
+  `quitSoon()`（只置标志，不在组合期等它 join）。
+
+### 三、静默失败当场判死（§零.7 的口径补上两处）
+- `Live2dVisualEngine.load()` 现在**内部 swallow**（`runCatching` → `Log.e` + `Degraded(原因)`，
+  `CancellationException` 原样抛出）。§零.7 早就写了"`suspend fun load` 内部 swallow"，
+  而原来是裸的——抛出物一路冒泡，调用方吞掉后 runtime 还停在 `Loading`。
+- `Live2dSpaceViewModel` 那句裸 `runCatching { e.load(...) }` 补了日志；
+  **`Live2dSpaceScreen` 原本压根没读过 `ui.runtime`**，所以现在把 `Degraded` 的原因写在页面中央
+  （这不算 §四禁的"说明性小字"：视觉坏了和"还没加载出来"在屏幕上是一回事，不写就只能猜）。
+- `RealtimeCallViewModel` 的视觉加载失败也补了 `Log.e`（原来只有一句固定文案、异常对象被丢掉）。
+
+### 四、渲染线程的暂停（`GlTextureView`）
+- 原来 `loop()` 把 `eglMakeCurrent` 放在 `paused` 判断**之前**，所以停画期间每 20ms 还要
+  真发一次 EGL 调用；锁屏一夜就是几百万次空转与线程唤醒。现在暂停用 `LockSupport.parkNanos` 真的睡着，
+  一个 EGL 调用都不发，`setPaused(false)` 与 `quit()` 都 `unpark` 立刻叫醒
+  （后者是怕挂断时主线程正卡在 `join` 上等它多睡一个超时）。
+  ⚠️ 这一条**第一版写的是 `synchronized(lock) { lock.wait() }`，编译直接被拒**：
+  Kotlin 的 `Any` 类型看不见 `wait`/`notify`（报 `Unresolved reference 'wait'`）。记在这里，
+  下次别再用 Java 那套监视器写法往 Kotlin 上抄。
+- 新增 `pausedByPage`：`onSurfaceTextureAvailable` 每次重开线程都要把页面要求的暂停状态**交给新线程**。
+  原来"切后台 + 转一下屏"会让渲染在后台悄悄跑起来。
+- `joinQuietly()` 改为返回"线程是否真的退了"，`shutdown()` 把它透出去。
+
+### 五、帧循环里白付的开销
+- `Live2dCharacter.update()`：几何兜底的包围盒从**每帧**改成 **15Hz**（`BOUNDS_INTERVAL_SECONDS`）。
+  这个值只在用户点下去那一刻用，而算一次要把全部 drawable 的全部顶点读一遍；
+  只在"模型没写 Head/Body HitArea"的免费模型上才跑，而那正是真机主力素材。
+- `applyStagePose` 不再每帧 `floatArrayOf` 新建 16 个 float（注释本来就写着"复用一个实例"，
+  矩阵复用了、数组没复用），改存 `stageMatrixArray`。
+- `ActionPlayer.applyTo`：删掉每帧 `val stage = StagePose()`（**死变量**，后面用的是四个局部量）；
+  逐通道写参数从 `list.forEach { }` 换成 `for` —— 后者每帧每个通道都要建一个捕获闭包。
+
+### 六、通话主线程
+- `ui/common/StageBackground.kt`：注释写着"IO 线程 + 降采样"，实际 `produceState` 的块
+  **默认跑在主线程**（降采样那条是真的做了，线程那条是假的）。现在显式 `withContext(Dispatchers.IO)`，
+  解码失败补一条 `Log.e`。进视频通话那一下不再因为解相册图卡一帧。
+- `RealtimeCallScreen`：`callBackground` 的订阅与文件 stat 用 `videoMode` 门住
+  （flow 用 `remember(videoMode)` 钉住，不然每次重组都换一个新 flow 实例、`collectAsState` 重订阅一遍）。
+  语音通话按 §零.7 应该完全不碰视觉层，原来只是"不画"，订阅与磁盘都在跑。
+- **字幕改成按节拍重铺**：原来是 `remember(ui.turns, ui.userPartial, ui.aiPartial) { buildLines(ui) }`，
+  而 `AiDelta` 一秒能来几十次，每次都把最近 200 条整表重铺 + 整列重组。
+  现在 80ms 一跳，并且**先比签名**（条数 + 两段进行中的原文）再决定重铺，所以没人说话时一次都不铺。
+
+### 七、`release()` 不再可能当着还在跑的一帧拆模型
+`shutdown()` 现在报告线程到底有没有退出；没在预算内退出（有一帧卡住）就**跳过**主线程的
+`character.destroy()` 并留下读数。宁可这一份模型随上下文与进程回收，也不制造"挂断时偶发闪退"。
+
+### 八、查过**不是问题**的两条（记下来免得下次又怀疑）
+- "上传纹理没有 `glDeleteTextures`"：模型只在 EGL 上下文销毁后重建，旧纹理随上下文回收，
+  `textureIds.clear()` 是对的。
+- "伪视频 `publishReady()` 没有去重闸门"：`VisualRuntime.Ready` 是 data class，
+  `StateFlow` 本身就按 `equals` 丢重复值，所以 `onVideoSizeChanged` 反复发同一个 Ready 不会引起重组。
+
+### 检验与出包（v0.66.1）
+- **第一次 `assembleRelease` 失败**（42s，`e: GlTextureView.kt: Unresolved reference 'wait' / 'notifyAll' /
+  'shutdown'`）：两处都是本批自己写错的 —— 监视器那套 Java 写法在 Kotlin 里 `Any` 看不见 `wait`/`notify`；
+  另一处是 `onSurfaceTextureDestroyed` 里对着 `GlRenderThread` 调了视图上的 `shutdown()`。
+  改成 `LockSupport.parkNanos` + 直接调 `shutdown()` 后过。
+- 第二次 `assembleRelease` **BUILD SUCCESSFUL 2m41s** → `梦欢-v0.66.1-release.apk`
+  （37MB，md5 `f66f3811bab93af2a6421f3f64676bcb`），aapt 核对 **155 / 0.66.1**，
+  `apksigner verify` 出的证书与 v0.66.0 是同一条 debug 证书（可直接覆盖升级）；v0.66.0 已进 `archive/`。
+- ⚠️ 本轮**没跑单元测试**（只发话了出包）；v0.66.0 记下的那条截图套件跨类串状态挂死仍然挂着。
+
+### ⚠️ 待真机验收
+1. 转屏 / 分屏 / 后台回前台后，Live2D 形象**仍然画得出来**（探针 `live2d publish …`、
+   `live2d probe corner rgba=` 都还在，读数应为 `0,0,0,0`）。
+2. 挂断不闪退；日志里若出现 `live2d release: GL 线程未在预算内退出` 要回报，那条路是兜底不是常态。
+3. 角色空间里模型坏了：页面中央应出现一句降级原因，而不是永远"正在准备角色…"。
+4. 通话中右滑/左滑、字幕逐字观感（80ms 一刷，正常人眼应看不出与逐 token 的区别）。
+5. 免费模型（没有 HitArea 的那种）点头部 / 身体 / 空白仍然判得准——包围盒现在 15Hz 刷。
+
+### 没做的一条（想做要连真机一起）
+把 `character.destroy()` 从主线程挪到 GL 线程退出前执行，才是"删 GL 对象"的正解
+（GL 对象必须在上下文还绑着的时候删）。这一改动动的正是 §零.7 里那条
+"先把 GL 线程停干净再拆模型"的既有不变量，而这轮点名不碰真机，所以只做了保守版。
+
 
 **联网搜索三家各一份 Key（修"切换国内国外 key 都不变"）；视频通话加「通话背景」。**
 

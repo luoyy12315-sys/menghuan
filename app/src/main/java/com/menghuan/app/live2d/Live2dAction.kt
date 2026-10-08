@@ -156,6 +156,22 @@ data class Live2dAction(
         updatedAt = now,
     )
 
+    /**
+     * 按"动作幅度"档位整体缩放（v0.67.0，纯函数）。
+     *
+     * 只改 [amplitude]、**不碰轨道值**：轨道值是动作作者写的"这条动作在干什么"，
+     * 强度是用户说的"演得多用力"，两件事分开存，用户调档才不会把内置动作越调越不像。
+     * 结果仍然夹在 [MIN_AMPLITUDE]..[MAX_AMPLITUDE] 里 —— 那道夹子是"任何模型都不该被甩到破图"
+     * 的唯一保险，调档不许绕过它。
+     *
+     * 倍率 1.0 时**原样返回**（不 copy）：通话每帧都在拿动作，白分配一份数据类没道理。
+     */
+    fun scaledBy(multiplier: Float): Live2dAction =
+        if (multiplier == 1f) this
+        else copy(
+            amplitude = (safeAmplitude * multiplier).coerceIn(MIN_AMPLITUDE, MAX_AMPLITUDE),
+        )
+
     companion object {
         const val MIN_DURATION_MS = 400
         const val MAX_DURATION_MS = 20_000

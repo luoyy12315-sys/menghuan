@@ -97,6 +97,9 @@ import kotlinx.coroutines.launch
  * - 行尾的心 = 收藏（收藏的排在前面，由仓库层的排序保证）；
  * - **长按** = 菜单：内置的可以「另存为我的动作」（用户要的"待机 → 自定义待机"就是这条路），
  *   自己建的可以删除。
+ *
+ * ⚠️ 这一页**不写"点一行就是试播"那类说明**（AGENTS §四"界面不写说明性小字"）：
+ * 行首那颗播放三角就是"点它会播"的交代，多加一行反而把列表推下去一截。
  */
 @Composable
 fun ActionLibrarySheet(
@@ -108,15 +111,12 @@ fun ActionLibrarySheet(
     onEdit: (Live2dAction) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val intro = "点一行就在角色身上试播。长按可以另存为自己的动作、或删掉自己建的动作。"
     NeuSheetScaffold(title = "动作库", onDismiss = onDismiss) {
-        Text(intro, fontSize = 12.5.sp, color = MutedText, lineHeight = 18.sp)
-        Spacer(Modifier.height(14.dp))
-
         if (actions.isEmpty()) {
-            Text("还没有动作。去内置动作里挑一个，或让 AI 生成一个。", fontSize = 13.sp, color = MutedText)
+            Text("还没有动作", fontSize = 13.sp, color = MutedText)
             return@NeuSheetScaffold
         }
+        Spacer(Modifier.height(6.dp))
 
         // 分组顺序固定：能玩的最先（趣味动作），然后是模型自带的、自己的、AI 的
         val groups = listOf(
@@ -305,14 +305,6 @@ fun ActionEditorSheet(
     )
 
     NeuSheetScaffold(title = if (base != null) "调整动作" else "新建动作", onDismiss = onDismiss) {
-        Text(
-            "选一个基础动作，调一下手感就行 —— 不需要懂任何 Live2D 参数。",
-            fontSize = 12.5.sp,
-            color = MutedText,
-            lineHeight = 18.sp,
-        )
-        Spacer(Modifier.height(16.dp))
-
         NeuTextField(
             value = name,
             onValueChange = { name = it },
@@ -347,10 +339,23 @@ fun ActionEditorSheet(
         }
         Spacer(Modifier.height(18.dp))
 
-        SliderRow(label = "强度", value = amplitude, range = 0.4f..1.8f, display = "×%.1f".format(amplitude)) {
+        // 滑块的上限**直接取数据层那两个常数**（v0.66 之前这里写的是 1.8 / 1.8，
+        // 比 `Live2dAction.MAX_AMPLITUDE / MAX_SPEED` 小一号）：两套上限并存时，
+        // 用户在别处（AI 生成、导入）能拿到 2.0、在编辑器里却拖不到 —— 那是两个东西在说话。
+        SliderRow(
+            label = "强度",
+            value = amplitude,
+            range = Live2dAction.MIN_AMPLITUDE..Live2dAction.MAX_AMPLITUDE,
+            display = "×%.1f".format(amplitude),
+        ) {
             amplitude = it
         }
-        SliderRow(label = "速度", value = speed, range = 0.5f..1.8f, display = "×%.1f".format(speed)) {
+        SliderRow(
+            label = "速度",
+            value = speed,
+            range = Live2dAction.MIN_SPEED..Live2dAction.MAX_SPEED,
+            display = "×%.1f".format(speed),
+        ) {
             speed = it
         }
         SliderRow(
@@ -414,7 +419,7 @@ fun ActionEditorSheet(
         if (!build().hasTracks) {
             Spacer(Modifier.height(10.dp))
             Text(
-                "现在这条动作什么都不动 —— 至少打开一个部位，或者选一个基础动作。",
+                "这条动作现在什么都不动",
                 fontSize = 12.sp,
                 color = NeuDanger,
             )
@@ -450,14 +455,6 @@ fun AiActionSheet(
     var draft by remember { mutableStateOf<Live2dAction?>(null) }
 
     NeuSheetScaffold(title = "AI 生成动作", onDismiss = onDismiss) {
-        Text(
-            "用一句话描述你想要的动作，AI 会结合当前模型的能力把它做成配置。生成后先预览，满意再保存。",
-            fontSize = 12.5.sp,
-            color = MutedText,
-            lineHeight = 18.sp,
-        )
-        Spacer(Modifier.height(14.dp))
-
         if (draft == null) {
             NeuTextField(
                 value = text,
@@ -518,17 +515,13 @@ fun AiActionSheet(
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                "不满意就点这里重来",
+                "重新描述",
                 fontSize = 12.5.sp,
                 color = MutedText,
                 modifier = Modifier.clickable { draft = null },
             )
         }
 
-        if (busy) {
-            Spacer(Modifier.height(12.dp))
-            Text("正在让 AI 设计动作…这一步会联网，等一下就好。", fontSize = 12.sp, color = MutedText)
-        }
         error?.let {
             Spacer(Modifier.height(12.dp))
             Text(it, fontSize = 12.5.sp, color = NeuDanger, lineHeight = 18.sp)

@@ -11,6 +11,7 @@ import android.opengl.GLSurfaceView
 import android.util.Log
 import android.view.Surface
 import android.view.TextureView
+import java.util.concurrent.locks.LockSupport
 
 /**
  * **TextureView 版 GL 承载**（v0.61.0），替代 `GLSurfaceView`。
@@ -34,6 +35,15 @@ class GlTextureView(
 
     private var thread: GlRenderThread? = null
 
+    /**
+     * 页面要求的暂停状态。
+     *
+     * ⚠️ 必须存下来、并且交给**新建的那条线程**：`onSurfaceTextureAvailable` 每次曲面可用
+     * 都会重开一条线程，而切后台期间转屏 / 分屏 / 回前台重测都会走这条路。
+     * 不继承的话，"锁屏 + 转一下手机"就会让渲染在后台悄悄跑起来（省电那条要求当场失效）。
+     */
+    private var pausedByPage = false
+
     init {
         // 不透明 = 底下没有东西也填黑；通话页要的是"角色以外透出页面"，必须 false
         isOpaque = false
@@ -43,6 +53,7 @@ class GlTextureView(
     override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
         st.setDefaultBufferSize(width, height)
         val t = GlRenderThread(Surface(st), renderer, width, height)
+        t.setPaused(pausedByPage)
         thread = t
         t.start()
     }
@@ -54,22 +65,38 @@ class GlTextureView(
 
     /** 返回 true = 交给系统释放 SurfaceTexture；线程必须先停干净，否则 EGL 还绑着一块死 surface */
     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-        thread?.let { it.quit(); it.joinQuietly() }
-        thread = null
+        shutdown()
         return true
     }
 
     override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
 
     /** 页面切后台：停画但**不停线程、不销毁上下文**（回来只要接着画） */
-    fun pauseRendering() { thread?.setPaused(true) }
+    fun pauseRendering() {
+        pausedByPage = true
+        thread?.setPaused(true)
+    }
 
-    fun resumeRendering() { thread?.setPaused(false) }
+    fun resumeRendering() {
+        pausedByPage = false
+        thread?.setPaused(false)
+    }
 
-    /** 视图还在但引擎要被拆掉：先把 GL 线程停干净，再让调用方释放模型 */
-    fun shutdown() {
-        thread?.let { it.quit(); it.joinQuietly() }
+    /** 只叫它停，**不在当前线程等**：视图被换掉时用这条（调用点是主线程的组合期） */
+    fun quitSoon() { thread?.quit() }
+
+    /**
+     * 停线程并等它真的退出。
+     *
+     * @return true = 线程已经不在了（调用方可以安全拆模型）；
+     *         false = 预算内没等到（有一帧卡住），**绝不要**在此刻从外面释放它正在用的资源。
+     */
+    fun shutdown(): Boolean {
+        val t = thread ?: return true
+        t.quit()
+        val stopped = t.joinQuietly()
         thread = null
+        return stopped
     }
 }
 
@@ -88,12 +115,25 @@ private class GlRenderThread(
 ) : Thread("Live2dGlThread") {
 
     @Volatile private var quit = false
+
+    /**
+     * 暂停用 `LockSupport.parkNanos` 睡着，不是"醒来一次做一次 EGL 调用再查一遍"。
+     *
+     * 原来暂停期间每 20ms 也要跑满一圈：先 `eglMakeCurrent`（那是真的 EGL 调用）、
+     * 才看到 paused、再 sleep。锁屏一夜就是几百万次空转的 EGL 调用与线程唤醒。
+     * 用 park 而不是监视器：Kotlin 的 `Any` 类型看不到 `wait/notify`，
+     * 而这里要的只是"能被打断的睡觉"，`unpark` 还会留许可，不会把唤醒弄丢。
+     */
     @Volatile private var paused = false
+
     @Volatile private var pendingWidth = width
     @Volatile private var pendingHeight = height
     @Volatile private var sizeChanged = true
 
-    fun setPaused(value: Boolean) { paused = value }
+    fun setPaused(value: Boolean) {
+        paused = value
+        if (!value) LockSupport.unpark(this)
+    }
 
     fun resize(width: Int, height: Int) {
         pendingWidth = width
@@ -101,11 +141,21 @@ private class GlRenderThread(
         sizeChanged = true
     }
 
-    fun quit() { quit = true }
-
-    fun joinQuietly() {
-        runCatching { join(JOIN_TIMEOUT_MS) }
+    fun quit() {
+        quit = true
+        // 睡着的那条要立刻醒来收尾：否则它最坏多睡一个 park 超时，
+        // 而挂断时主线程正卡在 join 上等它
+        LockSupport.unpark(this)
     }
+
+    /**
+     * @return true = 线程确实退了；false = 被中断或超时还活着。
+     * 调用方（[GlTextureView.shutdown]）要靠这个读数决定能不能去拆模型。
+     */
+    fun joinQuietly(): Boolean = runCatching {
+        join(JOIN_TIMEOUT_MS)
+        !isAlive
+    }.getOrDefault(false)
 
     override fun run() {
         val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
@@ -187,7 +237,15 @@ private class GlRenderThread(
         var created = false
         var lastW = -1
         var lastH = -1
+        var nextFrameAt = System.nanoTime()
         while (!quit) {
+            // 暂停的判断必须排在 eglMakeCurrent **之前**：停画期间一个 EGL 调用都不该发
+            if (paused) {
+                LockSupport.parkNanos(PAUSE_PARK_NANOS)
+                // 睡了一觉回来要重新起表：否则循环会以为"欠了几百帧"，一路狂补
+                nextFrameAt = System.nanoTime()
+                continue
+            }
             if (!EGL14.eglMakeCurrent(display, eglSurface, eglSurface, context)) {
                 Log.e(TAG, "eglMakeCurrent lost, stop rendering")
                 return
@@ -207,10 +265,6 @@ private class GlRenderThread(
                     renderer.onSurfaceChanged(null, w, h)
                 }
             }
-            if (paused) {
-                sleepQuietly(IDLE_MS)
-                continue
-            }
             runCatching { renderer.onDrawFrame(null) }
                 .onFailure { Log.e(TAG, "live2d frame threw", it) }
             if (!EGL14.eglSwapBuffers(display, eglSurface)) {
@@ -218,16 +272,49 @@ private class GlRenderThread(
                 Log.e(TAG, "eglSwapBuffers failed, stop rendering")
                 return
             }
+            nextFrameAt = pace(nextFrameAt)
         }
     }
 
-    private fun sleepQuietly(ms: Long) {
-        runCatching { sleep(ms) }
+    /**
+     * 帧节拍：把下一帧的期限算出来，该睡就睡（见 [FRAME_INTERVAL_NS] 为什么必须是 60fps）。
+     *
+     * 落后太多就重新起表而不是追帧 —— 追帧的表现是"回前台那几秒角色飞快地抖"，
+     * 而 Live2D 的动作是按墙钟推进的（[Live2dCharacter.update] 里那个 dt 还另外夹了上限），
+     * 少画几帧不会让动作变形，只会让它少几帧的平滑度。
+     *
+     * @return 下一帧的期限（纳秒，单调时钟）
+     */
+    private fun pace(nextFrameAt: Long): Long {
+        val now = System.nanoTime()
+        val deadline = nextFrameAt + FRAME_INTERVAL_NS
+        if (deadline < now - FRAME_INTERVAL_NS) return now + FRAME_INTERVAL_NS
+        val wait = deadline - now
+        if (wait > 0) LockSupport.parkNanos(wait)
+        return deadline
     }
 
     private companion object {
         const val TAG = "GlRenderThread"
         const val JOIN_TIMEOUT_MS = 1_000L
-        const val IDLE_MS = 20L
+
+        /**
+         * 一帧最短画多少（60fps）。
+         *
+         * 原来这里**没有任何节拍**，只靠 `eglSwapBuffers` 的缓冲队列背压限速 ——
+         * 而 TextureView 那条队列有 2~3 块缓冲，结果在 120Hz 的机器上**满速跑一百多帧每秒**：
+         * 一套 Live2D 的顶点变形 + 全图元绘制白做两倍，GPU 占用翻倍、机身发热，
+         * 热到降频就是"通话打久了越来越卡"。用户报的"卡顿"多半是这条，不是单帧太慢。
+         *
+         * 为什么定 60 而不是跟着屏幕刷新率走：Live2D 的动作本来就是按 60fps 设计的
+         * （轨道值由墙钟推进，见 [Live2dCharacter.update]），120Hz 上多画的那些帧
+         * 只是把同一份姿态差插了一遍；60fps 在 120Hz 上是整齐的 1:2 合成节奏，看不出抖。
+         * 省下来的那一倍 GPU/电量才是这通电话真正需要的（通话还要同时跑识别与合成）。
+         */
+        const val FRAME_INTERVAL_NS = 1_000_000_000L / 60
+
+        /** 停画时一次睡 200ms：`setPaused(false)` 与 `quit()` 都会 unpark 立刻叫醒，
+         *  这个时长只是"万一许可丢了也别永远醒不过来"的保险 */
+        const val PAUSE_PARK_NANOS = 200_000_000L
     }
 }

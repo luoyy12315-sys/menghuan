@@ -44,6 +44,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menghuan.app.live2d.ActionType
 import com.menghuan.app.live2d.Live2dAction
+import com.menghuan.app.realtime.visual.VisualRuntime
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuCircleButton
 import com.menghuan.app.ui.common.StageBackgroundLayer
@@ -164,6 +165,22 @@ fun Live2dSpaceScreen(
             else -> LoadingHint()
         }
 
+        // 形象坏了：把原因写在这页上。
+        // ⚠️ 这不是"说明性小字"（§四那条禁的是客套话与操作提示）：视觉降级在屏幕上
+        // 长得和"还没加载出来"一模一样，不写原因就只能靠猜——
+        // 当年 Live2D 着色器那件事猜掉了三个版本（AGENTS §零.7）。
+        (ui.runtime as? VisualRuntime.Degraded)?.let { d ->
+            Text(
+                d.reason,
+                fontSize = 13.sp,
+                color = MutedText,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 32.dp),
+            )
+        }
+
         // ③ 顶栏
         Row(
             Modifier
@@ -254,11 +271,6 @@ fun Live2dSpaceScreen(
                 )
             }
             Spacer(Modifier.height(8.dp))
-            Text(
-                "拖动可移动角色 · 点头部 / 身体有反应",
-                fontSize = 11.5.sp,
-                color = MutedText,
-            )
         }
 
         // 正在播的那条动作的名字（轻量反馈：点了到底有没有生效）
@@ -412,14 +424,6 @@ private fun SpaceEmptyState(onImport: () -> Unit) {
             fontSize = 16.sp,
             fontWeight = FontWeight.Medium,
             color = TextPrimary,
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "角色空间要靠 Live2D 模型包才能动起来（伪视频是一组循环短片，没法拖动与点击互动）。",
-            fontSize = 13.sp,
-            color = MutedText,
-            textAlign = TextAlign.Center,
-            lineHeight = 20.sp,
         )
         Spacer(Modifier.height(22.dp))
         NeuButton(text = "去导入模型包", onClick = onImport)

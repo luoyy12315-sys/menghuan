@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.menghuan.app.live2d.ActionScale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -441,6 +442,8 @@ class SettingsRepository(
     private val keySearchKeyPlain = stringPreferencesKey("search_key_plain")
     // v0.66.0：视频通话背景（按角色，`id\t档位` 行式表；档位见 [CallBackgroundStore]）
     private val keyCallBackground = stringPreferencesKey("call_background")
+    // v0.67.0：这一角色通话时的动作幅度倍率（`id\t倍率` 行式表，缺省 1.0）
+    private val keyCallActionScale = stringPreferencesKey("call_action_scale")
     // v0.59.0：在线语音识别（引擎切换 + 三家共用的通用 OpenAI 兼容形状）
     private val keyAsrEngine = stringPreferencesKey("asr_engine")
     private val keyAsrOnlineUrl = stringPreferencesKey("asr_online_url")
@@ -1406,6 +1409,26 @@ class SettingsRepository(
 
     suspend fun setCallBackground(personaId: Long, value: String) =
         writeIdTable(keyCallBackground, personaId, value)
+
+    /**
+     * 这一角色通话时的**动作幅度档位**（v0.67.0，`id\t档位键` 行式表）。
+     *
+     * 存的是 [com.menghuan.app.live2d.ActionScale] 的键串而不是浮点：
+     * 档位是要显示回给用户看的（"大"），存 1.4 就得再猜一次它当初点的是哪一档。
+     * 没设过 = 标准档（倍率 1.0，等于什么都不乘）。
+     */
+    val callActionScale: Flow<Map<Long, String>> = store.data.map { prefs ->
+        readIdTable(prefs[keyCallActionScale])
+    }
+
+    suspend fun setCallActionScale(personaId: Long, key: String) =
+        writeIdTable(keyCallActionScale, personaId, key)
+
+    /** 该角色当前的幅度倍率（供通话链路乘上去，不做流式订阅） */
+    suspend fun callActionScaleFor(personaId: Long): Float {
+        val table = runCatching { callActionScale.first() }.getOrDefault(emptyMap())
+        return ActionScale.fromKey(table[personaId]).multiplier
+    }
 
     /** 该会话是否允许 AI 联网查资料（配合「联网搜索」里配好的 Key） */
     val chatWebSearch: Flow<Map<Long, Boolean>> = store.data.map { prefs ->
