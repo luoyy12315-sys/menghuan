@@ -60,6 +60,7 @@ import com.menghuan.app.data.DataBackup
 import com.menghuan.app.data.PersonaRepository
 import com.menghuan.app.data.ProfileRepository
 import com.menghuan.app.data.SettingsRepository
+import com.menghuan.app.data.UserAvatar
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.AiInsight
 import com.menghuan.app.data.model.ChatMessage
@@ -98,7 +99,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /** 编辑弹层的草稿行：id = null 表示新增 */
-data class DraftFact(val id: Long?, val key: String, val value: String)
 
 /**
  * 「我的」页 VM：设置链（通知开关 / 数据统计 / 导出导入 / 清记录）与档案编辑，
@@ -388,6 +388,11 @@ fun MeScreen(
     val dataStats by vm.dataStats.collectAsState()
     val importMessage by vm.importMessage.collectAsState()
     val context = LocalContext.current
+    val app = context.applicationContext as MenghuanApp
+    // v0.80.0：顶部档案卡读的就是这两个 —— 头像（图片优先于 emoji）+ 昵称/简介。
+    // 首值没到时是 null = 「还没加载出来」，卡片走占位文案（不画半截真名）。
+    val profile by app.settingsRepository.myProfile.collectAsState(initial = null)
+    val avatar by app.settingsRepository.userAvatar.collectAsState(initial = null)
 
     Column(
         Modifier
@@ -404,6 +409,20 @@ fun MeScreen(
                 .padding(top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            // v0.80.0：顶部个人档案卡（点进个人档案页）—— 头像/昵称/简介是"我是谁"，
+            // 放在最上面与下面四张内容卡（人设 / 档案 / 图库 / 设置）分开，
+            // 也顺手把"点自己的头像能进档案"这条交互补齐（AI 的头像不动）。
+            // v0.80.0：顶部这张就是「我的档案」卡 —— 原来下面那张「基础档案」行卡取消了，
+            // 它的内容（给 AI 读的画像条目）并进这里点开的档案页里，入口只留一个。
+            // 行框与图标槽跟下面四张行卡是**同一个组件**，头像按图标槽大小来（见 Neu.kt）。
+            NeuSheetRow(
+                icon = MIcons.Person,
+                title = profile?.displayNickname ?: "我",
+                subtitle = profile?.bio?.takeIf { it.isNotBlank() } ?: "设置一下自己的档案吧",
+                iconSlot = { MeAvatar(avatar = avatar ?: UserAvatar(), size = 38.dp) },
+                onClick = { onOpen(SettingsRoutes.ME_PROFILE) },
+            )
+
             val rows = listOf<@Composable () -> Unit>(
                 {
                     NeuSheetRow(
@@ -411,14 +430,6 @@ fun MeScreen(
                         title = "人设管理",
                         subtitle = "名字、身份、设定词 · 可增删改",
                         onClick = onManagePersonas,
-                    )
-                },
-                {
-                    NeuSheetRow(
-                        icon = MIcons.FileText,
-                        title = "基础档案",
-                        subtitle = "注入聊天的用户画像 · 仅在此维护",
-                        onClick = { onOpen(SettingsRoutes.PROFILE) },
                     )
                 },
                 {
@@ -459,111 +470,6 @@ fun MeScreen(
         }
     }
 
-}
-
-/**
- * 我的 · 基础档案（v0.51.0 起全屏页）：每行 key/value 可改、可增删，
- * 保存后写入 Room 并注入聊天 system prompt。
- */
-@Composable
-fun ProfileScreen(
-    onBack: () -> Unit,
-    vm: MeViewModel = viewModel(factory = MeViewModel.Factory),
-) {
-    val facts by vm.facts.collectAsState()
-    val drafts = remember { mutableStateListOf<DraftFact>() }
-    val removedIds = remember { mutableStateListOf<Long>() }
-    // 档案是 Flow，首帧还是空表；只在**第一次拿到真实数据**时播种一次，
-    // 之后绝不再覆盖——否则用户正在编辑的内容会被 Flow 的下一帧冲掉。
-    var seeded by remember { mutableStateOf(false) }
-    LaunchedEffect(facts) {
-        if (!seeded && facts.isNotEmpty()) {
-            facts.forEach { drafts.add(DraftFact(it.id, it.key, it.value)) }
-            seeded = true
-        }
-    }
-
-    SettingsPage(title = "基础档案", onBack = onBack) {
-        Spacer(Modifier.height(14.dp))
-
-        // v0.70.0：这一页的条目属于 `personaId = 0` 那一档（跨角色共享）。
-        // 开关只决定"这些共享条目还发不发"，各角色自己聊出来的记忆不受它管。
-        val sharedReadable by vm.profileSharedReadable.collectAsState()
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "全部 AI 可读",
-                fontSize = 15.sp,
-                color = TextPrimary,
-                modifier = Modifier.weight(1f),
-            )
-            NeuSwitch(checked = sharedReadable, onToggle = { vm.setProfileSharedReadable(it) })
-        }
-        Spacer(Modifier.height(14.dp))
-
-        drafts.forEachIndexed { index, draft ->
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                NeuTextField(
-                    value = draft.key,
-                    onValueChange = { drafts[index] = draft.copy(key = it) },
-                    placeholder = "项目",
-                    modifier = Modifier.width(104.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                NeuTextField(
-                    value = draft.value,
-                    onValueChange = { drafts[index] = draft.copy(value = it) },
-                    placeholder = "内容",
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(8.dp))
-                Box(
-                    Modifier
-                        .size(38.dp)
-                        .neuSurface(999.dp, inset = true),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "×",
-                        fontSize = 17.sp,
-                        color = MutedText,
-                        modifier = Modifier
-                            .clickable {
-                                draft.id?.let { removedIds.add(it) }
-                                drafts.removeAt(index)
-                            }
-                            .padding(8.dp),
-                    )
-                }
-            }
-            Spacer(Modifier.height(10.dp))
-        }
-        NeuTextButton("＋ 添加一项", onClick = { drafts.add(DraftFact(null, "", "")) })
-        Spacer(Modifier.height(18.dp))
-        Row(Modifier.fillMaxWidth()) {
-            NeuButton(
-                text = "取消",
-                onClick = onBack,
-                modifier = Modifier.weight(1f),
-            )
-            Spacer(Modifier.width(10.dp))
-            NeuButton(
-                text = "保存",
-                onClick = {
-                    vm.saveEdits(drafts.toList(), removedIds.toList())
-                    onBack()
-                },
-                kind = NeuButtonKind.Primary,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-    }
 }
 
 /**

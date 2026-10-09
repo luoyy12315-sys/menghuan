@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -60,6 +61,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -90,6 +93,7 @@ import com.menghuan.app.ui.common.NeuPressSpec
 import com.menghuan.app.ui.common.figmaSelection
 import com.menghuan.app.ui.common.neuRowPress
 import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.theme.BrandPink
 import com.menghuan.app.ui.theme.BrandSalmon
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
@@ -124,7 +128,48 @@ data class ConversationRowUi(
     val preview: String,
     val time: String,
     val showDot: Boolean,
+    /**
+     * 心情计（v0.77.0：爱心 + 粉色进度条，进度 = 心情好坏，由愉悦度归一化而来）。
+     *
+     * 负数 = 这个角色还没算过心情（没聊过、也没到过主动关心的检查点），
+     * 此时**不占位** —— 画一条空的进度条会让用户以为她在生气，
+     * 而真相只是"数据还没产生"（同 SessionList 的「未加载 vs 空」纪律）。
+     */
+    val moodProgress: Float = -1f,
+    /** 心情的无障碍说明（界面上不显示，只给读屏） */
+    val moodLabel: String = "",
 )
+
+/**
+ * 会话排序（v0.77.0，用户点名「最新的消息放在最上面」）。
+ *
+ * 纯函数，JVM 可测（见 ChatListOrderTest）。规则：
+ *   ① **置顶的永远在最前**（置顶组内部再按最后消息时间倒序）；
+ *   ② 其余按**最后一条消息的时间**倒序 —— 最近聊过的浮到最上；
+ *   ③ 没有任何消息的会话（从没聊过 / 被清空）统一沉到底部，内部按创建时间**由新到旧**
+ *      （`createdAt DESC`），避免一串空会话插在活跃会话中间把列表冲散。
+ *
+ * ⚠️ 不能把顺序交给 SQL 的 `ORDER BY` 一次做完：置顶/最后消息/创建时间分属两张表
+ * （personas 与 messages），这里在内存里合并是既有写法，别改成联表查询。
+ *
+ * @param personas 已过滤掉"隐藏且无消息"的会话
+ * @param lastByConversation personaId → 该会话最后一条消息（没有则不在此表里）
+ */
+internal fun orderConversations(
+    personas: List<Persona>,
+    lastByConversation: Map<Long, ChatMessage>,
+): List<Persona> {
+    // 最后消息时间：没有消息的给 Long.MIN_VALUE，保证沉底且不影响同组内其它比较
+    fun lastAt(p: Persona): Long = lastByConversation[p.id]?.timestamp ?: Long.MIN_VALUE
+    return personas.sortedWith(
+        compareByDescending<Persona> { it.pinned }
+            // 有消息的排前面：先按"有没有消息"分桶（有=0 无=1），再在桶内比时间
+            .thenBy { if (lastAt(it) == Long.MIN_VALUE) 1 else 0 }
+            .thenByDescending { lastAt(it) }
+            // 无消息的一组内部按创建时间由新到旧
+            .thenByDescending { it.createdAt },
+    )
+}
 
 /**
  * 会话列表的加载态（v0.43.1 修"冷启动先闪『新建人设』"）。
@@ -159,19 +204,40 @@ class ChatListViewModel(
             personaRepository.observePersonas(),
             db.messageDao().observeLastMessages(),
             settingsRepository.readMarks,
-        ) { personas, lastMessages, readMarks ->
+            // v0.74.0：全部角色的五轴状态（一次读全表，见 SettingsRepository.companionStates）
+            settingsRepository.companionStates,
+        ) { personas, lastMessages, readMarks, companionStates ->
             val byConversation = lastMessages.associateBy { it.conversationId }
             // 微信式已删除会话：清空消息后从列表隐藏；新消息到达（预览重现）即恢复显示
-            personas
-                .filter { !(it.hidden && byConversation[it.id] == null) }
+            //
+            // v0.77.0（用户点名「最新的消息放在最上面」）：排序规则从"创建时间从旧到新"
+            // 改成**按最后一条消息的时间倒序** —— 最近聊过的会话浮到最上面。
+            // 规则由纯函数 [orderConversations] 决定（可单测，见 ChatListOrderTest）：
+            //   ① 置顶的永远在最前（置顶内部再按最后消息时间倒序）；
+            //   ② 其余按"最后消息时间"倒序；
+            //   ③ 没有消息的会话（从没聊过 / 被清空）沉到最底，内部按创建时间由新到旧，
+            //      免得一堆空会话插在活跃会话中间。
+            val visible = personas.filter { !(it.hidden && byConversation[it.id] == null) }
+            orderConversations(visible, byConversation)
                 .map { persona ->
                     val last = byConversation[persona.id]
+                    // 心情表情：**只读已落盘的状态，不在列表里实时 tick**。
+                    // 列表每帧 tick 是纯浪费（状态是几小时尺度的慢变量），而且 tick 会写盘，
+                    // 在这里写等于"用户一滑列表就在改数据"。状态的真实推进归 ProactiveChat
+                    // 与 ChatViewModel 的既有检查点。
+                    val mood = companionStates[persona.id]
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { com.menghuan.app.data.CompanionLogic.badgeOf(
+                            com.menghuan.app.data.CompanionLogic.decode(it)
+                        ) }
                     ConversationRowUi(
                         persona = persona,
                         preview = previewOf(persona, last),
                         time = timeOf(last?.timestamp),
                         showDot = last != null && !last.isFromUser &&
                             last.timestamp > (readMarks[persona.id] ?: 0L),
+                        moodProgress = mood?.progress ?: -1f,
+                        moodLabel = mood?.label ?: "",
                     )
                 }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -393,6 +459,8 @@ fun ChatListScreen(
                                 preview = row.preview,
                                 time = row.time,
                                 unread = row.showDot,
+                                moodProgress = row.moodProgress,
+                                moodLabel = row.moodLabel,
                                 selected = onSelect != null && row.persona.id == selectedPersonaId,
                                 onClick = {
                                     val open = onSelect ?: onOpen
@@ -561,6 +629,9 @@ private fun ConversationRow(
     preview: String,
     time: String,
     unread: Boolean,
+    /** 心情计（v0.77.0：爱心 + 粉色进度条）；progress < 0 = 没算过，不占位 */
+    moodProgress: Float = -1f,
+    moodLabel: String = "",
     selected: Boolean = false,
     onClick: () -> Unit,
     /** 长按回调带上**手指在行内的位置**（px）——菜单要出现在手指那儿，不是固定角落 */
@@ -606,14 +677,24 @@ private fun ConversationRow(
         NeuAvatar(persona.avatarEmoji, size = 46.dp, ringBrush = personaBrush(persona.id), imagePath = persona.avatarImagePath)
         Spacer(Modifier.width(13.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                persona.name,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // 名字 + 心情表情（v0.74.0）：表情紧贴在名字右边，名字过长时**先挤压表情之外的
+            // 空间**（表情自身 weight 不参与，避免把表情压扁）——用 Row + 名字 Text 带 weight(1f, fill=false)
+            // 让名字自己按需占宽，表情始终留在末尾。
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    persona.name,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (moodProgress >= 0f) {
+                    Spacer(Modifier.width(5.dp))
+                    MoodGauge(progress = moodProgress, label = moodLabel)
+                }
+            }
             Spacer(Modifier.height(3.dp))
             Text(
                 preview,
@@ -654,6 +735,45 @@ private fun ConversationRow(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * 心情计（v0.77.0）：一颗粉色爱心 + 右边一条粉色进度条，进度 = 心情好坏。
+ *
+ * 取代 v0.74.0 的心情 emoji（用户拍板：表情包太吵，而且同一颗 🥺 在不同人手机上字形差很多，
+ * 线性进度条在任何设备上都是同一个形状）。爱心本身不带信息（它就是"这是心情"的图例），
+ * 真正读数在条子上：愉悦度 valence 归一化到 0~1，0 = 心情最差、1 = 最好。
+ *
+ * 尺寸按"名字旁边半秒视线"定：心 13dp、条 40×4dp 圆角 pill，轨道用浅灰
+ * （与全应用轨道同一颗灰），填充 [BrandPink] —— 粉在这里是"心情"语义，不与危险红（NeuDanger）混。
+ * 读屏念"心情：xxx"，与原 emoji 的口径一致。
+ */
+@Composable
+private fun MoodGauge(progress: Float, label: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.semantics { contentDescription = "心情：$label" },
+    ) {
+        Icon(
+            MIcons.Heart,
+            contentDescription = null,
+            tint = BrandPink,
+            modifier = Modifier.size(13.dp),
+        )
+        Spacer(Modifier.width(4.dp))
+        Box(
+            Modifier
+                .size(width = 40.dp, height = 4.dp)
+                .background(NeuTrack, RoundedCornerShape(999.dp)),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(progress.coerceIn(0f, 1f))
+                    .background(BrandPink, RoundedCornerShape(999.dp)),
+            )
         }
     }
 }

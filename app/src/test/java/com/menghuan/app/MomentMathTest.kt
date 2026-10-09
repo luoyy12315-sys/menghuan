@@ -95,4 +95,43 @@ class MomentMathTest {
         assertEquals("", MomentMath.sanitize("   "))
         assertEquals(200, MomentMath.sanitize("啊".repeat(500), MomentMath.REPLY_MAX).length)
     }
+
+    // ===== 图片串（v0.76.0）=====
+
+    @Test
+    fun `图片路径编解码原样往返`() {
+        val paths = listOf("/a/1.jpg", "/b/2.png")
+        assertEquals(paths, MomentMath.decodeImages(MomentMath.encodeImages(paths)))
+        // 空串 = 没图（旧数据表上行默认就是这个值）
+        assertTrue(MomentMath.decodeImages("").isEmpty())
+    }
+
+    @Test
+    fun `图片串去重并截到九张`() {
+        val encoded = MomentMath.encodeImages(
+            (1..12).map { "/a/$it.jpg" } + "/a/1.jpg",
+        )
+        assertEquals(MomentMath.IMAGES_MAX, MomentMath.decodeImages(encoded).size)
+        val first = MomentMath.decodeImages(encoded).first()
+        assertEquals("/a/1.jpg", first)
+    }
+
+    /**
+     * 逗号是**合法文件名字符**：当初没直接用逗号分隔，就是因为这类路径会把串拆错。
+     * 这条红掉就说明分隔符被改回去了。
+     */
+    @Test
+    fun `含逗号与空格的路径不被拆错`() {
+        val odd = listOf("/dir/a,b.jpg", "/dir/ c .jpg")
+        assertEquals(odd, MomentMath.decodeImages(MomentMath.encodeImages(odd)))
+    }
+
+    @Test
+    fun `位置收口去空白压换行并截到上限`() {
+        assertEquals("西湖边的星巴克", MomentMath.sanitizeLocation("  西湖边的星巴克 \n"))
+        // 换行必须被压成空格：images 那一列用换行作分隔符，混进来会把串写坏
+        assertEquals("a b", MomentMath.sanitizeLocation("a\nb"))
+        assertEquals(MomentMath.LOCATION_MAX, MomentMath.sanitizeLocation("啊".repeat(80)).length)
+        assertTrue(MomentMath.sanitizeLocation("   ").isEmpty())
+    }
 }

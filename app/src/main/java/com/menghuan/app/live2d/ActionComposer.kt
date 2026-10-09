@@ -138,13 +138,16 @@ object ActionComposer {
         durationMs: Int,
         parts: Set<ActionPart>,
         expression: String,
+        /** 高级模式的逐通道倍率（v0.74.0）；空 = 不改，行为与普通模式完全一致 */
+        channelFactors: Map<GenericChannel, Float> = emptyMap(),
         now: Long = System.currentTimeMillis(),
     ): Live2dAction {
-        val tracks = if (base != null && base.hasTracks) {
+        val rawTracks = if (base != null && base.hasTracks) {
             filterTracks(base.tracks, parts)
         } else {
             defaultTracks(parts)
         }
+        val tracks = if (channelFactors.isEmpty()) rawTracks else scaleTracks(rawTracks, channelFactors)
         return Live2dAction(
             id = 0L,
             name = name.trim().ifBlank { "我的动作" }.take(12),
@@ -172,4 +175,30 @@ object ActionComposer {
     /** 哪些部位是这个基础动作真正用到的（编辑页据此把开关置成初始值） */
     fun partsOf(action: Live2dAction?): Set<ActionPart> =
         action?.tracks?.map { ActionPart.of(it.channel) }?.toSet() ?: ActionPart.entries.toSet()
+
+    // ---- 高级模式：逐通道微调（v0.74.0）----
+
+    /**
+     * 逐通道的幅度倍率（v0.74.0 高级模式）。
+     *
+     * 键是 [ParameterTrack.channel]，值是**在该通道原始关键帧上乘的倍率**（0.2×–2.0×）。
+     * 缺省（不在表里）= 1.0，即不动。
+     *
+     * 为什么不直接让用户改关键帧坐标：那是完整关键帧编辑器，量级完全不同，
+     * 而且用户里绝大多数人不会想去手填 0.35 / 0.7 这种数。**倍率**是这中间最能用的一层 ——
+     * "这个动作手臂挥得不够大"就是一张滑块能表达的事。
+     */
+    fun scaleTrack(track: ParameterTrack, factor: Float): ParameterTrack {
+        val f = factor.coerceIn(MIN_CHANNEL_FACTOR, MAX_CHANNEL_FACTOR)
+        if (f == 1f) return track
+        return track.copy(keys = track.keys.map { TrackKey(it.at, TrackKey.round(it.value * f)) })
+    }
+
+    /** 按倍率表整体缩放（不在表里的通道保持原样） */
+    fun scaleTracks(tracks: List<ParameterTrack>, factors: Map<GenericChannel, Float>): List<ParameterTrack> =
+        tracks.map { scaleTrack(it, factors[it.channel] ?: 1f) }
+
+    /** 高级模式里可调幅度倍率的通道上限/下限（与 [Live2dAction] 的强度上限同量级） */
+    const val MIN_CHANNEL_FACTOR = 0.2f
+    const val MAX_CHANNEL_FACTOR = 2f
 }

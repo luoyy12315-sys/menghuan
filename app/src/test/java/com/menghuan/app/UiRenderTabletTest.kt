@@ -90,7 +90,11 @@ class UiRenderTabletTest {
     fun tablet3MeWide() {
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_3").performClick()
-        awaitText("基础档案")
+        // v0.80.0：顶部的「基础档案」行卡已取消（画像条目并入点开的「个人档案」页），
+        // 这一页现在只剩顶部档案卡 + 人设管理 / AI 图库 / 设置 三张行卡。
+        // 旧断言等的就是那张已取消的卡 —— 它从改版那天起就红着，本批顺手改掉。
+        awaitText("人设管理")
+        awaitText("AI 图库")
         snap("22-tablet-me")
     }
 

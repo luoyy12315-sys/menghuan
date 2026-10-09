@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Icon
@@ -47,6 +48,7 @@ import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.realtime.visual.VisualRuntime
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuCircleButton
+import com.menghuan.app.ui.common.StageBackground
 import com.menghuan.app.ui.common.StageBackgroundLayer
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.staggerEnter
@@ -91,6 +93,7 @@ fun Live2dSpaceScreen(
 
     var showLibrary by remember { mutableStateOf(false) }
     var showBackground by remember { mutableStateOf(false) }
+    var showInteraction by remember { mutableStateOf(false) }
     var showEditor by remember { mutableStateOf<Live2dAction?>(null) }
     var showAi by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
@@ -112,9 +115,14 @@ fun Live2dSpaceScreen(
     Box(Modifier.fillMaxSize().background(NeuBackground)) {
 
         // ① 背景层（画法与视频通话共用一份，见 ui/common/StageBackground.kt）
+        val bgVideoFile = ui.backgroundVideo
+        val bgImageFile = ui.backgroundFile
         StageBackgroundLayer(
-            custom = ui.background.isCustom,
-            filePath = ui.backgroundFile?.absolutePath.orEmpty(),
+            bg = when {
+                ui.background.isVideo && bgVideoFile != null -> StageBackground.Video(bgVideoFile.absolutePath)
+                bgImageFile != null -> StageBackground.Image(bgImageFile.absolutePath)
+                else -> StageBackground.Preset
+            },
         )
 
         // ② 舞台层
@@ -214,6 +222,10 @@ fun Live2dSpaceScreen(
                     color = MutedText,
                 )
             }
+            NeuCircleButton(onClick = { showInteraction = true }, size = 40.dp) {
+                Icon(MIcons.Touch, contentDescription = "点击互动", tint = TextPrimary, modifier = Modifier.size(19.dp))
+            }
+            Spacer(Modifier.width(8.dp))
             NeuCircleButton(onClick = { showBackground = true }, size = 40.dp) {
                 Icon(MIcons.ImageIcon, contentDescription = "背景", tint = TextPrimary, modifier = Modifier.size(19.dp))
             }
@@ -304,7 +316,20 @@ fun Live2dSpaceScreen(
                 vm.importBackground(uri)
                 showBackground = false
             },
+            onImportVideo = { uri ->
+                vm.importBackgroundVideo(uri)
+                showBackground = false
+            },
             onDismiss = { showBackground = false },
+        )
+    }
+
+    if (showInteraction) {
+        InteractionConfigSheet(
+            bindings = ui.interactionBindings,
+            actions = ui.actions,
+            onPick = { region, actionId -> vm.setInteractionBinding(region, actionId) },
+            onDismiss = { showInteraction = false },
         )
     }
 

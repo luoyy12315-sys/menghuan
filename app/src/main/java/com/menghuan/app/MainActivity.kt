@@ -100,8 +100,8 @@ import com.menghuan.app.ui.moment.MomentThreadScreen
 import com.menghuan.app.ui.moment.MomentsScreen
 import com.menghuan.app.ui.persona.PersonaManageScreen
 import com.menghuan.app.ui.profile.GalleryScreen
+import com.menghuan.app.ui.profile.MeProfileScreen
 import com.menghuan.app.ui.profile.MeScreen
-import com.menghuan.app.ui.profile.ProfileScreen
 import com.menghuan.app.ui.settings.AboutScreen
 import com.menghuan.app.ui.settings.AppearanceScreen
 import com.menghuan.app.ui.settings.AsrModelScreen
@@ -837,10 +837,10 @@ private fun androidx.navigation.NavGraphBuilder.settingsComposables(navControlle
         popExitTransition = { pop + scalePop }) {
         AdaptiveScreen { PromptSettingsScreen(onBack = back) }
     }
-    composable(SettingsRoutes.PROFILE, enterTransition = { push + fadeIn(tween(260)) },
+    composable(SettingsRoutes.ME_PROFILE, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
         popExitTransition = { pop + scalePop }) {
-        AdaptiveScreen { ProfileScreen(onBack = back) }
+        AdaptiveScreen { MeProfileScreen(onBack = back) }
     }
     composable(SettingsRoutes.GALLERY, enterTransition = { push + fadeIn(tween(260)) },
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
@@ -919,6 +919,8 @@ private fun HomePages(
             }
             2 -> AdaptiveScreen(contentMaxWidth = WideMaxContentWidth) {
                 MomentsScreen(
+                    // settledPage：翻页**停下来**之后才变，用它驱动"这一页真的可见"的入场动画
+                    visible = pagerState.settledPage == 2,
                     onOpenThread = { id -> navController.navigate("moment/$id") },
                     onOpenChat = { id -> navController.navigate("chat/$id") },
                 )

@@ -130,23 +130,44 @@ fun MarkdownText(
     text: String,
     modifier: Modifier = Modifier,
     color: Color = TextPrimary,
+    /**
+     * 正文字号（v0.77.0：聊天外观的字号三档）。默认 15sp = 原有的固定值，所有老调用点不变。
+     * 只缩放**正文/列表/标题**三类，代码块维持等宽小字不跟着放大（代码变大会一条占半屏）。
+     *
+     * v0.80.0：字号改成连续可调（12~22sp），默认仍是 15sp。
+     */
+    fontSize: androidx.compose.ui.unit.TextUnit = 15.sp,
+    /** v0.80.0：气泡字体族；null = 沿用系统默认（除聊天外的调用点都不传，行为不变） */
+    fontFamily: androidx.compose.ui.text.font.FontFamily? = null,
+    /** v0.80.0：气泡字重；null = 常规。标题行仍至少半粗（见 ParaText） */
+    fontWeight: androidx.compose.ui.text.font.FontWeight? = null,
 ) {
     // 解析+合并一次性记忆化：气泡内容不变时，重组/滚动重入零重复计算
     val nodes = remember(text) { buildRenderNodes(text) }
     val codeBg = NeuTrack
+    // 行高跟着字号走（约 1.4 倍），否则放大字号后行会"贴着"
+    val lineHeight = fontSize * 1.4f
     Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
         nodes.forEach { node ->
             when (node) {
                 is RenderNode.Gap -> Spacer(Modifier.height(4.dp))
                 is RenderNode.CodeBlock -> CodeLines(node.lines, color)
-                is RenderNode.Para -> ParaText(node, color, codeBg)
+                is RenderNode.Para -> ParaText(node, color, codeBg, fontSize, lineHeight, fontFamily, fontWeight)
             }
         }
     }
 }
 
 @Composable
-private fun ParaText(node: RenderNode.Para, color: Color, codeBg: Color) {
+private fun ParaText(
+    node: RenderNode.Para,
+    color: Color,
+    codeBg: Color,
+    fontSize: androidx.compose.ui.unit.TextUnit,
+    lineHeight: androidx.compose.ui.unit.TextUnit,
+    fontFamily: androidx.compose.ui.text.font.FontFamily? = null,
+    fontWeight: androidx.compose.ui.text.font.FontWeight? = null,
+) {
     when (node.kind) {
         LineKind.Bullet -> Text(
             // 多段落单 Text：ParagraphStyle 推入后对每个段落生效（含折行的悬挂缩进），
@@ -169,9 +190,11 @@ private fun ParaText(node: RenderNode.Para, color: Color, codeBg: Color) {
                     pop()
                 }
             },
-            fontSize = 15.sp,
-            lineHeight = 21.sp,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
             color = color,
+            fontFamily = fontFamily,
+            fontWeight = fontWeight,
         )
         LineKind.Heading -> Text(
             remember(node, codeBg) {
@@ -182,9 +205,13 @@ private fun ParaText(node: RenderNode.Para, color: Color, codeBg: Color) {
                     }
                 }
             },
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontSize = fontSize,
+            // 标题仍要"比正文重"：用户字重比半粗更粗时听用户的，否则至少半粗
+            fontWeight = androidx.compose.ui.text.font.FontWeight(
+                maxOf(fontWeight?.weight ?: 0, FontWeight.SemiBold.weight)
+            ),
             color = color,
+            fontFamily = fontFamily,
         )
         else -> Text(
             remember(node, codeBg) {
@@ -195,9 +222,11 @@ private fun ParaText(node: RenderNode.Para, color: Color, codeBg: Color) {
                     }
                 }
             },
-            fontSize = 15.sp,
-            lineHeight = 21.sp,
+            fontSize = fontSize,
+            lineHeight = lineHeight,
             color = color,
+            fontFamily = fontFamily,
+            fontWeight = fontWeight,
         )
     }
 }

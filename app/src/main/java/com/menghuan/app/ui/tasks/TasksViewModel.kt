@@ -79,6 +79,16 @@ class TasksViewModel(
         com.menghuan.app.data.TaskActions.toggleTask(appContext, task)
     }
 
+    /** 标为失败（v0.74.0 长按菜单）：完整动作在 TaskActions */
+    fun markFailed(task: TaskItem) = viewModelScope.launch {
+        com.menghuan.app.data.TaskActions.markFailed(appContext, task.id)
+    }
+
+    /** 取消失败，回到未处理（v0.74.0 长按菜单） */
+    fun clearFailed(task: TaskItem) = viewModelScope.launch {
+        com.menghuan.app.data.TaskActions.clearFailed(appContext, task.id)
+    }
+
     fun delete(task: TaskItem) = viewModelScope.launch {
         runCatching {
             db.taskDao().delete(task.id)

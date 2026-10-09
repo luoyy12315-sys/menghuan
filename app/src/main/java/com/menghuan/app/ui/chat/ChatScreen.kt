@@ -263,6 +263,12 @@ fun ChatScreen(
         .collectAsState(initial = emptyMap())
     val myBackground = chatBackgrounds[personaId] ?: ""
 
+    // v0.77.0：聊天外观（全局一套）+ 用户头像 —— 气泡配色/字号/是否显示头像都由它定。
+    val chatAppearance by appContainer.settingsRepository.chatAppearance
+        .collectAsState(initial = com.menghuan.app.data.ChatAppearance())
+    val userAvatar by appContainer.settingsRepository.userAvatar
+        .collectAsState(initial = com.menghuan.app.data.UserAvatar())
+
     /**
      * v0.55.0：气泡在屏幕中的位置改用**普通容器**记录，不再用 state。
      *
@@ -917,6 +923,9 @@ fun ChatScreen(
                                         msg,
                                         bubbleMaxWidth,
                                         item.gapBefore,
+                                        appearance = chatAppearance,
+                                        persona = persona,
+                                        userAvatar = userAvatar,
                                         onLongPress = { openMessageMenu(msg, rowKey) },
                                     )
                                 }   // 关闭 when(kind)
@@ -998,7 +1007,23 @@ fun ChatScreen(
                                     .animateItem(fadeInSpec = null, placementSpec = null, fadeOutSpec = null),
                             ) {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
-                                    AiBubble(content = "", maxWidth = bubbleMaxWidth, onLongPress = {})
+                                    // 流式占位气泡：走和真实 AI 气泡同一套配色，否则流式期间
+                                    // 突然"换个色再定下来"会闪一下（v0.80.0 外观可自定义后更明显）
+                                    val phTheme = if (com.menghuan.app.ui.theme.IsDarkTheme) {
+                                        chatAppearance.dark
+                                    } else {
+                                        chatAppearance.light
+                                    }
+                                    AiBubble(
+                                        content = "",
+                                        maxWidth = bubbleMaxWidth,
+                                        resolved = com.menghuan.app.ui.theme.resolveBubble(
+                                            style = phTheme.other,
+                                            isMine = false,
+                                            appearance = chatAppearance,
+                                        ),
+                                        onLongPress = {},
+                                    )
                                 }
                             }
                         }
@@ -2773,32 +2798,106 @@ private fun MessageBubble(
     message: ChatMessage,
     maxWidth: androidx.compose.ui.unit.Dp,
     gapBefore: Boolean,
+    appearance: com.menghuan.app.data.ChatAppearance =
+        com.menghuan.app.data.ChatAppearance(),
+    persona: com.menghuan.app.data.model.Persona? = null,
+    userAvatar: com.menghuan.app.data.UserAvatar = com.menghuan.app.data.UserAvatar(),
     onLongPress: () -> Unit,
 ) {
     val isUser = message.isFromUser
     val isHeart = message.content == "❤️"
+    // v0.80.0：配色（明暗各一套，按当前主题取）+ 圆角/边框 + 字体三件套
+    // 渲染时取哪套看**当前是不是深色主题**：外观页里编辑的是"将来用的那套"，这里只管"现在这套"。
+    val theme = if (com.menghuan.app.ui.theme.IsDarkTheme) appearance.dark else appearance.light
+    val resolved = com.menghuan.app.ui.theme.resolveBubble(
+        style = if (isUser) theme.mine else theme.other,
+        isMine = isUser,
+        appearance = appearance,
+    )
     Row(
         Modifier
             .fillMaxWidth()
             .padding(top = if (gapBefore) 8.dp else 0.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Top,
     ) {
         when {
             isHeart -> Text("❤️", fontSize = 44.sp)
-            isUser -> UserBubble(message.content, maxWidth, onLongPress)
-            else -> AiBubble(message.content, maxWidth, onLongPress)
+            isUser -> {
+                // 用户气泡：文字先、头像贴在最右（微信 / iMessage 的常见排法）
+                UserBubble(message.content, maxWidth, resolved, onLongPress)
+                if (appearance.showAvatar) {
+                    Spacer(Modifier.width(8.dp))
+                    ChatRowAvatar(personaId = 0L, persona = null, userAvatar = userAvatar, size = 34.dp)
+                }
+            }
+            else -> {
+                if (appearance.showAvatar) {
+                    ChatRowAvatar(personaId = persona?.id ?: 0L, persona = persona, userAvatar = userAvatar, size = 34.dp)
+                    Spacer(Modifier.width(8.dp))
+                }
+                AiBubble(message.content, maxWidth, resolved, onLongPress)
+            }
         }
     }
 }
 
-/** AI 气泡：凹陷纸面；长按弹操作菜单（v0.56.15：震动只在 openMessageMenu 里补，不再自己震一次） */
+/**
+ * 气泡旁的头像（v0.77.0）。
+ *
+ * - 用户（personaId = 0）：读用户自己的头像设置；**没设置过就退回黑底白「我」字圆**
+ *   （与动态页 [MomentAuthorAvatar] 同一口径，两个页面看到的"我"是同一张脸）；
+ * - AI：人设 emoji / 自定义图 + 人设渐变环（与会话列表同一颗 [personaBrush]）。
+ *
+ * 尺寸固定 34dp：比会话列表的 46 小一圈 —— 气泡旁的头像比"列表主头像"次要，
+ * 太大了会跟气泡抢视觉重心。
+ */
+@Composable
+private fun ChatRowAvatar(
+    personaId: Long,
+    persona: com.menghuan.app.data.model.Persona?,
+    userAvatar: com.menghuan.app.data.UserAvatar,
+    size: androidx.compose.ui.unit.Dp,
+) {
+    if (personaId == 0L) {
+        // 用户：设了图/emoji 就用，否则黑底白「我」
+        if (!userAvatar.isEmpty) {
+            com.menghuan.app.ui.common.NeuAvatar(
+                emoji = userAvatar.effectiveEmoji.ifBlank { "我" },
+                size = size,
+                imagePath = userAvatar.imagePath,
+            )
+        } else {
+            Box(
+                Modifier
+                    .size(size)
+                    .background(NeuAccent, androidx.compose.foundation.shape.RoundedCornerShape(999.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("我", fontSize = (size.value * 0.34f).sp, color = AccentInk, fontWeight = FontWeight.Medium)
+            }
+        }
+        return
+    }
+    com.menghuan.app.ui.common.NeuAvatar(
+        emoji = persona?.avatarEmoji.takeUnless { it.isNullOrEmpty() } ?: "…",
+        size = size,
+        ringBrush = com.menghuan.app.ui.theme.personaBrush(personaId),
+        imagePath = persona?.avatarImagePath ?: "",
+    )
+}
+
+/** AI 气泡：长按弹操作菜单（v0.56.15：震动只在 openMessageMenu 里补，不再自己震一次） */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AiBubble(
     content: String,
     maxWidth: androidx.compose.ui.unit.Dp,
+    /** v0.80.0：底/字/边框/圆角/字体三件套一次给齐（旧版是 bg+ink+bodySp 三个散参） */
+    resolved: com.menghuan.app.ui.theme.ResolvedBubble,
     onLongPress: () -> Unit,
 ) {
+    val radius = resolved.radiusDp.coerceAtLeast(0).dp
     Box(
         Modifier
             .widthIn(max = maxWidth)
@@ -2808,25 +2907,42 @@ private fun AiBubble(
                 onClick = {},
                 onLongClick = onLongPress,
             )
-            .neuSurface(18.dp, color = MaterialTheme.colorScheme.surface, elevation = 2.dp)
+            .neuSurface(radius, color = resolved.bg, elevation = 2.dp)
+            // 边框画在底色之上、内容之内：描在气泡外沿，不侵占内边距
+            .then(
+                resolved.border?.let {
+                    Modifier.border(1.dp, it, androidx.compose.foundation.shape.RoundedCornerShape(radius))
+                } ?: Modifier
+            )
             .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
         if (content.isBlank()) {
             TypingDots()
         } else {
-            MarkdownText(content)
+            // 正文色跟随气泡配色（resolved.ink）：MarkdownText 默认色是 TextPrimary，
+            // 深底上会看不见，所以显式传；字体族与字重也一起传。
+            MarkdownText(
+                content,
+                color = resolved.ink,
+                fontSize = resolved.fontSizeSp.sp,
+                fontFamily = resolved.fontFamily,
+                fontWeight = resolved.fontWeight,
+            )
         }
     }
 }
 
-/** 用户气泡：纯黑药丸 + 纸叠影（Figma 界面唯一强调色） */
+/** 用户气泡：默认墨黑药丸 + 纸叠影（Figma 界面唯一强调色）；v0.77.0 起底色/字号可自定义 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun UserBubble(
     content: String,
     maxWidth: androidx.compose.ui.unit.Dp,
+    /** v0.80.0：底/字/边框/圆角/字体三件套一次给齐（旧版是 bg+ink+bodySp 三个散参） */
+    resolved: com.menghuan.app.ui.theme.ResolvedBubble,
     onLongPress: () -> Unit,
 ) {
+    val radius = resolved.radiusDp.coerceAtLeast(0).dp
     Box(
         Modifier
             .widthIn(max = maxWidth)
@@ -2836,10 +2952,23 @@ private fun UserBubble(
                 onClick = {},
                 onLongClick = onLongPress,
             )
-            .neuSurface(22.dp, color = NeuAccent, elevation = 3.dp)
+            .neuSurface(radius, color = resolved.bg, elevation = 3.dp)
+            .then(
+                resolved.border?.let {
+                    Modifier.border(1.dp, it, androidx.compose.foundation.shape.RoundedCornerShape(radius))
+                } ?: Modifier
+            )
             .padding(horizontal = 16.dp, vertical = 11.dp),
     ) {
-        Text(content, color = AccentInk, fontSize = 15.sp, lineHeight = 21.sp, letterSpacing = (-0.1).sp)
+        Text(
+            content,
+            color = resolved.ink,
+            fontSize = resolved.fontSizeSp.sp,
+            fontFamily = resolved.fontFamily,
+            fontWeight = resolved.fontWeight,
+            lineHeight = (resolved.fontSizeSp + 6).sp,
+            letterSpacing = (-0.1).sp,
+        )
     }
 }
 

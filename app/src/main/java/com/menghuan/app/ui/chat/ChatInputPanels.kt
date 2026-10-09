@@ -347,10 +347,54 @@ private fun PlusAction(
 /**
  * emoji 全集（v0.43.1 扁平化）：按"常用 → 情绪 → 手势 → 生活"的原顺序拼接，
  * 但**不再显示分区标题**，视觉上就是一整片可滚动的 emoji。
+ *
+ * v0.77.0：可见性从 private 放到 internal —— 用户头像选择器（外观设置页）复用同一份名单，
+ * 两处各写一份迟早会漂成"表情面板有的、头像里选不到"。
  */
-private val AllEmojis: List<String> = listOf(
+internal val AllEmojis: List<String> = listOf(
     "😀", "😄", "😁", "😆", "😅", "🤣", "😂", "🙂", "😉", "😊", "😍", "🥰", "😘", "😜", "🤪", "😎",
     "😢", "😭", "😞", "😔", "😟", "😠", "😡", "🤬", "😱", "😨", "😰", "😳", "🥺", "😴", "🤔", "🤗",
     "👍", "👎", "👌", "✌️", "🤞", "🤝", "👏", "🙏", "💪", "🤙", "👋", "✊", "🫶", "🤟", "☝️", "✋",
     "❤️", "💔", "💯", "🔥", "✨", "🎉", "🎂", "🍚", "🍜", "☕", "🍺", "🌙", "☀️", "⭐", "🌈", "🐱",
 )
+
+/**
+ * 用户头像选 emoji 的网格（v0.77.0）。
+ *
+ * 与表情面板的 [EmojiGrid] 同一份名单、同一种"每行 8 个"排法，区别只有两点：
+ * 收到的 [onPick] 是"设为头像"而不是"发出去"；选中的那个描一圈强调边。
+ * 做成 inline 的一个小 Column（不是 Lazy）—— 本页不滚动到很深，没必要再起滚动容器。
+ */
+@Composable
+fun EmojiAvatarGrid(
+    selected: String,
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxWidth()) {
+        AllEmojis.chunked(8).forEach { row ->
+            Row(Modifier.fillMaxWidth()) {
+                row.forEach { e ->
+                    val isSel = e == selected
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(38.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .then(
+                                if (isSel) Modifier.background(
+                                    NeuTrack,
+                                    RoundedCornerShape(8.dp),
+                                ) else Modifier
+                            )
+                            .tapNoRipple { onPick(e) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(e, fontSize = 23.sp, textAlign = TextAlign.Center)
+                    }
+                }
+                repeat(8 - row.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}

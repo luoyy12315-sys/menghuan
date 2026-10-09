@@ -310,6 +310,26 @@
    - 上传入口是会话设置页的**一行「视频通话形象」**（v0.58.1 用户拍板：原来 Live 2D / 伪视频 两行合成一行，
      点开先选类型再进各自的上传弹层；**不叠两层底部弹层**，是"关掉自己再打开对面"）。
      「Live2D 模型包」= zip 模型包 / 「伪视频素材」= 多选 mp4 + 逐状态指认；不在人设编辑页重复一份。
+   - **舞台背景（角色空间 + 视频通话共用一份，v0.66.0 抽出，v0.74.0 加视频）**：
+     `ui/common/StageBackground.kt` 的 `StageBackgroundLayer(bg, modifier)` 收一个 `StageBackground`
+     sealed interface（`Preset` / `Image` / `Video`）。
+     ⚠️ **预设永远先铺底**，图片/视频叠其上 —— 这样"文件读不出来"永远是"回到预设"而不是"露白"，
+     这是这一层最重要的一条不变量。
+     ⚠️ **视频层用 `StageVideoBackgroundEngine`（ExoPlayer + 裸 `TextureView`），绝不用 media3-ui** ——
+     同伪视频那条（`exo_shutter` 黑屏 + 330KB）。它静音、`REPEAT_MODE_ONE`、出错**只退回预设不降级**
+     （背景坏了远没到"没有形象"那一步）。层叠照抄 `VideoVisualEngine`：背景 TextureView 写在 Live2D 之前即垫在下面。
+     背景视频/图片的档位串各自 `file:` / `video:` 前缀，图片与视频放**不同子目录**（删一类不碰另一类）；
+     视频导入三道校验：**80MB / 30 秒 / 有视频画面轨且本机有解码器**（口径与 `CallVisualStore.importVideo` 一致）。
+   - **点击互动的绑定已进库**（v0.74.0，ROADMAP 候选①闭环）：`interaction_bindings` 表（主键 `personaId`+`region`）
+     + `InteractionBindingDao`；`InteractionBindings` 的 `headActionId` / `bodyActionId`（**0 = 用内置默认**）
+     取代了原来写死的 `InteractionBindings.DEFAULT`。⚠️ **删动作时 `InteractionBindingDao.clearByAction`
+     必须一起清**（同 `CallActionBindingDao` 的铁律：绑到不存在的动作 = "角色卡着不动且毫无提示"）；
+     读时 `interactionBindings()` 还会再查一次动作是否仍在，查不到就退回默认（第二道保险）。
+     「点其他」区**固定"随机趣味动作"、不给指定**（用户原话），所以 `actionIdOf(OTHER)` 恒为 0。
+   - **动作编辑器的高级模式 = 逐通道幅度倍率**（v0.74.0，ROADMAP 候选②）：`ActionComposer.scaleTracks`（纯函数，带单测）
+     在原始关键帧上逐通道乘倍率（0.2×–2.0×）。⚠️ **刻意不做逐关键帧编辑**（那是完整关键帧编辑器的量级，
+     对绝大多数用户是负担）；倍率是"整体强度"与"逐帧坐标"之间唯一真能用的一层。
+     部位开关（`ActionPart`）在高级模式下依然有效（先筛轨道、再乘倍率，两层叠加）。
      旧的「角色立绘」行与 `persona_art` / `persona_live2d` 两个 DataStore 键**已废弃并清理**（单文件渲染不出来）。
      素材落 `filesDir/call_visuals/<personaId>/`，库里只有 `personas.videoVisualType`（Room v15）；
      两边不一致**以文件为准**。
@@ -379,6 +399,19 @@
     - ⚠️ **删实体那一刀的刀口**：这次删 `MemoEntry` 顺手切掉了隔壁的 `DailySuggestion`，
       而症状只是最外层一句 `[ksp] [MissingType]: Element AppDatabase references a type that is not present` ——
       Room 不告诉你是哪个实体没了。**删完必须按 `@Database(entities = […])` 那一列逐个 grep 类名回来**。
+    - ⚠️ **实体 `indices` 声明必须与迁移里建的索引逐项一致（v0.74.0 闪退的血泪教训）**：
+      迁移里 `CREATE INDEX` 了而实体没声明 → Room 在 `onUpgrade → onValidateSchema` 逐项比对索引列表 →
+      抛 `Migration didn't properly handle: <表>` → **打开数据库即崩，表现为"一进页面就闪退"
+      且列表读不出数据（看着像数据丢了，其实数据分毫未动）**。
+      两条配套纪律：
+      ① 改实体形状后**必须重跑 KSP 重新导出 schema**（`identityHash` 会变），并同步迁移测试；
+      ② 迁移回归测试在 `app/src/test/java/com/menghuan/app/DbMigrationTest.kt`，
+      从 `app/schemas/<v>.json` 读真实建表语句建旧库 → 交 Room 跑迁移 + identityHash 校验。
+      ⚠️ Robolectric 下建测试库**必须显式 `db.execSQL("PRAGMA user_version = $v")`**，
+      否则 Room 误判成新库走 `onCreate` **绕过迁移校验**，测试形同虚设；
+      写完新迁移**必须做反向验证**（故意去掉索引 / 去掉 CREATE INDEX，看测试是否变红）。
+      ⚠️ 跑测试同样**必须 `cd X:`**：中文路径会让 Gradle 测试 worker 编码错乱
+      （`梦欢` → `ÃÎ»¶`）导致**全部测试无故 `ClassNotFoundException`**，与代码无关。
 9. **上下文成本纪律（v0.69.0 立，改 prompt 组装前必读）。**
    服务商的隐式前缀缓存按"请求开头逐字节相同"计费提速，所以**每轮都变的内容一律不许进 system prompt**。
    - 唯一的动态注入位是 **最后一条用户消息**（`data/RuntimeContext.kt` + `OpenAiClient.RUNTIME_CONTEXT_MARK`）：
@@ -439,7 +472,7 @@
 │   ├── MentorApp.kt             # Application + 服务容器（db / persona / profile / settings 仓库 / extractionEngine / weeklyReportGenerator）
 │   ├── data/
 │   │   ├── model/Models.kt      # Persona(含 tone/pinned/avatarImagePath) / ToneStyle / ChatMessage(含 imagePath) / TaskItem / ProfileFact / AiInsight / AiWeeklyReport
-│   │   ├── db/AppDatabase.kt    # Room **v21** + 正式 Migration（14 DAO；v15 videoVisualType、v16 artImagePath、v17 memos、v19 live2d_actions、v20 profile_facts 按人设分列、**v21 moments 建表 + DROP memos**；schema 导出到 app/schemas，禁破坏性重建）
+│   │   ├── db/AppDatabase.kt    # Room **v23** + 正式 Migration（15 DAO；v15 videoVisualType、v16 artImagePath、v17 memos、v19 live2d_actions、v20 profile_facts 按人设分列、v21 moments 建表 + DROP memos、v22 tasks.isFailed、**v23 interaction_bindings 建表**；schema 导出到 app/schemas，禁破坏性重建）
 │   │   ├── ExtractionEngine.kt  # AI 提炼流水线（水位线增量 + 近 7 天任务上下文 → LLM → facts/insights/taskSuggestions 落库/分发）
 │   │   ├── WeeklyReportGenerator.kt # AI 周报（WeeklyReportMath 纯函数：周区间/统计聚合/prompt/宽容解析 + LLM 生成落库，同周覆盖）
 │   │   ├── ProfileExtractor.kt  # 提炼 prompt + 宽容 JSON 解析（facts/insights/taskSuggestions，纯函数，JVM 单测）

@@ -36,6 +36,36 @@ object MomentMath {
     /** 帖子的字数上限（推特 280 的口径，中文按字算更紧，这里取 300） */
     const val POST_MAX = 300
 
+    /** 一条动态最多几张图（朋友圈是 9，再多就是相册而不是动态了） */
+    const val IMAGES_MAX = 9
+
+    /** 地址最多几个字：一行展示得下的长度，超了卡片上的地址条会换行占位 */
+    const val LOCATION_MAX = 40
+
+    // ===== 图片串（一列装多张，同 likedBy 的思路）=====
+
+    /**
+     * 路径列表 → 库存的那个串：**\n 分隔**。
+     *
+     * 为什么换行而不是逗号：本机文件路径理论上可以含逗号（`a,b.jpg` 是合法文件名），
+     * 换行则几乎不可能出现；一旦分隔符本身能出现在内容里，解码就再也对不上原样。
+     * 顺手去重 + 截断到 [IMAGES_MAX]，UI 层不需要再各判一遍。
+     */
+    fun encodeImages(paths: List<String>): String =
+        paths.map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .take(IMAGES_MAX)
+            .joinToString("\n")
+
+    /** 库存的串 → 路径列表；空串/全是空行 → 空列表（UI 层"没有图"就是这个） */
+    fun decodeImages(raw: String): List<String> =
+        raw.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+
+    /** 收口地址：去首尾空白、换行压成空格（否则 `\n` 分隔符会被地址里的换行骗到）、裁到上限 */
+    fun sanitizeLocation(raw: String): String =
+        raw.trim().replace('\n', ' ').replace('\t', ' ').take(LOCATION_MAX)
+
     fun isReply(m: MomentEntry): Boolean = m.parentId != 0L
 
     /**

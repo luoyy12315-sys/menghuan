@@ -162,6 +162,24 @@ object CompanionLogic {
         }
     }
 
+    /**
+     * 会话列表名字右边那颗「心情计」（v0.77.0：爱心图标 + 粉色进度条，进度条 = 心情好坏）。
+     *
+     * ## v0.74.0 → v0.77.0 的变化
+     * 原来是**一个 emoji**（想念/嘴硬会盖过情绪簇）；用户拍板换成**爱心 + 粉色进度条**：
+     * - **进度条只由愉悦度决定**：`valence` 归一化到 0~1（0 = 心情最差、1 = 最好、0.5 = 平）。
+     *   想念（connection）与嘴硬（pride）**不再改变图形** —— 它们的行为后果（主动消息、口吻）
+     *   本来就由别的机制承担，列表徽标回归它名字里的两个字：心情；
+     * - [label] 保留（读屏用），文案仍从 [moodOf] 的情绪簇来，与进度条同一个来源、不会各说各话。
+     */
+    fun badgeOf(s: CompanionState): MoodBadge = MoodBadge(
+        progress = ((s.valence + 1f) / 2f).coerceIn(0f, 1f),
+        label = moodOf(s.valence, s.arousal).label,
+    )
+
+    /** 心情计的数据（v0.77.0）。[progress] 已夹在 0~1；UI 直接拿来当填充比例 */
+    data class MoodBadge(val progress: Float, val label: String)
+
     /** Russell 环状模型两轴 → 情绪簇（9 个，与 jiwen 的簇数一致） */
     internal fun moodOf(valence: Float, arousal: Float): Mood = when {
         valence > 0.25f && arousal > 0.25f -> Mood("心情很好、有点兴奋", "话会比平时多")

@@ -97,16 +97,31 @@ class ChatListViewModelTest {
         return ChatListViewModel(app.personaRepository, settings, app.db)
     }
 
-    /** v0.31.0 起无预置导师种子：测试自建三个人设（首次订阅前插入，种子因此不再触发） */
+    /**
+     * v0.31.0 起无预置导师种子：测试自建三个人设（首次订阅前插入，种子因此不再触发）。
+     *
+     * ⚠️ `createdAt` **显式给值**（2026-10-09）：会话列表 v0.78.0 起"没聊过的沉底、
+     * 内部按创建时间倒序"，三个 `System.currentTimeMillis()` 很可能撞在同一毫秒上，
+     * 排出来的次序就随 Room 的返回顺序飘 —— 测试必须自己把时间钉死。
+     */
     private suspend fun seedPersonas(app: MenghuanApp) {
         app.db.personaDao().upsert(
-            com.menghuan.app.data.model.Persona(name = "阿布", title = "人生导师", avatarEmoji = "🖋️", systemPrompt = "", isBuiltIn = true)
+            com.menghuan.app.data.model.Persona(
+                name = "阿布", title = "人生导师", avatarEmoji = "🖋️",
+                systemPrompt = "", isBuiltIn = true, createdAt = 1_700_000_000_000L,
+            )
         )
         app.db.personaDao().upsert(
-            com.menghuan.app.data.model.Persona(name = "严格教练", title = "严格教练", avatarEmoji = "🎯", systemPrompt = "", isBuiltIn = true)
+            com.menghuan.app.data.model.Persona(
+                name = "严格教练", title = "严格教练", avatarEmoji = "🎯",
+                systemPrompt = "", isBuiltIn = true, createdAt = 1_700_000_001_000L,
+            )
         )
         app.db.personaDao().upsert(
-            com.menghuan.app.data.model.Persona(name = "苏格拉底", title = "苏格拉底式导师", avatarEmoji = "💭", systemPrompt = "", isBuiltIn = true)
+            com.menghuan.app.data.model.Persona(
+                name = "苏格拉底", title = "苏格拉底式导师", avatarEmoji = "💭",
+                systemPrompt = "", isBuiltIn = true, createdAt = 1_700_000_002_000L,
+            )
         )
     }
 
@@ -130,12 +145,14 @@ class ChatListViewModelTest {
             )
 
             // 断言只看三个导师人设（内置应用助手是常驻行，不参与本测试）
+            // v0.78.0 起列表按"最近聊过"排：苏格拉底有消息 → 排在前面；
+            // 严格教练没聊过 → 沉底。旧断言里的"插入顺序"不再成立。
             val rows = pumpValue(viewModel.rows) {
                 it.filter { r -> r.persona.name != "应用助手" }.map { r -> r.persona.name } ==
-                    listOf("严格教练", "苏格拉底")
+                    listOf("苏格拉底", "严格教练")
             }
             assertEquals(
-                listOf("严格教练", "苏格拉底"),
+                listOf("苏格拉底", "严格教练"),
                 rows.filter { r -> r.persona.name != "应用助手" }.map { r -> r.persona.name },
             )
         } finally {
@@ -160,8 +177,10 @@ class ChatListViewModelTest {
             val rows = pumpValue(viewModel.rows) {
                 it.filter { r -> r.persona.name != "应用助手" }.size == 2
             }
+            // v0.78.0 起"没聊过的沉底、内部按创建时间**倒序**"：苏格拉底建得比严格教练晚，
+            // 于是排在前面（旧断言是插入顺序 [严格教练, 苏格拉底]）。
             assertEquals(
-                listOf("严格教练", "苏格拉底"),
+                listOf("苏格拉底", "严格教练"),
                 rows.filter { r -> r.persona.name != "应用助手" }.map { r -> r.persona.name },
             )
         } finally {

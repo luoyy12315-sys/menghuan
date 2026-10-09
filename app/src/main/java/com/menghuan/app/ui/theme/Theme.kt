@@ -117,6 +117,18 @@ val AccentInk: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.cur
 val NeuDanger: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.danger
 /** 纸叠投影色（调用处再乘 7% 透明度） */
 val PaperShadow: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.shadow
+/**
+ * 立体卡片的投影色（v0.76.0，**只有动态页用**）。
+ *
+ * 项目在 v0.42.1 定过"全应用去阴影、层级靠发丝线 + 色差"，这一条依旧有效；
+ * 动态页是唯一的例外（2026-10-09 用户点名）：时间线是"一张张贴出来的卡片"，
+ * 要用柔和投影把卡片从底纹上抬起来，才有"这是一张"的感觉。
+ * 深浅两版**透明度不同**：深色墙上的纯黑投影几乎看不见，得压得更重才分辨得出边。
+ */
+val RaisedShadow: Color @Composable @ReadOnlyComposable get() =
+    LocalNeuPalette.current.shadow.copy(alpha = if (IsDarkTheme) 0.42f else 0.07f)
+/** 卡片所在的那一层"桌面色"：它与卡片之间只隔这一个色阶，别再往上叠第三层 */
+val CanvasGray: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.track
 /** figmaSelection 虚线 / 手柄描边墨色 */
 val SelectionInk: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.selectionInk
 val HandleFill: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.handleFill
@@ -134,6 +146,63 @@ val BrandYellow = Color(0xFFFFC700)
 val BrandPurple = Color(0xFFA259FF)
 val BrandBlue = Color(0xFF1ABCFE)
 val BrandSalmon = Color(0xFFFF7262)
+/** 心情计的粉（v0.77.0）：会话列表爱心 + 心情进度条。Figma 五色里没有粉，这是补的第 6 个点缀色 */
+val BrandPink = Color(0xFFF977A9)
+
+/**
+ * 气泡外观解析（v0.80.0 推倒重做）：把 [ChatAppearance.BubbleStyle] 的哨兵/自定义值
+ * 翻成渲染直接可用的一套（底 / 字 / 边框 / 圆角 / 字体三件套）。
+ *
+ * ## 哨兵的保底（这就是「明暗主题下保证可读性」的实现）
+ * - 背景 0L → 主题令牌（自己 = 强调色、对方 = 表面色）——不动色盘的人永远是主题配色；
+ * - 字色 0L → 背景自定义了就**按背景亮度自动挑黑/白**（[ChatAppearance.autoInkFor]，纯函数），
+ *   背景也没自定义就跟主题令牌（自己 = AccentInk、对方 = TextPrimary）；
+ * - 边框 0L → 无边框；圆角 -1 → 默认 18dp。
+ *
+ * `bubbleColorPair` 与 ColorKey 色卡已随旧版删除：颜色不再有预设档，只有色盘。
+ */
+data class ResolvedBubble(
+    val bg: Color,
+    val ink: Color,
+    /** null = 无边框 */
+    val border: Color?,
+    val radiusDp: Int,
+    val fontFamily: androidx.compose.ui.text.font.FontFamily,
+    val fontWeight: androidx.compose.ui.text.font.FontWeight,
+    val fontSizeSp: Int,
+)
+
+/** 把一方 [style] 解析成渲染值；[isMine] 决定哨兵回落的是「自己」还是「对方」的主题默认 */
+@Composable
+fun resolveBubble(
+    style: com.menghuan.app.data.ChatAppearance.BubbleStyle,
+    isMine: Boolean,
+    appearance: com.menghuan.app.data.ChatAppearance,
+): ResolvedBubble {
+    val fallbackBg = if (isMine) NeuAccent else NeuSurface
+    val bg = if (style.bg == 0L) fallbackBg else Color(style.bg)
+    val ink = when {
+        style.ink != 0L -> Color(style.ink)
+        style.bg != 0L -> Color(com.menghuan.app.data.ChatAppearance.autoInkFor(style.bg))
+        isMine -> AccentInk
+        else -> TextPrimary
+    }
+    return ResolvedBubble(
+        bg = bg,
+        ink = ink,
+        border = if (style.border == 0L) null else Color(style.border),
+        radiusDp = if (style.radiusDp == com.menghuan.app.data.ChatAppearance.BubbleStyle.NO_RADIUS) {
+            com.menghuan.app.data.ChatAppearance.BubbleStyle.DEFAULT_RADIUS_DP
+        } else style.radiusDp,
+        fontFamily = when (appearance.fontFamily) {
+            com.menghuan.app.data.ChatAppearance.FontFamilyKey.SANS -> androidx.compose.ui.text.font.FontFamily.SansSerif
+            com.menghuan.app.data.ChatAppearance.FontFamilyKey.SERIF -> androidx.compose.ui.text.font.FontFamily.Serif
+            com.menghuan.app.data.ChatAppearance.FontFamilyKey.MONO -> androidx.compose.ui.text.font.FontFamily.Monospace
+        },
+        fontWeight = androidx.compose.ui.text.font.FontWeight(appearance.fontWeightKey.weight),
+        fontSizeSp = appearance.fontSizeSp,
+    )
+}
 
 /** 英雄渐变：绿→黄→紫→蓝回环（进度环 / 应用徽标 / 关于页头像环） */
 val HeroBrush: Brush

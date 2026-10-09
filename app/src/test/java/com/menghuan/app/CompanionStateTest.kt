@@ -122,4 +122,50 @@ class CompanionStateTest {
         val s = CompanionLogic.tick(CompanionState(valence = 0.9f), 1f, minutesSinceLastUserMsg = 0f)
         org.junit.Assert.assertTrue(s.valence < 0.9f && s.valence > CompanionLogic.VALENCE_SETPOINT)
     }
+
+    // ===== 会话列表心情计（v0.77.0：爱心 + 进度条，进度 = 心情好坏）=====
+
+    @Test
+    fun `进度条只由愉悦度决定_零点在中间_两端不打爆`() {
+        // valence -1..1 → 0..1；valence = 0 → 恰好半格
+        assertEquals(0f, CompanionLogic.badgeOf(CompanionState(valence = -1f)).progress, 1e-4f)
+        assertEquals(1f, CompanionLogic.badgeOf(CompanionState(valence = 1f)).progress, 1e-4f)
+        assertEquals(0.5f, CompanionLogic.badgeOf(CompanionState()).progress, 1e-4f)
+    }
+
+    @Test
+    fun `想念与嘴硬不再改变进度条_徽标回归心情`() {
+        // v0.74.0 时高 connection 会盖成 🥺；v0.77.0 起进度条与 label 都只看愉悦度/唤醒度
+        val s = CompanionState(connection = 0.55f, valence = 0.8f, arousal = 0.8f)
+        val b = CompanionLogic.badgeOf(s)
+        assertEquals(0.9f, b.progress, 1e-4f)
+        // label 是情绪簇文案，不是「很想找你」
+        org.junit.Assert.assertNotEquals("很想找你", b.label)
+    }
+
+    @Test
+    fun `平淡状态也有进度与说明 不是空`() {
+        val b = CompanionLogic.badgeOf(CompanionState())
+        assertTrue("进度必须在 0~1 内", b.progress in 0f..1f)
+        assertEquals(CompanionLogic.NEUTRAL_LABEL, b.label)
+    }
+
+    @Test
+    fun `每个情绪簇都有说明_进度始终在零一之间`() {
+        val samples = listOf(
+            CompanionState(valence = 0.6f, arousal = 0.6f),   // 兴奋
+            CompanionState(valence = 0.6f, arousal = 0f),     // 不错
+            CompanionState(valence = -0.6f, arousal = 0.6f),  // 烦
+            CompanionState(valence = -0.6f, arousal = 0f),    // 低落
+            CompanionState(arousal = 0.6f),                   // 焦躁
+            CompanionState(arousal = -0.6f),                  // 平静懒
+            CompanionState(valence = 0.15f),                  // 还算愉快
+            CompanionState(valence = -0.15f),                 // 有点闷
+        )
+        samples.forEach {
+            val b = CompanionLogic.badgeOf(it)
+            assertTrue("进度必须在 0~1 内：${b.progress}", b.progress in 0f..1f)
+            assertTrue("说明不能空", b.label.isNotEmpty())
+        }
+    }
 }

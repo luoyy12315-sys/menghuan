@@ -27,6 +27,8 @@ import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.MediaKind
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.TaskItem
+import com.menghuan.app.data.model.isEffectivelyDone
+import com.menghuan.app.data.model.isEffectivelyFailed
 import com.menghuan.app.llm.ApiException
 import com.menghuan.app.llm.NetworkStack
 import com.menghuan.app.llm.OpenAiClient
@@ -1580,38 +1582,14 @@ class ChatViewModel(
      * - **AI 不能删、不能改用户发的帖**：这条链路只有 insert，没有 update/delete。
      */
     private suspend fun maybePostMoments(rawReply: String) {
-        val decision = com.menghuan.app.data.MomentMarker.parse(rawReply)
-        if (!decision.wantsAnything) return
-        val now = System.currentTimeMillis()
-        decision.posts.take(2).forEach { text ->
-            runCatching {
-                db.momentDao().upsert(
-                    com.menghuan.app.data.model.MomentEntry(
-                        personaId = personaId,
-                        parentId = 0L,
-                        text = com.menghuan.app.data.MomentMath.sanitize(text, com.menghuan.app.data.MomentMath.POST_MAX),
-                        createdAt = now,
-                    )
-                )
-            }
-        }
-        decision.replies.take(2).forEach { (parentId, text) ->
-            val parent = runCatching { db.momentDao().getById(parentId) }.getOrNull()
-            if (parent == null) {
-                android.util.Log.w("Menghuan", "moment reply dropped: post $parentId does not exist")
-                return@forEach
-            }
-            runCatching {
-                db.momentDao().upsert(
-                    com.menghuan.app.data.model.MomentEntry(
-                        personaId = personaId,
-                        parentId = parentId,
-                        text = com.menghuan.app.data.MomentMath.sanitize(text, com.menghuan.app.data.MomentMath.REPLY_MAX),
-                        createdAt = now,
-                    )
-                )
-            }
-        }
+        // v0.79.0：落库逻辑抽到 MomentActions —— 动态现在有两条链路（聊天 / 主动关心），
+        // 校验口径必须只有一份；这里只管"什么时候调"，不管"怎么落"。
+        com.menghuan.app.data.MomentActions.apply(
+            db,
+            personaId,
+            rawReply,
+            com.menghuan.app.data.MomentActions.Limits.CHAT,
+        )
     }
 
     private suspend fun persistReply(sb: StringBuilder, reasoning: String = ""): Pair<String, Long> {
@@ -1836,6 +1814,60 @@ class ChatViewModel(
             if (isNotEmpty()) append("\n\n")
             append(feed)
         }
+        // 今日任务状态（v0.77.0，用户点名「AI 识别不了任务已经完成」）：
+        // 以前"任务完成了"只以一条用户消息 `✅ 已完成打卡：xx` 的形式落在主人设会话里，
+        // **别的会话看不到、AI 也不会把它当状态**，于是它照样催"你今天还没打卡吧"。
+        // 现在把当前的任务状态直接喂进上下文（完成/未完成/失败分列），每轮现算——
+        // 状态随打卡时刻变，进 system prompt 就是每轮作废前缀（§零.9）。
+        val tasks = taskStatusBlock()
+        if (tasks.isNotBlank()) {
+            if (isNotEmpty()) append("\n\n")
+            append(tasks)
+        }
+    }
+
+    /**
+     * 今日任务状态（v0.77.0）。
+     *
+     * 只报**当前还没有结束的任务**（未完成的）+ 今天已完成的**计数与名字**：
+     * - 未完成逐条列出来，AI 才知道该催哪几件、不该催哪些已经做完的；
+     * - 已完成的列名字，AI 说"你今天的 xx 做完啦"才不是凭空恭维；
+     * - 每日任务跨天重置用 [isEffectivelyDone] / [isEffectivelyFailed] 判定，
+     *   与任务页/周报同一口径（别自己写 `isDone`，那会把昨天的完成算成今天的）。
+     *
+     * 没有任何任务（列表为空）+ 今天也没完成任何事 → 返回空串，不往上下文里塞空标题。
+     */
+    private suspend fun taskStatusBlock(): String {
+        val all = runCatching { db.taskDao().observeAll().first() }.getOrDefault(emptyList())
+        if (all.isEmpty()) return ""
+        val today = java.time.LocalDate.now().toEpochDay()
+        val done = all.filter { it.isEffectivelyDone(today) }
+        val failed = all.filter { it.isEffectivelyFailed(today) }
+        val pending = all.filter { !it.isEffectivelyDone(today) && !it.isEffectivelyFailed(today) }
+        if (done.isEmpty() && failed.isEmpty() && pending.isEmpty()) return ""
+        return buildString {
+            append("## 用户的任务现状\n")
+            append("（这是实时状态，用户说「我做完了 xx」时以这里为准，别凭印象说人家没做。）\n")
+            if (pending.isEmpty()) {
+                append("· 待办：今天没有未完成的任务。\n")
+            } else {
+                append("· 还没完成（${pending.size} 件）：")
+                append(pending.take(8).joinToString("、") { it.title })
+                if (pending.size > 8) append(" 等 ${pending.size} 件")
+                append("\n")
+            }
+            if (done.isNotEmpty()) {
+                append("· 今天已完成（${done.size} 件）：")
+                append(done.take(8).joinToString("、") { it.title })
+                if (done.size > 8) append(" 等 ${done.size} 件")
+                append("\n")
+            }
+            if (failed.isNotEmpty()) {
+                append("· 今天标了失败（${failed.size} 件）：")
+                append(failed.take(8).joinToString("、") { it.title })
+                append("\n")
+            }
+        }.trimEnd()
     }
 
     /**

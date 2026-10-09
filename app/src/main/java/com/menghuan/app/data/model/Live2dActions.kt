@@ -2,6 +2,7 @@ package com.menghuan.app.data.model
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.menghuan.app.live2d.ActionCodec
 import com.menghuan.app.live2d.ActionSlot
@@ -70,6 +71,35 @@ data class CallActionBindingEntity(
     val personaId: Long,
     /** [ActionSlot.key]：idle / listening / thinking / speaking */
     val slot: String,
+    @ColumnInfo(defaultValue = "0")
+    val actionId: Long = 0,
+)
+
+/**
+ * 点击互动各自绑到哪条动作（v0.74.0，Room v22）。
+ *
+ * 与 [CallActionBindingEntity] 是**两张表**而不是合成一张：两者的键域完全不同
+ * （状态槽是固定四态、互动区是 HEAD/BODY/OTHER 三段），合成一张就要加"绑定的种类"
+ * 一列，读的时候还得先过滤 —— 而现在两张表各自的主键就是天然的唯一约束。
+ *
+ * `actionId = 0` = "用这个区域的默认动作"（点头 = 摇头、点身体 = 摆手、点其他 = 随机趣味动作，
+ * 见 [com.menghuan.app.live2d.InteractionBindings]）。
+ * 保留 0 这个哨兵值的理由与 [CallActionBindingEntity] 完全一致：从没进过设置页时一行都没有，
+ * 页面该显示"默认"而不是空白；动作被删了也退回默认，不会"绑到不存在的动作、角色卡住不动"。
+ */
+@Entity(
+    tableName = "interaction_bindings",
+    primaryKeys = ["personaId", "region"],
+    // ⚠️ 这个索引**必须声明**，不能只在 MIGRATION_22_23 里建：
+    // Room 打开库时会把实际索引列表与编译期 schema 逐项比对，
+    // 多一个索引就抛 `Migration didn't properly handle: interaction_bindings`（v0.74.0 闪退根因）。
+    // 索引本身是给 InteractionBindingDao.clearByAction 按 actionId 反查用的。
+    indices = [Index(value = ["actionId"], name = "index_interaction_bindings_actionId")],
+)
+data class InteractionBindingEntity(
+    val personaId: Long,
+    /** [com.menghuan.app.live2d.InteractionRegion.key]：HEAD / BODY / OTHER */
+    val region: String,
     @ColumnInfo(defaultValue = "0")
     val actionId: Long = 0,
 )

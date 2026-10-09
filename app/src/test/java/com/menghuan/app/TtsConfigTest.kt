@@ -132,11 +132,26 @@ class TtsConfigTest {
         val mimo = TtsVoices.library(TtsProvider.XIAOMI_MIMO, cloned, listOf("我的.wav"), "")
         assertEquals(listOf("白桦 · 男声", "冰糖 · 女声", "克隆 · 我的"), mimo.map { it.label })
         assertTrue(mimo.last().ref.voiceId.startsWith("local:"))
-        // 自定义端点没有预置、也拿不到别家的克隆/本地样本，名单就是那条手填 ID
+        // 自定义端点没有预置、也拿不到别家的克隆/本地样本
         assertTrue(TtsVoices.library(TtsProvider.CUSTOM, cloned, listOf("a.wav"), "").isEmpty())
+        // v0.56.13（这条历史红 2026-10-09 修）：自定义端点的名单 = **用户录入的多条音色**
+        // （顶栏「ID」已撤掉，旧单值手填键由 SettingsRepository.migrateLegacyCustomVoice()
+        // 搬进这张表），所以 manualId 在这一家**不再进名单**——它只是迁移来源，不是展示项。
+        // 用例原先还按老设计期望 "手动 · alloy"，测试过期了。
+        assertTrue(
+            "自定义端点不再吃 manualId（v0.56.13 起并入多条音色库）",
+            TtsVoices.library(TtsProvider.CUSTOM, cloned, listOf("a.wav"), "alloy").isEmpty(),
+        )
+        // 录入行：有显示名用显示名，留空回落成 ID 本身
         assertEquals(
-            listOf("手动 · alloy"),
-            TtsVoices.library(TtsProvider.CUSTOM, cloned, listOf("a.wav"), "alloy").map { it.label },
+            listOf("我的音色", "fish-x"),
+            TtsVoices.library(
+                TtsProvider.CUSTOM,
+                cloned,
+                listOf("a.wav"),
+                "",
+                customVoices = listOf("alloy" to "我的音色", "fish-x" to ""),
+            ).map { it.label },
         )
     }
 

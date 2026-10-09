@@ -261,7 +261,11 @@ object SettingsRoutes {
     const val SCHEDULED_MESSAGE = "scheduled_message"
     const val ASR_MODEL = "asr_model"
     const val PROMPTS = "prompts"
-    const val PROFILE = "profile"
+    /**
+     * v0.80.0：取消了「基础档案」行卡，它的画像条目并入本页；
+     * 路由名也一并换成 `me_profile`（旧名 `profile` 不再注册，避免两条入口指向一处）。
+     */
+    const val ME_PROFILE = "me_profile"
     const val GALLERY = "gallery"
     /** v0.54.4：崩溃记录独立成页（关于页右上角红字入口） */
     const val CRASH_LOG = "crash_log"

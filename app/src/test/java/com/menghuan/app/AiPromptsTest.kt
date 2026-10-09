@@ -1017,8 +1017,8 @@ class AiPromptsTest {
         // ② 视频通话：有画面时对话台不再铺白底（旧手册没写过这块的颜色，只需断言新句在）
         assertTrue(manual.contains("**有画面时下面这块对话台不再有白底**"))
         assertTrue(manual.contains("字幕与两颗钮直接浮在画面上"))
-        // ③ 角色空间背景只剩两档
-        assertTrue(manual.contains("**只有两档**：**系统预设**（App 给的那张渐变）与**自定义背景**"))
+        // ③ 角色空间背景 （v0.65.0 只剩两档；⚠️ v0.74.0 又加成三档，措辞改由 `v0_74_0` 断言）
+        assertFalse("v0.65.0 的「只有两档」措辞早被 v0.74.0 改写掉", manual.contains("v0.65.0 起**只有两档**"))
         assertFalse(manual.contains("跟随主题底色 / 四张内置渐变 / 从相册选一张"))
         // ④ 会话设置行：音色 / 铃声 右侧写当前选择
         assertTrue(manual.contains("「音色」「铃声」两行的**右边直接写着当前用的是哪一个**"))
@@ -1220,5 +1220,174 @@ class AiPromptsTest {
         // 并且**明说**这个模块没了、数据没迁移（用户会问"我以前的备忘呢"）
         assertTrue(manual.contains("整个模块已经下线"))
         assertEquals(1, Regex("【动态】").findAll(manual).count())
+    }
+
+    /**
+     * v0.74.0：ROADMAP 三项候选落进手册（点击互动可配置 / 动作编辑器高级模式 / 背景支持视频）。
+     *
+     * 成对断言（§零.5）：新的"三档背景"必须写上，旧的"只有两档"一句都不许剩。
+     */
+    @Test
+    fun `v0_74_0 手册写明背景视频与点击互动与高级模式`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        // 新：背景三档（多出视频）
+        assertTrue("背景视频没写进手册", manual.contains("**视频背景**"))
+        assertTrue(manual.contains("不超过 30 秒"))
+        assertTrue("视频背景只垫在角色背后这件事要说清", manual.contains("只垫在角色背后"))
+        // 旧：v0.65.0 那版"只有两档"必须被改写掉
+        assertFalse("旧的「只有两档」措辞还在", manual.contains("v0.65.0 起**只有两档**"))
+        // 新：点击互动可配置
+        assertTrue("「点击互动」入口没写进手册", manual.contains("「点击互动」按钮"))
+        assertTrue(manual.contains("固定是随机趣味动作、不能指定"))
+        // 新：编辑器高级模式
+        assertTrue("编辑器高级模式没写进手册", manual.contains("v0.74.0 起编辑器底部多了一行**「高级」**"))
+        assertTrue(manual.contains("不能逐帧改关键帧"))
+    }
+
+    /**
+     * v0.76.0：动态页重做（卡片式）+ 多图 + 位置，这三件事必须进助手手册——
+     * 用户在动态页提的问（"图怎么看大图"、"它怎么知道我在哪"）就是靠这段答的。
+     *
+     * 成对断言：新写出来的一句一句都在；**没有任何旧措辞需要留**，所以这里
+     * 额外把"这条 replace 真的生效了"钉死 —— 锚点若对不上是**静默落空**，
+     * 手册会停在 v0.73.0 那版且不报错，只有真断言新句子才能抓住。
+     */
+    /**
+     * v0.80.0：聊天气泡推倒重来（色盘 + 明暗各一套）与「我的页档案卡」必须进手册 ——
+     * 用户最常问的正是"气泡颜色在哪改""我的头像在哪设"，答错路径就是白跑一趟。
+     *
+     * 成对断言：新措辞一一在；**旧措辞一句不许剩**（色卡六选一 / 字号三档 / 同一页设头像都过时了）。
+     */
+    @Test
+    fun `v0_80_0 手册写明气泡色盘与我的档案卡`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        // 新：色盘 + 明暗各一套
+        assertTrue("气泡段没更新到 v0.80.0", manual.contains("v0.80.0 起，设置主页的「外观」卡点进去能调聊天气泡"))
+        assertTrue("要写明明暗各存一套", manual.contains("两种主题各存一套"))
+        assertTrue("要写明是色盘自定义", manual.contains("点色盘自己调"))
+        assertTrue("边框与圆角要提到", manual.contains("边框颜色") && manual.contains("圆角"))
+        assertTrue("字体族/字号/字重要提到", manual.contains("字体族") && manual.contains("12~22sp") && manual.contains("字重"))
+        assertTrue("实时预览要提到", manual.contains("预览都实时跟着变"))
+        // 新：我的档案卡（头像功能换了地方）
+        assertTrue("要写明头像挪到我的页档案卡", manual.contains("我的」页**最上面那张档案卡**"))
+        assertTrue("档案页要写明能改昵称与简介", manual.contains("改**昵称**和写一句**简介**"))
+        // 新：「基础档案」行卡取消、并入个人档案页（三处旧入口描述都要改写）
+        assertTrue("要写明基础档案并入个人档案页", manual.contains("画像条目与头像 / 昵称 / 简介合并在同一页"))
+        assertTrue("行卡列表里的档案描述要更新", manual.contains("还有注入聊天的画像条目"))
+        assertTrue("记忆章节的入口路径要更新", manual.contains("「我的 → 个人档案」页里「基础档案」那一段"))
+        // 旧：v0.78.0 那套色卡/字号档/同页设头像的说法一个字都不能留
+        assertFalse("旧的「六选一色卡」还在", manual.contains("气泡底色各自六选一"))
+        assertFalse("旧的「字号三档」还在", manual.contains("字号三档"))
+        assertFalse("旧的「同一页还能设你自己的头像」还在（头像已挪走）", manual.contains("同一页还能设**你自己的头像**"))
+        assertFalse("旧的「基础档案」独立入口还在", manual.contains("基础档案（注入聊天的画像，只在这里编辑）"))
+        assertFalse("旧的「我的 → 基础档案」路径还在", manual.contains("我的 → 基础档案"))
+    }
+
+    @Test
+    fun `v0_76_0 手册写明动态多图与位置与卡片版面`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        // 新：多图
+        assertTrue("动态多图没写进手册", manual.contains("能带最多 9 张图"))
+        assertTrue("九宫格排布要说清", manual.contains("图按九宫格排在正文下面"))
+        assertTrue("全屏查看器没写进手册", manual.contains("全屏查看"))
+        // 新：位置 + 那条最容易被用户追问的"是不是在定位"
+        assertTrue("位置没写进手册", manual.contains("能带位置"))
+        assertTrue(
+            "必须明说不去申请定位权限（用户会问「它怎么知道我在哪」）",
+            manual.contains("App 不会去申请定位权限、也不会自动定位"),
+        )
+        // 新：卡片式版面 + 下拉刷新 / 上拉加载
+        assertTrue("卡片式版面没写进手册", manual.contains("一条动态一张白卡片"))
+        assertTrue("下拉刷新没写进手册", manual.contains("滑到底自动多加载一页"))
+        // 旧：v0.73.0 那条末句仍要在（我们是在它后面接的，不能把它整段吞掉）
+        assertTrue(manual.contains("「她怎么不发动态了」不是 bug"))
+        assertEquals("动态那一章只许出现一次", 1, Regex("【动态】").findAll(manual).count())
+    }
+
+    /**
+     * v0.78.0（用户点名三条会改变用户可见行为的）：
+     * ① AI 也能点赞；② 消息页会话列表按"最近聊过的排最上面"排序；
+     * ③ 聊天外观可自定义（气泡底色/字号/是否显示头像）+ 用户头像。
+     *
+     * 成对断言：新的句子在、旧的句子不在（或只剩被改写后的新句），
+     * 并钉死"replace 真生效"（锚点对不上会静默落空，只有断言新句才抓得住）。
+     */
+    @Test
+    fun `v0_78_0 手册写明AI点赞_会话排序_聊天外观与用户头像`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        // ① AI 点赞
+        assertTrue("AI 点赞没写进手册", manual.contains("角色也会给你点赞"))
+        // ② 会话列表排序
+        assertTrue("会话列表排序没写进手册", manual.contains("最近聊过的排最上面"))
+        assertTrue("排序要说清不是按创建时间", manual.contains("不是按创建时间"))
+        // ③ 聊天外观 + 用户头像
+        // ⚠️ v0.80.0 把这一整段推倒重做了（色盘取代色卡、明暗各一套、头像挪去我的页档案卡），
+        // 所以原来那三条断言（六选一 / 字号三档 / 同页设头像）**全部作废** ——
+        // 新措辞的断言在 `v0_80_0 手册写明气泡色盘与我的档案卡` 里，这里只守"入口路径仍在"。
+        assertTrue("聊天外观没写进手册", manual.contains("设置主页的「外观」卡点进去能调聊天气泡"))
+        assertFalse("用了过时的「设置 → 外观」路径", manual.contains("设置 → 外观"))
+        assertTrue("显示头像开关仍要写清", manual.contains("显示头像仍然是这一页的开关"))
+        // 旧措辞：点赞那条已经被改写（旧句不该原样留下）
+        assertFalse(
+            "旧点赞行应已被改写（末尾不再只有『再点取消；』）",
+            manual.contains("**点赞**：那一行的心形，点一下红、再点取消；\n"),
+        )
+        // 动态那一章仍只许出现一次（防止误插第二处）
+        assertEquals("动态那一章只许出现一次", 1, Regex("【动态】").findAll(manual).count())
+    }
+
+    /**
+     * v0.79.0：两条用户点名 —— ① 改错（AI 会在不聊天的时候也看用户动态）、
+     * ② 人设写作规范重写成"可复制给外部 AI"的那份，手册里的人设适配协议跟着对齐。
+     *
+     * ① 是**改自己上一版的错**：v0.77.0 把用户那句"AI 回复动态只能在跟 AI 聊天时回复"
+     * 当成了产品要求，手册与提示词都写成"只能在聊天里做"。用户澄清是反的，
+     * 所以这条断言**必须双侧**：新说法在、旧说法一次不剩。
+     */
+    @Test
+    fun `v0_79_0 手册写明主动看动态_写作规范可复制`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        // ① 她会自己来看你的动态
+        assertTrue("主动看动态没写进手册", manual.contains("她会自己来看你的动态"))
+        assertTrue("要说清发生在什么时机", manual.contains("主动来找你**的那几次"))
+        assertTrue("要为『没聊天却回了你动态』给出解释", manual.contains("这是正常的"))
+        // ② 写作规范：可一键复制 + 要素与规范同源
+        assertTrue("写作规范入口没写进手册", manual.contains("编辑人设页点「查看写作规范」"))
+        assertTrue("没写清那份规范能复制", manual.contains("一键复制"))
+        assertTrue("要素没对齐新规范", manual.contains("必须写到五样"))
+        assertTrue("没写清关系优先于头衔", manual.contains("写关系，不写职业头衔"))
+        // 旧口径（三节）必须被换掉，否则助手会给用户自相矛盾的写法建议
+        assertFalse(
+            "旧的三节口径应已被替换",
+            manual.contains("包含【语气与风格】【职责】【约束】三节"),
+        )
+        // 动态那一章仍只许出现一次（防止误插第二处）
+        assertEquals("动态那一章只许出现一次", 1, Regex("【动态】").findAll(manual).count())
+    }
+
+    /**
+     * v0.81.0：个人档案页头像与字段改版 —— 手册"换头像"那句必须跟上新机制：
+     * emoji 滚轮（框下横穿、左右露半截、滑到框心定格）+ 点框选图 + 细线胶囊；
+     * 昵称 / 简介改成直接改的输入框、改完即时生效。
+     *
+     * 成对断言（§零.5）：新机制文案在、旧"选一张图或挑一个 emoji，有图就用图"描述一次不剩。
+     * ⚠️ 设置页「你的头像」那段仍保留「选一张图或挑一个 emoji 都行（有图就用图）」的旧写法，
+     * 那是另一处、本次不动；assertFalse 因此用带逗号的精确子串，避开那句带「都行」的。
+     */
+    @Test
+    fun `v0_81_0 手册写明个人档案头像滚轮与字段改版`() {
+        val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+        // 新：emoji 滚轮
+        assertTrue("个人档案头像滚轮没写进手册", manual.contains("头像框下面一排人物 emoji 从框底下横穿"))
+        assertTrue("要写明滑到框心定格", manual.contains("滑到**框心**那格就是选中的"))
+        assertTrue("要写明越靠中心越大越清晰", manual.contains("越靠中心越大越清晰"))
+        // 新：点框选图
+        assertTrue("要写明点框选图", manual.contains("点一下头像框") && manual.contains("去选一张自己的图"))
+        // 新：昵称 / 简介即时生效的输入框（同时守住 v0.80.0 那条断言要的连续子串「改**昵称**和写一句**简介**」）
+        assertTrue("昵称/简介输入框没写进手册", manual.contains("都是直接改的输入框、改完即时生效"))
+        // 新：细线胶囊
+        assertTrue("细线胶囊说明没写进手册", manual.contains("没设过头像时写「点击编辑」"))
+        // 旧：旧的"选一张图或挑一个 emoji，有图就用图"头像描述必须消失（精确子串，避开设置页那句带「都行」的）
+        assertFalse("旧的头像选择描述还留在手册里", manual.contains("选一张图或挑一个 emoji，有图就用图"))
     }
 }

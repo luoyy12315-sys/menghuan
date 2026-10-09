@@ -89,12 +89,12 @@ object InteractionRules {
 }
 
 /**
- * 互动 → 动作的绑定（v0.64.0）。
+ * 互动 → 动作的绑定（v0.64.0 建结构，v0.74.0 接上配置界面）。
  *
- * ⚠️ 这一版是**代码里的默认值**，没有做配置界面（用户拍板"只做默认行为 + 预留结构"）。
- * 之所以还是抽成一个数据类而不是直接写 `when`：下一版加配置界面时，
- * 只要把这里的默认值换成"从库里读出来的一行"，**调用方一行都不用改** ——
- * 这就是用户要的"预留结构"。
+ * v0.64.0 时这只是**代码里的默认值**（用户当时拍板"只做默认行为 + 预留结构"）；
+ * v0.74.0 起用户可以进「点击互动」界面逐个指定，值从库里读出来填进这三个字段 ——
+ * 调用方（[com.menghuan.app.data.Live2dActionRepository.resolveInteraction] 那一链）一行都没改，
+ * 这正是当初预留结构时要的效果。
  *
  * 默认值照用户给的例子：
  * - 点头部 → 摇头
@@ -105,12 +105,27 @@ data class InteractionBindings(
     val headBuiltinKey: String = BuiltinActions.SHAKE,
     val bodyBuiltinKey: String = BuiltinActions.WAVE,
     val otherRandomKeys: List<String> = BuiltinActions.funKeys,
+    /**
+     * 用户实际挑的那条动作 id（v0.74.0）；0 = 用内置默认。
+     *
+     * 与 [headBuiltinKey] / [bodyBuiltinKey] 并存而不是二选一：内置默认那一套**永远要在**，
+     * 因为用户挑的那条动作可能被删除（仓库层会把绑定收回 0），这时得有个能落回去的默认。
+     */
+    val headActionId: Long = 0,
+    val bodyActionId: Long = 0,
 ) {
     /** 这一档指向哪个内置动作的键；[InteractionRegion.OTHER] 需要随机，返回 null */
     fun builtinKeyOf(region: InteractionRegion): String? = when (region) {
         InteractionRegion.HEAD -> headBuiltinKey
         InteractionRegion.BODY -> bodyBuiltinKey
         InteractionRegion.OTHER -> null
+    }
+
+    /** 这一档用户指定的动作 id（0 = 没指定，走内置默认） */
+    fun actionIdOf(region: InteractionRegion): Long = when (region) {
+        InteractionRegion.HEAD -> headActionId
+        InteractionRegion.BODY -> bodyActionId
+        InteractionRegion.OTHER -> 0L
     }
 
     /**

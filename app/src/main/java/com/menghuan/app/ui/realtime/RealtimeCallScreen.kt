@@ -90,6 +90,7 @@ import com.menghuan.app.ui.common.AdaptiveScreen
 import com.menghuan.app.ui.common.EaseOutQuart
 import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.common.NeuCircleButton
+import com.menghuan.app.ui.common.StageBackground
 import com.menghuan.app.ui.common.StageBackgroundLayer
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
@@ -248,6 +249,10 @@ fun RealtimeCallScreen(
     val callBgFile = remember(personaId, callBg) {
         if (callBg.isBlank()) null
         else runCatching { CallBackgroundStore.backgroundFile(context, personaId, callBg) }.getOrNull()
+    }
+    val callBgVideo = remember(personaId, callBg) {
+        if (callBg.isBlank()) null
+        else runCatching { CallBackgroundStore.videoFile(context, personaId, callBg) }.getOrNull()
     }
     // 字幕按固定节拍刷，不跟着每一个 token 走：
     // AiDelta 一秒能来几十次，而 buildLines 每次都要把最近 200 条整表重铺一遍
@@ -482,8 +487,11 @@ fun RealtimeCallScreen(
         //    画法与角色空间共用一份（没选过背景 / 图读不出来 → 都画系统预设，不会"选了却没变化"）。
         if (videoMode) {
             StageBackgroundLayer(
-                custom = CallBackgroundStore.isCustom(callBg),
-                filePath = callBgFile?.absolutePath.orEmpty(),
+                bg = when {
+                    callBgVideo != null -> StageBackground.Video(callBgVideo.absolutePath)
+                    callBgFile != null -> StageBackground.Image(callBgFile.absolutePath)
+                    else -> StageBackground.Preset
+                },
             )
         }
 

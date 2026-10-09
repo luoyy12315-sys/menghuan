@@ -25,6 +25,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -105,7 +107,11 @@ fun RollingAmountText(
             text = text,
             fontSize = fontSize,
             color = color,
-            modifier = modifier,
+            // v0.79.0：整串金额**合成一个无障碍节点**报出去。
+            // 按位滚动把每一位拆成了独立的 Text，读屏会一位一位念（"六、三、六、点、二、零"），
+            // 语义树里也找不到"636.20"这个整体（`UiRenderTest.render19LedgerPage` 因此红了好几个版本）。
+            // clearAndSetSemantics 把子节点的语义收掉，只留完整的一串。
+            modifier = modifier.clearAndSetSemantics { contentDescription = text },
             fontWeight = fontWeight,
             letterSpacing = letterSpacing,
             durationMs = durationMs,

@@ -1,6 +1,6 @@
 package com.menghuan.app.data
 
-import java.time.LocalDate
+import java.time.Instant
 import java.time.ZoneId
 
 /**
@@ -87,8 +87,15 @@ object AiCallLogic {
             val h = parts[0].trim().toIntOrNull() ?: return null
             val m = parts[1].trim().toIntOrNull() ?: return null
             if (h !in 0..23 || m !in 0..59) return null
-            val today = LocalDate.now(zone).atTime(h, m).atZone(zone).toInstant().toEpochMilli()
-            return if (today <= now) today + DAY_MS else today
+            // v0.79.0：「今天」必须**从 `now` 推**，不许读系统时钟 —— 本类开头的约定就是
+            // "时间是参数不是系统时钟"。这里以前用 `LocalDate.now(zone)`，跟基准脱钩：
+            // 单测给 2026-10-05 的 now、实现却按**运行当天**的日期算，于是"21:30"被排到几天后，
+            // 一条用例因此红了好几个版本（既有历史红之一）。
+            // 生产上 `now` 就是 System.currentTimeMillis()，所以用户没感知，
+            // 但函数不再是纯函数、测试也没法钉它 —— 修掉。
+            val base = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+            val at = base.atTime(h, m).atZone(zone).toInstant().toEpochMilli()
+            return if (at <= now) at + DAY_MS else at
         }
 
         val minutes = body.toIntOrNull() ?: return null

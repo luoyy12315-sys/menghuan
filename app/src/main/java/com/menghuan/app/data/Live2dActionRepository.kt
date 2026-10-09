@@ -2,6 +2,7 @@ package com.menghuan.app.data
 
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.CallActionBindingEntity
+import com.menghuan.app.data.model.InteractionBindingEntity
 import com.menghuan.app.data.model.Live2dActionMapper
 import com.menghuan.app.live2d.ActionCodec
 import com.menghuan.app.live2d.ActionSlot
@@ -33,6 +34,7 @@ class Live2dActionRepository(private val db: AppDatabase) {
 
     private val dao = db.live2dActionDao()
     private val bindingDao = db.callActionBindingDao()
+    private val interactionBindingDao = db.interactionBindingDao()
 
     /** 进程内只对一遍内置动作（并发进来也不重复写） */
     private val builtinLock = Mutex()
@@ -126,12 +128,14 @@ class Live2dActionRepository(private val db: AppDatabase) {
         val action = getById(id) ?: return false
         if (!action.deletable) return false
         bindingDao.clearByAction(id)
+        interactionBindingDao.clearByAction(id)
         dao.deleteById(id)
         return true
     }
 
     suspend fun deleteAll() {
         bindingDao.deleteAll()
+        interactionBindingDao.deleteAll()
         dao.deleteAll()
         builtinsEnsured = false
     }
@@ -202,6 +206,9 @@ class Live2dActionRepository(private val db: AppDatabase) {
         if (personaId <= 0L) return
         dao.deleteModelActions(personaId)
         bindingDao.clearForPersona(personaId)
+        // 互动绑定只可能指向"仍存在"的动作；模型动作被清后若绑定悬空，读时会兜回默认，
+        // 这里顺手把整人设的互动绑定也收掉，免得库里留一行指向已删动作的死绑定。
+        interactionBindingDao.clearForPersona(personaId)
     }
 
     // ---- 四态绑定 ----
@@ -251,10 +258,51 @@ class Live2dActionRepository(private val db: AppDatabase) {
     // ---- 点击互动 ----
 
     /**
-     * 点到了某个区域该播哪条动作。
+     * 某个角色当前生效的互动绑定（v0.74.0）。
      *
-     * 这一版用代码里的 [InteractionBindings.DEFAULT]（用户拍板第一阶段只做默认行为），
-     * 但**入口已经在这里**：下一版把默认值换成"从库里读一行"就行，调用方一行都不用改。
+     * 顺序：用户指定那一行 → 内置默认键。用户指定的那条动作**可能已被删掉**
+     * （删动作时 [InteractionBindingDao.clearByAction] 会收掉绑定，但保险起见这里再查一次），
+     * 查不到就退回内置默认 —— 保证 [InteractionBindings] 永远是一份"点了就有得播"的可用值。
+     */
+    suspend fun interactionBindings(personaId: Long): InteractionBindings {
+        val rows = runCatching { interactionBindingDao.getFor(personaId) }.getOrDefault(emptyList())
+        var headId = 0L
+        var bodyId = 0L
+        rows.forEach { row ->
+            when (InteractionRegion.fromKey(row.region)) {
+                InteractionRegion.HEAD -> headId = row.actionId
+                InteractionRegion.BODY -> bodyId = row.actionId
+                InteractionRegion.OTHER -> Unit
+            }
+        }
+        // 指向的动作真的还在吗？不在就当没绑（与"删动作顺手清绑定"是同一条口径的第二道保险）
+        if (headId > 0L && getById(headId) == null) headId = 0L
+        if (bodyId > 0L && getById(bodyId) == null) bodyId = 0L
+        return InteractionBindings(headActionId = headId, bodyActionId = bodyId)
+    }
+
+    /** 绑定 / 解绑一个互动区的动作；[actionId] 传 0 = 恢复该区默认 */
+    suspend fun setInteractionBinding(personaId: Long, region: InteractionRegion, actionId: Long) {
+        if (personaId <= 0L) return
+        ensureBuiltins()
+        if (actionId <= 0L) {
+            interactionBindingDao.clearRegion(personaId, region.key)
+        } else {
+            interactionBindingDao.upsert(
+                InteractionBindingEntity(personaId = personaId, region = region.key, actionId = actionId),
+            )
+        }
+    }
+
+    fun observeInteractionBindings(personaId: Long): Flow<Map<InteractionRegion, Long>> =
+        interactionBindingDao.observeFor(personaId).map { rows ->
+            val out = LinkedHashMap<InteractionRegion, Long>()
+            rows.forEach { row -> InteractionRegion.fromKey(row.region).let { out[it] = row.actionId } }
+            out
+        }
+
+    /**
+     * 点到了某个区域该播哪条动作。
      *
      * @param seed 随机种子（实机传时间戳），让"点其他 = 随机趣味动作"可复现可测
      */
@@ -264,6 +312,9 @@ class Live2dActionRepository(private val db: AppDatabase) {
         seed: Long = System.currentTimeMillis(),
         bindings: InteractionBindings = InteractionBindings.DEFAULT,
     ): Live2dAction? {
+        // 用户指定的那条优先（0 = 没指定）；指定了就播它，不去管内置默认键
+        val chosen = bindings.actionIdOf(region)
+        if (chosen > 0L) getById(chosen)?.let { return it }
         val key = bindings.builtinKeyOf(region)
             ?: return randomFunAction(personaId, bindings, seed)
         return findBuiltin(key)

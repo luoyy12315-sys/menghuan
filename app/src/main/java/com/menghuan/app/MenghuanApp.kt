@@ -82,6 +82,9 @@ class MenghuanApp : Application() {
                 AppDatabase.MIGRATION_18_19,
                 AppDatabase.MIGRATION_19_20,
                 AppDatabase.MIGRATION_20_21,
+                AppDatabase.MIGRATION_21_22,
+                AppDatabase.MIGRATION_22_23,
+                AppDatabase.MIGRATION_23_24,
             )
             .build()
         settingsRepository = SettingsRepository(this)

@@ -16,6 +16,8 @@ import com.menghuan.app.live2d.ActionSlot
 import com.menghuan.app.live2d.ActionSource
 import com.menghuan.app.live2d.ActionType
 import com.menghuan.app.live2d.BuiltinActions
+import com.menghuan.app.live2d.InteractionBindings
+import com.menghuan.app.live2d.InteractionRegion
 import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.live2d.ModelCapability
 import com.menghuan.app.realtime.visual.Live2dStage
@@ -45,6 +47,10 @@ data class Live2dSpaceUiState(
     val playingName: String = "",
     val background: Live2dSpaceStore.SpaceConfig = Live2dSpaceStore.SpaceConfig(),
     val backgroundFile: File? = null,
+    /** 当前背景视频（v0.74.0）；null = 不是视频档或文件不在 */
+    val backgroundVideo: File? = null,
+    /** 点击互动绑定（v0.74.0）：进配置弹层前读一次 */
+    val interactionBindings: InteractionBindings = InteractionBindings.DEFAULT,
     val capability: ModelCapability = ModelCapability.EMPTY,
     /** 一句给用户看的结果提示（导入失败 / 保存成功 / AI 没生成出来…） */
     val note: String? = null,
@@ -94,7 +100,13 @@ class Live2dSpaceViewModel(
         val bgFile = withContext(Dispatchers.IO) {
             Live2dSpaceStore.backgroundFile(app, personaId, config)
         }
-        _ui.update { it.copy(background = config, backgroundFile = bgFile) }
+        val bgVideo = withContext(Dispatchers.IO) {
+            Live2dSpaceStore.backgroundVideoFile(app, personaId, config)
+        }
+        _ui.update { it.copy(background = config, backgroundFile = bgFile, backgroundVideo = bgVideo) }
+
+        // 互动绑定读一次（与背景无关，模型没有也要显示对用户配过什么）
+        _ui.update { it.copy(interactionBindings = interactionBindings()) }
 
         val asset = withContext(Dispatchers.IO) { CallVisualStore.read(app, personaId) }
         val usable = asset.type == CallVisualType.LIVE2D &&
@@ -186,9 +198,25 @@ class Live2dSpaceViewModel(
         viewModelScope.launch {
             val region = e.hit(ndcX, ndcY)
             val action = runCatching {
-                app.live2dActions.resolveInteraction(personaId, region, System.currentTimeMillis())
+                val bindings = app.live2dActions.interactionBindings(personaId)
+                app.live2dActions.resolveInteraction(personaId, region, System.currentTimeMillis(), bindings)
             }.getOrNull() ?: return@launch
             play(action)
+        }
+    }
+
+    // ---- 点击互动配置（v0.74.0）----
+
+    /** 当前生效的互动绑定（页面进配置弹层时读一次） */
+    suspend fun interactionBindings(): InteractionBindings =
+        runCatching { app.live2dActions.interactionBindings(personaId) }
+            .getOrDefault(InteractionBindings.DEFAULT)
+
+    /** 给某个互动区指定一条动作；actionId = 0 = 恢复默认 */
+    fun setInteractionBinding(region: InteractionRegion, actionId: Long) {
+        viewModelScope.launch {
+            runCatching { app.live2dActions.setInteractionBinding(personaId, region, actionId) }
+            _ui.update { it.copy(interactionBindings = interactionBindings()) }
         }
     }
 
@@ -209,7 +237,8 @@ class Live2dSpaceViewModel(
         viewModelScope.launch {
             withContext(Dispatchers.IO) { Live2dSpaceStore.write(app, personaId, config) }
             val file = withContext(Dispatchers.IO) { Live2dSpaceStore.backgroundFile(app, personaId, config) }
-            _ui.update { it.copy(background = config, backgroundFile = file) }
+            val video = withContext(Dispatchers.IO) { Live2dSpaceStore.backgroundVideoFile(app, personaId, config) }
+            _ui.update { it.copy(background = config, backgroundFile = file, backgroundVideo = video) }
         }
     }
 
@@ -226,7 +255,38 @@ class Live2dSpaceViewModel(
                     )
                     withContext(Dispatchers.IO) { Live2dSpaceStore.write(app, personaId, config) }
                     val file = withContext(Dispatchers.IO) { Live2dSpaceStore.backgroundFile(app, personaId, config) }
-                    _ui.update { it.copy(busy = false, background = config, backgroundFile = file, note = null) }
+                    _ui.update { it.copy(busy = false, background = config, backgroundFile = file, backgroundVideo = null, note = null) }
+                }
+
+                is Live2dSpaceStore.BackgroundImport.Failed ->
+                    _ui.update { it.copy(busy = false, note = outcome.reason) }
+            }
+        }
+    }
+
+    /** 导入一段背景视频（v0.74.0）：成功即切到视频档 */
+    fun importBackgroundVideo(uri: android.net.Uri) {
+        viewModelScope.launch {
+            _ui.update { it.copy(busy = true) }
+            val outcome = withContext(Dispatchers.IO) {
+                Live2dSpaceStore.importBackgroundVideo(app, personaId, uri)
+            }
+            when (outcome) {
+                is Live2dSpaceStore.BackgroundImport.Ok -> {
+                    val config = Live2dSpaceStore.SpaceConfig(background = "video:${outcome.fileName}")
+                    withContext(Dispatchers.IO) { Live2dSpaceStore.write(app, personaId, config) }
+                    val video = withContext(Dispatchers.IO) {
+                        Live2dSpaceStore.backgroundVideoFile(app, personaId, config)
+                    }
+                    _ui.update {
+                        it.copy(
+                            busy = false,
+                            background = config,
+                            backgroundFile = null,
+                            backgroundVideo = video,
+                            note = null,
+                        )
+                    }
                 }
 
                 is Live2dSpaceStore.BackgroundImport.Failed ->

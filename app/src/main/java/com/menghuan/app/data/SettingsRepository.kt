@@ -111,6 +111,9 @@ class SettingsRepository(
     /** 会话已读标记前缀：last_read_<personaId> = 最后阅读时刻毫秒值 */
     private val readPrefix = "last_read_"
 
+    /** 角色五轴状态前缀：companion_state_<personaId> = 编码串（见 CompanionLogic.encode） */
+    private val companionStatePrefix = "companion_state_"
+
     /** 提炼水位线前缀：extract_upto_<personaId> = 已提炼到的最后一条消息 id */
     private val watermarkPrefix = "extract_upto_"
 
@@ -379,10 +382,30 @@ class SettingsRepository(
     // ===== 角色情绪状态（v0.72.0）=====
     /** 五轴状态串；编码格式见 [com.menghuan.app.data.CompanionLogic.encode]。空串 = 还没算过 */
     fun companionStateRaw(personaId: Long): Flow<String> =
-        store.data.map { it[stringPreferencesKey("companion_state_" + personaId)] ?: "" }
+        store.data.map { it[stringPreferencesKey(companionStatePrefix + personaId)] ?: "" }
 
     suspend fun setCompanionStateRaw(personaId: Long, raw: String) {
-        store.edit { it[stringPreferencesKey("companion_state_" + personaId)] = raw }
+        store.edit { it[stringPreferencesKey(companionStatePrefix + personaId)] = raw }
+    }
+
+    /**
+     * 全部角色的五轴状态串（v0.74.0）：personaId → 编码串。
+     *
+     * ⚠️ **会话列表一次读全表**，不许对每个角色各开一条 [companionStateRaw] ——
+     * 会话列表会随角色数增长，N 条 DataStore flow 在组合层做 N 次订阅，
+     * 每次落盘都要遍历一遍，内存与重组次数都随角色数线性涨（`readMarks` 同理已走批量）。
+     *
+     * 前缀提取与 [readMarks] 一致：只有一个 [store] 的 `data` 是真源，
+     * 单角色读写仍走 [companionStateRaw] / [setCompanionStateRaw]。
+     */
+    val companionStates: Flow<Map<Long, String>> = store.data.map { prefs ->
+        buildMap {
+            prefs.asMap().forEach { (key, value) ->
+                if (key.name.startsWith(companionStatePrefix) && value is String) {
+                    key.name.removePrefix(companionStatePrefix).toLongOrNull()?.let { put(it, value) }
+                }
+            }
+        }
     }
 
     /**
@@ -399,7 +422,7 @@ class SettingsRepository(
     /** 人设删除时级联清掉（与 [removeReadMark] 同批调用） */
     suspend fun removeCompanionState(personaId: Long) {
         store.edit {
-            it.remove(stringPreferencesKey("companion_state_" + personaId))
+            it.remove(stringPreferencesKey(companionStatePrefix + personaId))
             it.remove(longPreferencesKey("companion_last_msg_" + personaId))
         }
     }
@@ -493,6 +516,40 @@ class SettingsRepository(
     private val keyPersonaLive2d = stringPreferencesKey("persona_live2d")
     private val keyChatBackground = stringPreferencesKey("chat_background")
     private val keyChatWebSearch = stringPreferencesKey("chat_web_search")
+    // ===== v0.80.0：聊天外观（推倒重做：明暗各一套气泡配色 + 字体族/字号/字重） =====
+    //
+    // 为什么全局而不是按角色：气泡是"整个 App 的观感"，不是某个角色的性格属性；
+    // 按角色存会让用户想统一改一次要挨个角色点一遍，且和「音色/联网」那种
+    // 有语义归属的按角色设置不同 —— 那两样是"这个角色该不该这样"，气泡是"我想怎么看"。
+    //
+    // 颜色存 [ChatAppearance.BubbleStyle.encode] 的 `bg|ink|border|radius` 串，
+    // 0L 段 = "跟主题"哨兵（背景跟主题令牌、字色按亮度自动、无边框）。
+    /** 浅色主题 · 自己的气泡（v0.80.0，用户拍板明暗各存一套） */
+    private val keyChatBubbleLightMine = stringPreferencesKey("chat_bubble_light_mine")
+    /** 浅色主题 · 对方的气泡 */
+    private val keyChatBubbleLightOther = stringPreferencesKey("chat_bubble_light_other")
+    /** 深色主题 · 自己的气泡 */
+    private val keyChatBubbleDarkMine = stringPreferencesKey("chat_bubble_dark_mine")
+    /** 深色主题 · 对方的气泡 */
+    private val keyChatBubbleDarkOther = stringPreferencesKey("chat_bubble_dark_other")
+    /** 字体族：sans(默认) / serif / mono */
+    private val keyChatFontFamily = stringPreferencesKey("chat_font_family")
+    /** 气泡正文字号（sp，12~22；旧版的三档枚举已删） */
+    private val keyChatFontSizeSp = intPreferencesKey("chat_font_size_sp")
+    /** 字重：normal(默认) / medium / semibold / bold */
+    private val keyChatFontWeight = stringPreferencesKey("chat_font_weight")
+    /** 是否在气泡旁显示头像（默认显示；键沿用 v0.77 的旧键，开关语义没变） */
+    private val keyChatShowAvatar = booleanPreferencesKey("chat_show_avatar")
+    // ===== v0.80.0：我自己的档案卡（昵称 + 一句话简介）=====
+    //
+    // 「我的页顶部那张卡」与「个人档案页」读的就是这两个键。与 [UserAvatar] 配套：
+    // 头像 + 昵称 + 简介 = 一张完整的档案卡。空串 = 没填过，UI 走兜底文案（不显示空白行）。
+    private val keyProfileNickname = stringPreferencesKey("profile_nickname")
+    private val keyProfileBio = stringPreferencesKey("profile_bio")
+    /** 用户自己的头像 emoji（与头像图片二选一，图片优先） */
+    private val keyUserAvatarEmoji = stringPreferencesKey("user_avatar_emoji")
+    /** 用户自己的头像图片绝对路径（非空时优先于 emoji） */
+    private val keyUserAvatarImage = stringPreferencesKey("user_avatar_image")
     /** v0.53.7：语音通话铃声（自定义音频文件路径；空 = 用系统默认铃声） */
     private val keyCallRingtonePath = stringPreferencesKey("call_ringtone_path")
     /** v0.54.4：本机添加的铃声库（文件路径，每行一个） */
@@ -958,6 +1015,29 @@ class SettingsRepository(
             val table = (prefs[keyCloneVoiceNames] ?: "").lines()
                 .filter { it.isNotBlank() && it.substringBefore('\t') != uri }
             if (table.isEmpty()) prefs.remove(keyCloneVoiceNames) else prefs[keyCloneVoiceNames] = table.joinToString("\n")
+        }
+    }
+
+    // ===== 动态的位置候选（v0.76.0）=====
+    //
+    // 发动态带的位置是**纯文字**（不定位、不要权限，理由写在 MomentPlaces 的头注释里）。
+    // 发过一次「西湖边的星巴克」的人在第二次发帖时不想再手打一遍，所以这里存最近用过
+    // 的那几个——一行一条，与 cloneVoiceNames 同一张小表做法，不另外建 Room 表。
+
+    /** 最近用过的动态位置（一行一条，越靠前越近） */
+    private val keyMomentPlaces = stringPreferencesKey("moment_places")
+
+    val momentPlaces: Flow<List<String>> = store.data.map { prefs ->
+        MomentPlaces.candidates((prefs[keyMomentPlaces] ?: "").lines().map { it.trim() })
+    }
+
+    /** 发完动态记住这个地方（幂等：同一个地方来了多少次都只留一条，且提到最前） */
+    suspend fun rememberMomentPlace(place: String) {
+        val clean = place.trim()
+        if (clean.isBlank() || clean.any { it == '\n' || it == '\t' }) return
+        store.edit { prefs ->
+            val current = (prefs[keyMomentPlaces] ?: "").lines().map { it.trim() }.filter { it.isNotEmpty() }
+            prefs[keyMomentPlaces] = MomentPlaces.remembered(current, clean).joinToString("\n")
         }
     }
 
@@ -1488,6 +1568,80 @@ class SettingsRepository(
 
     suspend fun setChatWebSearchEnabled(personaId: Long, enabled: Boolean) =
         writeIdTable(keyChatWebSearch, personaId, if (enabled) "1" else "0")
+
+    // ===== 聊天外观（v0.80.0，明暗各一套 + 字体三件套）=====
+
+    /** 气泡配色 / 边框 / 圆角 + 字体族字号字重 + 是否显示头像（见 [ChatAppearance]） */
+    val chatAppearance: Flow<ChatAppearance> = store.data.map { prefs ->
+        ChatAppearance(
+            light = ChatAppearance.BubbleTheme(
+                mine = ChatAppearance.BubbleStyle.decode(prefs[keyChatBubbleLightMine]),
+                other = ChatAppearance.BubbleStyle.decode(prefs[keyChatBubbleLightOther]),
+            ),
+            dark = ChatAppearance.BubbleTheme(
+                mine = ChatAppearance.BubbleStyle.decode(prefs[keyChatBubbleDarkMine]),
+                other = ChatAppearance.BubbleStyle.decode(prefs[keyChatBubbleDarkOther]),
+            ),
+            fontFamily = ChatAppearance.FontFamilyKey.fromKey(prefs[keyChatFontFamily]),
+            fontSizeSp = (prefs[keyChatFontSizeSp] ?: ChatAppearance.DEFAULT_FONT_SP)
+                .coerceIn(ChatAppearance.MIN_FONT_SP, ChatAppearance.MAX_FONT_SP),
+            fontWeightKey = ChatAppearance.FontWeightKey.fromKey(prefs[keyChatFontWeight]),
+            // 默认**显示**头像：以前没有这个开关，聊天页本来就不显示，但既然做开关，
+            // 打开是更"有人味"的默认（用户能立刻看到效果、也立刻知道能关）
+            showAvatar = prefs[keyChatShowAvatar] ?: true,
+        )
+    }
+
+    suspend fun setChatAppearance(next: ChatAppearance) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            prefs[keyChatBubbleLightMine] = next.light.mine.encode()
+            prefs[keyChatBubbleLightOther] = next.light.other.encode()
+            prefs[keyChatBubbleDarkMine] = next.dark.mine.encode()
+            prefs[keyChatBubbleDarkOther] = next.dark.other.encode()
+            prefs[keyChatFontFamily] = next.fontFamily.key
+            prefs[keyChatFontSizeSp] = next.fontSizeSp
+            prefs[keyChatFontWeight] = next.fontWeightKey.key
+            prefs[keyChatShowAvatar] = next.showAvatar
+        }
+    }
+
+    /**
+     * 我的档案（v0.80.0）：昵称 + 一句话简介。
+     *
+     * 与基础档案（ProfileFact 那张 key/value 表）是**两回事**：那张是"AI 读我的画像"，
+     * 这是"我在这个 App 里叫什么、写句什么话"（微信「我的」页顶部那张卡的同款东西）。
+     */
+    val myProfile: Flow<com.menghuan.app.data.MyProfile> = store.data.map { prefs ->
+        com.menghuan.app.data.MyProfile(
+            nickname = prefs[keyProfileNickname] ?: "",
+            bio = prefs[keyProfileBio] ?: "",
+        )
+    }
+
+    suspend fun setMyProfile(next: com.menghuan.app.data.MyProfile) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            if (next.nickname.isBlank()) prefs.remove(keyProfileNickname)
+            else prefs[keyProfileNickname] = next.nickname.trim()
+            if (next.bio.isBlank()) prefs.remove(keyProfileBio)
+            else prefs[keyProfileBio] = next.bio.trim()
+        }
+    }
+
+    /** 用户自己的头像（emoji + 图片路径，二选一，图片优先） */
+    val userAvatar: Flow<UserAvatar> = store.data.map { prefs ->
+        UserAvatar(
+            emoji = prefs[keyUserAvatarEmoji] ?: "",
+            imagePath = prefs[keyUserAvatarImage] ?: "",
+        )
+    }
+
+    suspend fun setUserAvatar(next: UserAvatar) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            if (next.emoji.isBlank()) prefs.remove(keyUserAvatarEmoji) else prefs[keyUserAvatarEmoji] = next.emoji
+            if (next.imagePath.isBlank()) prefs.remove(keyUserAvatarImage)
+            else prefs[keyUserAvatarImage] = next.imagePath
+        }
+    }
 
     /** `id\t值` 行式表的读 */
     private fun readIdTable(raw: String?): Map<Long, String> {

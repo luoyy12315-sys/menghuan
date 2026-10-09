@@ -13,6 +13,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.menghuan.app.data.model.AiInsight
 import com.menghuan.app.data.model.AiWeeklyReport
 import com.menghuan.app.data.model.CallActionBindingEntity
+import com.menghuan.app.data.model.InteractionBindingEntity
 import com.menghuan.app.data.model.CallSession
 import com.menghuan.app.data.model.CallTurn
 import com.menghuan.app.data.model.ChatMessage
@@ -528,6 +529,38 @@ interface CallActionBindingDao {
     suspend fun deleteAll()
 }
 
+/**
+ * 点击互动（头/身体/其他）的动作绑定（v0.74.0）。
+ *
+ * `actionId = 0` 是"用这个区的默认动作"的哨兵值，不是脏数据。
+ */
+@Dao
+interface InteractionBindingDao {
+
+    @Query("SELECT * FROM interaction_bindings WHERE personaId = :personaId")
+    fun observeFor(personaId: Long): Flow<List<InteractionBindingEntity>>
+
+    @Query("SELECT * FROM interaction_bindings WHERE personaId = :personaId")
+    suspend fun getFor(personaId: Long): List<InteractionBindingEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(binding: InteractionBindingEntity)
+
+    @Query("DELETE FROM interaction_bindings WHERE personaId = :personaId AND region = :region")
+    suspend fun clearRegion(personaId: Long, region: String)
+
+    /** 动作被删掉时，所有指向它的绑定一起收回来（否则会出现绑到空气、角色不动） */
+    @Query("DELETE FROM interaction_bindings WHERE actionId = :actionId")
+    suspend fun clearByAction(actionId: Long)
+
+    @Query("DELETE FROM interaction_bindings WHERE personaId = :personaId")
+    suspend fun clearForPersona(personaId: Long)
+
+    /** 清除全部数据用 */
+    @Query("DELETE FROM interaction_bindings")
+    suspend fun deleteAll()
+}
+
 @Database(
     entities = [
         Persona::class,
@@ -546,8 +579,9 @@ interface CallActionBindingDao {
         MomentEntry::class,
         Live2dActionEntity::class,
         CallActionBindingEntity::class,
+        InteractionBindingEntity::class,
     ],
-    version = 21,
+    version = 24,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -567,6 +601,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun callDao(): CallDao
     abstract fun live2dActionDao(): Live2dActionDao
     abstract fun callActionBindingDao(): CallActionBindingDao
+    abstract fun interactionBindingDao(): InteractionBindingDao
 
     companion object {
         /**
@@ -595,8 +630,65 @@ abstract class AppDatabase : RoomDatabase() {
          * 所以这里不写 INSERT INTO ... SELECT。AGENTS.md §六 禁的是"破坏性重建"
          * （为了改形状而重建表、丢用户数据），不是禁止按需求删模块 —— 这一条是用户点名的删除。
          */
-        val MIGRATION_20_21 = object : Migration(20, 21) {
+        /**
+         * v0.74.0：任务「失败」终态。
+         *
+         * **带默认值加一列**，一条数据都不动、不重建表（§六 禁破坏性迁移）：
+         * 存量的完成/未完成任务落到 `isFailed = 0`，语义与升级前完全一致。
+         * 与 v0.70.0 那三条 ALTER 同一手法。
+         */
+        val MIGRATION_21_22 = object : Migration(21, 22) {
             override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `isFailed` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /**
+         * v0.74.0：点击互动的动作绑定（头/身体/其他）。
+         *
+         * **纯新增一张空表**，不动任何存量数据 —— 老装机升级后一行绑定都没有，
+         * 页面读成"用默认动作"（同 [CallActionBindingEntity] 那套哨兵值口径）。
+         * 主键是 (personaId, region)，与实体声明逐字一致（Room 校验主键形状）。
+         */
+        /**
+         * v0.76.0：动态支持多图与位置。
+         *
+         * **两条带默认值的新列**，一条数据都不动、不重建表（§六 禁破坏性迁移）：
+         * 存量帖子落到 `images = ''` / `location = ''`，语义就是"这条没有图、没有位置"，
+         * 正是它们升级前的样子。与 v0.70.0 / v0.74.0 那几条 ALTER 同一手法。
+         *
+         * 两列都建在 `moments` 上（回复也占同一张表），但只有帖子会用得上。
+         *
+         * ⚠️ **没有新索引**：这两列只作显示用，从不进 WHERE / ORDER BY，
+         * 给它们建索引是白占空间还拖慢写入 —— 与 v20 给 createdAt / parentId 建索引
+         * 是两回事，那两列时间线每次都要按它们排。
+         */
+        val MIGRATION_23_24 = object : Migration(23, 24) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE `moments` ADD COLUMN `images` TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE `moments` ADD COLUMN `location` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        val MIGRATION_22_23 = object : Migration(22, 23) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `interaction_bindings` (" +
+                        "`personaId` INTEGER NOT NULL, " +
+                        "`region` TEXT NOT NULL, " +
+                        "`actionId` INTEGER NOT NULL DEFAULT 0, " +
+                        "PRIMARY KEY(`personaId`, `region`))"
+                )
+                // ⚠️ 动作被删时要按 actionId 反查绑定点（InteractionBindingDao.clearByAction），
+                // 漏了索引不报错、不崩，只是那句 DELETE 走全表扫 —— 同 v15 给 call_sessions 补索引的写法。
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_interaction_bindings_actionId` " +
+                        "ON `interaction_bindings` (`actionId`)"
+                )
+            }
+        }
+
+        val MIGRATION_20_21 = object : Migration(20, 21) {            override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "CREATE TABLE IF NOT EXISTS `moments` (" +
                         "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +

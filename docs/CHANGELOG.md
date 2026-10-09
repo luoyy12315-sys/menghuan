@@ -4,7 +4,331 @@
 > 老用户升级路径：先在 v0.35.3 里「设置 · 数据与隐私 · 导出全部数据」，装新版后「导入数据」；
 > API Key 因 Keystore 与包名绑定必须重填。
 
-## v0.73.0（versionCode 162）
+## v0.81.0（versionCode 170）
+
+**个人档案页头像与字段改版（用户点名三条）：头像选择换成编辑人设那一套滚轮；昵称 / 简介换成同款输入框。**
+
+> 出包：`梦欢-v0.81.0-release.apk`（根目录，38,198,151 B，md5 `d3d5a969ba30d8fea07d0144147f780e`，
+> aapt 确认 versionCode 170 / versionName 0.81.0；`classes.dex` md5 与 v0.80.0 不同，改动确已编入）；
+> ⚠️ 这份是**手册同步后的重建版**：先打的包没含 `AiPrompts` 手册文案更新，重编后 md5 由
+> `89fad3090fbd32523afce63f8f441898` 变更为上面的 `d3d5a969…`（体积碰巧相同，以 md5 为准）；
+> v0.80.0 旧包已入 `archive/`。
+
+- **头像**：**大小与位置照旧**（88dp、居中），选择机制整块换成编辑人设那套 ——
+  emoji 排从框底下横穿、**左右各露一截**（人设那边是框靠左、只露右侧；档案这边框居中，两边都露），
+  滚到框心那一格就是选中的，越靠中心越大越清晰、落定那个被"挤进框里"、每跨一格轻震一下；
+  **点框 = 选图片**，下面跟一颗与头像同宽的细线胶囊（「点击编辑」/ 已选图时「恢复默认」）。
+  原来那颗「更换头像」按钮与选头像弹层（选图 + emoji 网格）一并撤掉。
+- **昵称 / 简介**：形状换成编辑人设里「名字 / 身份」同款的 `NeuTextField`（同一组件、同一排版），
+  去掉原来的"卡片行 + 点开弹层改"两段式；落盘仍是**改完即时生效**，加了 400ms 防抖。
+- **一份实现**（关键）：滚轮整块抽到 `ui/common/AvatarEmojiWheel.kt`，**编辑人设与个人档案共用**——
+  几何差异全部收成参数（`frameSize` / `cellSize` / `bothSides` / `ringBrush` / `commitInitialAnchor`），
+  手感与动效只有一份代码。以后调手感两处一起变，不会再各说各话。
+  编辑人设那边按原参数（56dp / 44dp / 52dp / 只右侧露 / personaBrush 环）接入，观感与行为不变。
+- ⚠️ `commitInitialAnchor`：编辑人设保持 true（新角色空 emoji 会落成第一个预设，原行为）；
+  **个人档案必须 false** —— 没选过头像的人，框里该一直是「我」，不能一进页面就被悄悄改成某个 emoji。
+- ⚠️ **初始对焦修了一个真 bug**：`scrollToItem` 的对齐基准跟视口宽度有关，
+  **框居中时"框心上的那一格"会偏出好几格**（实测停在**第 4 个预设**上，而不是第 1 个）——
+  窄框的人设页只差 6dp 所以一直没暴露。改成落定后**实测一次这一格中心的实际位置、
+  把差值补给 `scrollOffset`**，两边都真正对齐到框心。
+- 连带把 `AvatarPill`（细线胶囊）也挪进共享文件并参数化宽度（人设 56dp / 档案 88dp，各与自己的框对齐）。
+
+### 验证
+- `UiRenderTest.render11Me`（我的页 → 个人档案）：断言改成新形状（细线胶囊「点击编辑」、
+  昵称/简介两个输入框、值「小舟」「晚睡患者，正在改」），并**断言 emoji 滚轮真的铺上了**
+  （预设表情出现在语义树里）；`render13PersonaEditorGuide` 保持通过 —— 人设那边观感未变。
+- 新增 `render12ProfileKeepsEmptyAvatar` **守门**：只设昵称、不设头像，进档案页逛一圈出来，
+  头像必须仍是"没设过"。**这条测试当场抓出了上面那个对焦 bug**（写进去的是 😎 而不是"什么也没写"）。
+  ⚠️ 它同时暴露一个测试陷阱：settings 的 DataStore 是**进程级单例**，别的用例设过的头像会漏进来
+  （第一版被 `render11Me` 的 🌙 漏进来，看着像"页面自己改了头像"）—— 所以这条用例开头**显式清空**头像。
+- 顺手修掉一条**过期断言**：`UiRenderTabletTest.tablet3MeWide` 等的还是已取消的「基础档案」行卡
+  （「基础档案」并进个人档案页那天起它就红着）。
+- 两个被抽空的文件顺手清了 50 条失效 import（编译器兜底验证）。
+
+## v0.80.0（versionCode 169）
+
+**① 改正 v0.77.0 读反的一条需求 —— 角色会在不聊天的时候也来看你的动态（搭「主动关心」的车）；
+② 人设提示词写作规范重写成"可一键复制、扔给外部 AI 用"的那份。**
+
+> 出包：`梦欢-v0.80.0-release.apk`（根目录，38,198,151 B，md5 `61867ed23e2ec808849ba42cfe0b8ad8`，
+> aapt 确认 versionCode 169 / versionName 0.80.0；`classes.dex` md5 与 v0.79.0 不同，改动确已编入）；
+> v0.79.0 旧包已入 `archive/`。
+
+（两条均为用户点名。写作规范三个细节由用户拍板：**搭主动关心的车** / 规范是**给外部 AI 的** /
+**不要模板也不要例子**；主动回帖尺度也是用户选的"同主动关心的档位"。）
+
+### ① 主动看动态（先改错，再加链路）
+- **这是改 v0.77.0 的错**：当时把用户那句"AI 回复动态只能在跟 AI 聊天时回复"当成了产品要求，
+  提示词里写成「**所有动态动作都只发生在你回复用户这条消息的过程中 —— 你没有「自己去刷动态」的能力**」，
+  手册也照此写。用户澄清原意**正好相反**："我不跟 AI 聊的时候 AI 也会看我动态，像真人一样"。
+- 现在如实描述**两个时机**：① 用户跟你聊天时；② App 让你主动去找用户时（会把用户最近的动态一并给你）。
+  「别假装自己一直在线」这条保留 —— 那不是真话。
+- **落点搭「主动关心」的车**（用户拍板）：角色到点主动找用户的那几次，
+  App 把**用户最近发的、这个角色还没回过也没赞过**的帖子（最多 5 条、带编号）一并交给它；
+  想接话就回一句、觉得好就点个赞。**不新增闹钟、不多花一次请求**（同一次调用里顺手决定）。
+- 尺度按用户拍板"同主动关心的档位"：每次最多**回 1 条 + 赞 1 条**（发帖 1 条）。
+- **动态落库抽成一份** `data/MomentActions.kt`：聊天与主动关心共用同一套校验
+  （先验帖子存在、点赞幂等只加不取消、按各自上限截断）—— 两条链路各写一份必然分叉。
+- 主动链路把标记**先剥掉再落消息**：屏幕上出现 `[动态#3:…]` 就是把内部协议漏给了用户；
+  只剩标记、没有正文的回复整轮丢掉（主动关心是"给你发一句话"，没话说就不该打扰，那次也不计数）。
+
+### ② 人设提示词写作规范重写（可复制给外部 AI）
+- 新文件 `data/PersonaPromptSpec.kt` = 规范全文，**写给外部 AI 看**（用户原话：
+  "把这个规范扔给其他 AI，就可以让他生成符合这个应用的人设提示词"）。
+  内容依次是：梦欢是什么 → 要产出什么（名字 / 身份 / 设定词）→ 设定词**必须写到**什么
+  （关系位置、说话方式、在意什么、绝不做什么、说话篇幅）→ **必须避免**什么 →
+  **角色真实拥有的能力清单**（用户点名"记住要告诉 AI 可以有什么能力"）→ 输出格式。
+- **不给示例、不给填空模板**（用户点名："不要健身教练那些玩意""不要模板，也不要例子"）：
+  原面板里的「示例：健身教练」「示例：学习教练」两段删除。规范要是给了范文，
+  用户拿到的永远是范文的换皮版 —— 这也正是它被否的原因。
+- 编辑页面板（入口仍是「查看写作规范」）改成「一句说明 + **复制规范**按钮 + 规范原文」，
+  一键复制到剪贴板。
+- **三处同源**：App 内「AI 优化设定词」的 system prompt 改为复用同一份规范正文（只追加"这次输出 JSON"）；
+  手册里的人设适配协议对齐同一套要素（旧的"包含【语气与风格】【职责】【约束】三节"口径换掉）。
+  规范说的、按钮做的、助手答的，从此是一套。
+
+### 验证
+- 新增 3 个测试类：
+  - `MomentActionsTest`（5 条：编出来的编号静默丢弃 / 点赞幂等 / 主动档 1-1-1 / 聊天档 2-2-3 / 无标记不动）；
+  - `ProactiveChatTest`（3 条：只列用户自己发的 + 跳过已回已赞 / 一条都没有时返回空串 / 最多 5 条最新在前）；
+  - `PersonaPromptSpecTest`（4 条：能力清单齐全 / 既无示例也无模板 / 关系优先于职业头衔 / 与一键优化同源）。
+- `MomentMarkerTest` 里 v0.77.0 写反的那条断言翻成**双侧**（新说法在 + 旧说法一次不剩）；
+  `AiPromptsTest` 加 `v0_79_0 手册写明主动看动态_写作规范可复制`；
+  `UiRenderTest.render13PersonaEditorGuide` 改按新面板断言（旧示例必须不在了）。
+- 手册 replace 链 3 条**已 dump 成品逐条核对**：新措辞各命中 1 次、旧措辞 0 次（手册 23347 → 23867 字）。
+- 全量 `testDebugUnitTest`：**618 项 / 56 个测试类 / 1 红** ——
+  唯一那条红是**已知 flaky** `UiRenderTest.render25VoiceModeBlockedByMissingModel`
+  （`Can't toast on a thread that has not called Looper.prepare()`：协程里直接 `Toast.makeText`，
+  Robolectric 下恢复线程不一定挂 Looper；单跑必绿、生产在 Main 线程无影响）。
+  本批没动它 —— 它在语音键那段代码里，而"语音栈未经点名不动"是铁律，要修得用户点头。
+- ⚠️ 排查插曲：第一次跑全量时 worker 卡死 20 分钟，`jstack` 抓到停在
+  `UiRenderTest.render17ClearAllData` 的 `runBlocking`。**杀掉残留的 Gradle/Kotlin 进程后干净重跑即通过**
+  —— 是环境（进程残留 + 我中途 kill 过 Kotlin 编译守护进程）不是代码。**结论：全量卡住先 jstack 看栈，
+  再排除残留进程，别急着怀疑自己刚改的东西。**
+
+## v0.79.0（versionCode 168）
+
+**清掉全部历史红：三条点名红逐条定位（一条真 bug、两条过期断言）+ 五条连带红（排序改动 2 条、渲染 3 条）。
+全量 597 项 / 52 个测试类**全绿**（此前 5 红）。**
+
+> 出包：`梦欢-v0.79.0-release.apk`（根目录，38,165,383 B，md5 `7534fc58703d7a871f6d5bdb01a5405a`，
+> aapt 确认 versionCode 168 / versionName 0.79.0）；v0.78.0 旧包已入 `archive/`。
+
+### ① `AiCallLogic.parseWantedCallAt` 读系统时钟 —— 真 bug（改实现）
+- 症状：`口头约定：钟点写法当天已过就顺延到明天` 期望 2026-10-05 21:30、实得 2026-10-09 21:30（差 4 天）。
+- 根因：函数签名收 `now`，算"今天"却用 **`LocalDate.now(zone)`**，与基准脱钩 ——
+  单测给 10-05、实现按**运行当天**算，`21:30` 自然落到 10-09。
+- 生产上 `now` 就是 `System.currentTimeMillis()`，用户没感知；但它让函数不再是纯函数、也没法被测
+  （本类开头的约定原文就是"**时间是参数不是系统时钟**"）。
+- 修法：`Instant.ofEpochMilli(now).atZone(zone).toLocalDate()` 推"今天"。真机行为不变、测试变确定。
+
+### ② `TaskActionsToggleTest` 回执断言过期（改测试）
+- 症状：`勾选再取消完整回退` 断言"回执消息含「已完成打卡：xxx」"落库，实得没有。
+- 根因：v0.56.11 用户点名「**打卡不再给应用助手发回执**」，而 `MENTOR_PERSONA_ID` 就是内置
+  「应用助手」（id=1、`isBuiltIn=true`）—— 回执在正常装机里**永远不会落库**，断言守的是被点掉的行为。
+- 修法：断言翻成"**两态都不写回执**"（守住用户定的规矩）；类注释写明"让 AI 知道任务做完了"
+  已由 v0.78.0 的 `ChatViewModel.taskStatusBlock()` 承担。
+- ⚠️ 顺带把 `TaskActions` 里那句"其他人设会话维持原行为"的**假注释**改成实话
+  （这段如今只是"万一 1 号位是用户自己的人设"的兜底）。
+
+### ③ `TtsConfigTest.音色板块按服务商组名单` 断言按旧设计（改测试）
+- 症状：自定义端点 + 手填 `alloy` 期望 `[手动 · alloy]`，实得 `[]`。
+- 根因：v0.56.13 起自定义端点的顶栏「ID」**撤掉**，手填升级成**多条音色库**
+  （旧单值键由 `SettingsRepository.migrateLegacyCustomVoice()` 搬进那张表）——
+  `library()` 里 `manualId` 对这家走 `else if` 分支，**刻意不进名单**。
+- 修法：断言改成"自定义端点不再吃 manualId" + 正例（录入行有显示名用显示名、留空回落成 ID）。
+
+### ④ 连带修：v0.78.0 排序改动引起的 2 条（`ChatListViewModelTest`）
+- 会话列表改按"最近聊过"排之后，两条用例里的 `[严格教练, 苏格拉底]`（插入顺序）不再成立：
+  苏格拉底有消息 → 排前，严格教练没聊过 → 沉底，两条都改成新次序。
+- `seedPersonas` 的 `createdAt` **显式钉值**：三个 `System.currentTimeMillis()` 会撞在同一毫秒上，
+  次序就随 Room 的返回顺序飘 —— 测试必须把时间写死。
+
+### ⑤ 连带修：三条渲染红（`UiRenderTest`）
+- **render19LedgerPage**：`awaitText("636.20")` 找的是**滚动金额** —— `RollingAmountText` 把每一位数字
+  拆成独立 `Text`，整串"636.20"在语义树里根本不存在（读屏也会一位一位念"六三六点二零"）。
+  修法 = 给 `RollingAmountText` 加 `clearAndSetSemantics { contentDescription = text }`，
+  **整串金额合成一个无障碍节点**；测试改 `awaitDesc("636.20")`。
+  `awaitDesc` 同时升级为与 `awaitText` 同一套**轮询 + 重试**（裸 `waitUntil` 在 Robolectric 下会漏掉滞留的 invalidation）。
+- **render28TtsConfigScreen**：断言的是**旧布局**（"三家平铺 + 当前生效那家默认展开"）——
+  用户点名"**不要**把三段摊在页面上"后，这页改成**只列已配好的卡片 + 一个「＋ 添加接入」**。
+  断言改为：只硅基配齐 → 页面上只有它一张卡（标题=模型名、副标题=去协议地址）、另两家不出现；
+  点「＋ 添加接入」弹层里才是三家芯片 + 已接入清单。
+- **render6Search** → **render6ChatHistorySearch**：原来点的是消息页那行「搜索」，而消息页搜索
+  整条链路在 v0.56.8 就按用户点名删掉了（此后一直红，守的是个不存在的入口）。
+  搜索现在住在「会话设置 → 查看聊天记录」；用例改走那条路（进会话 → 会话设置 → 查看聊天记录 →
+  输入 → 命中上屏），守的还是同一件事。
+
+### 验证
+- 全量 `testDebugUnitTest`：**597 项 / 52 类 / 0 失败 0 错误**（此前 5 红）。
+- ⚠️ 唯一残留的 **flaky**：`UiRenderTest.render25VoiceModeBlockedByMissingModel` 偶尔报
+  `Can't toast on a thread that has not called Looper.prepare()`（协程里直接 `Toast.makeText`，
+  Robolectric 下恢复线程不一定挂 Looper；单跑必绿，生产在 Main 线程所以无影响）。
+  未动它 —— 要彻底消掉得把 Toast 改成 `Handler(mainLooper).post { … }`。
+
+## v0.78.0（versionCode 167）
+
+**对话体验一批（六条用户点名需求，五条落地、一条经用户同意跳过）。**
+
+> 出包：`梦欢-v0.78.0-release.apk`（根目录，38,165,383 B，md5 `35dd13372c5eb6a711fe863926102086`）；
+> v0.77.0 旧包已入 `archive/`。
+
+**本批六条需求**（截图验收另见 `app/build/screenshots/` 对应页）：
+
+- **① 会话列表改按最近聊过排序**（`ChatListScreen.orderConversations`，纯函数）：
+  - 规则四段式：**置顶永远压最上面** → 有消息的排前 → 最后一条消息时间**倒序**（最新在最上）→
+    **没聊过的沉底**、内部按 `createdAt DESC`；
+  - 排序抽成 `internal fun` 供 JVM 单测（`ChatListOrderTest` 5 条断言：置顶优先、新消息上浮、
+    无消息沉底、同刻按创建时间、混排全序）。
+- **② 聊天气泡外观 + 用户头像**（新文件 `data/ChatAppearance.kt`，**全局一套、不按角色分**）：
+  - **气泡底色**：我发的 / 对方的气泡各自**六选一**（墨黑 / 纸白 / 雾灰 / 靛蓝 / 苔绿 / 砂岩），
+    实现在 `ui/theme/Theme.kt` 的 `bubbleColorPair(key)`——黑档走 `NeuAccent`+`AccentInk`，
+    其余五档为固定色对（前景字色随之切换，深底配浅字）；
+  - **字号三档**（小 13 / 标准 15 / 大 18 sp）：`MarkdownText` 新增 `fontSize` 参数，
+    正文行高 = `fontSize × 1.4`，**代码块不缩放**；
+  - **头像显示开关**：关掉后气泡旁不再画头像；
+  - **用户头像**：`data/UserAvatar.kt`（`emoji` 与 `imagePath` **二选一**，有图就用图）；
+    聊天页 `ChatRowAvatar`（用户侧读 userAvatar、否则黑底白「我」；AI 侧仍是 persona emoji + 色环）；
+    动态页 `MomentAuthorAvatar` 同步——设了头像后，自己发的动态旁边显示这张脸；
+  - **设置入口**：设置主页「外观」卡点进去，新增「聊天气泡」（两排色块 + 字号胶囊 + 显示头像开关）
+    与「我的头像」（预览 + 选图按钮 + emoji 网格 `EmojiAvatarGrid`）。
+- **③ AI 给动态点赞**：
+  - 标记协议新增 **`[点赞:帖子id]`**（`MomentMarker.LIKE` / `LINE_LIKE`），`Decision` 加 `likes`，
+    解析时去重并剥干净；
+  - `ChatViewModel.maybePostMoments` 末尾落库：AI 用 `personaId.toString()` 当点赞者 id，
+    **最多 3 条**、逐条验帖子存在；**幂等只加不取消**（已赞过就跳过，不会把用户点的赞顶掉）；
+  - `MomentsViewModel.toggleLike` 沿用同一套 `likedBy` 存储，AI 赞与用户赞一视同仁。
+- **④ 深度思考开关**：**跳过**。用户说"如果不确定就不搞了"——本工程对接的多家模型
+  没有统一的 thinking 开关参数，硬做只会给不同服务商埋不一致行为，故本版不做。
+- **⑤ 动态回复的场景约束与记忆可读**（`MomentMarker.promptSection` 提示词）：
+  - 明确**所有动态动作（回帖 / 点赞）只发生在"你回复用户这条消息"的过程中**——
+    不存在"AI 自己在后台刷动态"；
+  - 明确**角色看得到用户的记忆**，回帖时可以自然引用，而不是装作不认识。
+- **⑥ 把今日任务状态喂给 AI**（`ChatViewModel.taskStatusBlock`）：
+  - 每次带上下文请求时读 `taskDao().observeAll().first()`，用 `isEffectivelyDone/isEffectivelyFailed`
+    分成 **已完成 / 已失败 / 待办** 三组，输出「## 用户的任务现状」块；
+  - 块内写明"别凭印象说人家没做"，杜绝 AI 把已勾掉的任务当成还没做
+    （用户原话："AI 识别不了任务已经完成"）；
+  - 遵守前缀缓存纪律：任务状态是易变上下文，**贴在最后一条用户消息上**，不进 system prompt。
+- **配套测试**：新增 `ChatListOrderTest`；`MomentMarkerTest` 加 6 条点赞标记 + 场景/记忆断言；
+  `AiPromptsTest` 加 `v0_77_0 手册写明AI点赞_会话排序_聊天外观与用户头像`（双侧断言：新措辞在、
+  旧路径"设置 → 外观"不在）；`UiRenderTest` 的 `render15AppearanceScreen` / `render1ChatList` /
+  `render4Chat` 三张截图通过。手册 `AiPrompts.DEFAULT_ASSISTANT_PROMPT` 同步追加三条说明。
+
+## v0.77.0（versionCode 166）
+
+**消息页「心情计」上线（爱心 + 粉色进度条取代心情 emoji）；任务页逾期卡片去掉红色左边线。**
+（两项均为用户点名；截图验收见 `app/build/screenshots/1-chatlist.png`、`5-tasks-filled.png`。）
+
+- **任务页**：逾期卡片左缘那条红色竖线删除（v0.74.0 引入）。逾期语义由「已逾期」红字分组头 +
+  红色标签承担，同一张卡上不再叠第二处红色。
+- **消息页心情计**（`CompanionLogic.badgeOf` 重写）：
+  - 名字右边的**心情 emoji 取消**，换成**粉色爱心 + 右侧一条粉色进度条**（心 13dp、条 40×4dp 圆角 pill，
+    轨道浅灰、填充新令牌 `BrandPink` #F977A9——Figma 五色外补的第 6 个点缀色）；
+  - **进度条只由愉悦度决定**：`valence` 归一化到 0~1（0 最差 / 1 最好）。v0.74.0 的
+    「想念 🥺 / 嘴硬 😤 盖过情绪簇」的优先级逻辑随之取消——列表徽标回归"心情"本义；
+    想念与嘴硬的行为后果（主动消息、口吻）本来就由别的机制承担，不受影响；
+  - **没聊过的角色不占位**（进度 < 0 表示无数据，不画空条——空条看着像"她在生气"）；
+  - 无障碍说明保留：读屏念「心情：xxx」，文案仍来自情绪簇，与进度条同源；
+  - `CompanionStateTest` 四条 emoji 断言重写为进度条语义（0/0.5/1 映射、想念嘴硬不再改图形、
+    平淡状态也有读数、八个情绪簇说明非空且进度在界内）；
+  - 截图夹具预置两条心情读数（阿布=好 / 严格教练=差 / 苏格拉底不写），一张截图覆盖三态。
+  - 小尺寸心形已按 3 倍放大验收（轮廓完整、不糊不裂）。
+
+## v0.76.0（versionCode 165）
+
+**动态页整体重做：细线时间线 → 卡片式布局；发动态支持多图与位置；补齐进出场与交互动效。**
+（用户点名 @impeccable 全面优化，四个设计决策均由用户拍板：动态页专属柔和投影 / 手动填写+常用地点（不要 GPS）/ 真分页+真刷新 / 全屏看图器。）
+
+- **版面重做（层次不再靠细线）**：一条动态一张白卡片（20dp 圆角 + 柔和投影）浮在浅灰画布上，
+  卡片之间只留 12dp 间距、**删除全部发丝线**。层次来自三个台阶：画布灰 → 白卡 → 卡内留白分区。
+  ⚠️ 这是 v0.42.1「全应用去阴影」以来**唯一的投影例外**，收敛在 `ui/theme` 的 `RaisedShadow` +
+  `Neu.raisedCard()` 两个令牌里，别的页面零改动。
+- **动效**：
+  - 进场：首屏卡片自上而下错峰滑入（`graphicsLayer` 逐帧读取，不逐帧重组）；
+    **入场重播由 `visible = pagerState.settledPage == 2` 驱动**——四个 tab 同时被组合，
+    靠"被组合"触发的动画必然失效（划过去的路上就放完了）；
+  - 列表重排：`Modifier.animateItem(placementSpec = …)`（顺手把全工程最后一处已废弃的
+    `animateItemPlacement` 换掉）；
+  - 点赞：心形 `Animatable` 弹一下 + 数字翻牌（`AnimatedContent`）；长按卡片震一下再弹菜单；
+  - 下拉刷新：Material3 `PullToRefreshBox` + 自绘指示器（白底投影小圆胖子，与卡片同一套语言）；
+    ⚠️ 指示器**只在"拉了"或"正在刷"时出现**——首版无条件组合，静止时也半透明常驻在第一张卡上（截图逮住）；
+  - 上拉加载：滑到倒数第 3 条就预取下一页（每页 12 条），尾部一行"正在加载/加载更多"。
+- **发动态：多图**（Room **v24**，`moments` 加 `images` / `location` 两列，带默认值 ALTER，不动存量数据）：
+  - 发布面板点虚线加号格从相册挑（`PickMultipleVisualMedia`，上限 9 张），选完先进预览、
+    每张右上角 ✕ 可单独删；已选张数与上限常显；
+  - 选中的图**拷进 `filesDir/moment_images/`**、库里只存绝对路径（`\n` 分隔——文件名里合法地含逗号，
+    用逗号分隔必炸，已加回归测试）；删除动态时连带删图（只删本目录，防误伤）；
+  - 卡片九宫格：1 张按原图比例（0.75~1.6 夹取）、2/4 张两列、其余三列，超 9 张叠「+N」；
+  - **全屏查看器**：点任意一张进入，HorizontalPager 左右滑切图、双指捏合 1~5 倍、放大后拖动平移、
+    未放大时下拉退出、双击放大、切页自动复位缩放、底部圆点页码；只解码当前页（4 张 LRU）。
+  - 手写 `BitmapFactory` 采样解码 + `LruCache`（与表情/聊天同一套做法），**继续保持零图片库依赖**。
+- **发动态：位置**：发布面板手打一句（上限 40 字）或点常用地点胶囊一键填入；
+  常用地点 = 预置（家/公司/咖啡馆/健身房/公园/地铁）+ 最近用过的（`SettingsRepository` 一行表，最多 8 个）。
+  **刻意不做 GPS / 不申请任何定位权限**；填了的位置在卡片正文下方以浅灰胶囊清晰展示（不可点，纯展示）。
+  回复（楼层）不支持图与位置——那层楼本来就是"说一句话"。
+- **数据/存储**：`MomentEntry` 加 `images`（TEXT NOT NULL DEFAULT ''）与 `location`（同）；
+  `MIGRATION_23_24` 两条 `ALTER TABLE … ADD COLUMN`，schema 24.json 已导出；
+  `DbMigrationTest` 新增 `migrate23To24_keepsMomentsAndAddsImageLocationColumns`
+  （存量正文/点赞/父子层级保留、新列落空串、索引仍在），**已做反向验证**（注掉一条 ALTER → 五条迁移测试全红）。
+- **助手手册**：【动态】章节追加 v0.76.0 三条（多图/位置/卡片版面），明说"位置是手填的、App 不会申请定位权限"
+  （用户必问「它怎么知道我在哪」）；`AiPromptsTest` 成对断言，成品全文已 dump 核对（`logs/manual-v076.txt`）。
+
+## v0.75.0（versionCode 164）
+
+**紧急修复：v0.74.0 覆盖安装后一进页面就闪退（数据库迁移校验失败）。用户数据未丢失。**
+
+- **根因**：`MIGRATION_22_23` 里建了索引 `index_interaction_bindings_actionId`，
+  但 `InteractionBindingEntity` **没有声明该索引**（`indices` 为空）。
+  Room 在 `onUpgrade → onValidateSchema` 时把实际索引列表与编译期 schema 逐项比对 →
+  多一个索引 → 抛 `IllegalStateException: Migration didn't properly handle: interaction_bindings`。
+  出错时机是**打开数据库**，所以表现是"一进页面就崩"，且所有列表读不到数据（**看着像数据丢了，实际没丢**）。
+- **修复**：给 `InteractionBindingEntity` 补上 `indices = [Index(value = ["actionId"], name = "index_interaction_bindings_actionId")]`，
+  与迁移语句对齐。schema 23.json 的 identityHash 由 `fab82c7141…` 变为 `40463c3bc8…`。
+- **数据安全性（已实测确认）**：Room 的升级走 `SQLiteOpenHelper` 事务，校验失败 → **整个升级回滚** →
+  `user_version` 保持原值、`personas` / `messages` 等存量数据分毫未动、`interaction_bindings` 无残留。
+  **修复版装上后重新打开，迁移会重跑并成功，数据自动回来**。
+  ⚠️ 唯一真会丢数据的情形：用户崩溃后**卸载重装**（App 数据被系统清除）。
+- **补上迁移回归测试**（本仓库此前一道都没有，这就是本次漏网的原因）：
+  新增 `app/src/test/java/com/menghuan/app/DbMigrationTest.kt`，
+  从 `app/schemas/<版本>.json` 读**真实建表语句**建旧库 → 交 Room 跑迁移 + identityHash 校验，
+  覆盖 v20→23、v21→23、v22→23 三条路径 + 复合主键 + **索引一致性显式断言**。
+  已做反向验证（去掉索引声明 / 去掉迁移里的 CREATE INDEX），测试都能变红 —— 断言确实在守着。
+  ⚠️ 该测试**必须在 `subst X:` 虚拟盘下跑**：Gradle 测试 worker 遇中文路径会编码错乱
+  （`梦欢` → `ÃÎ»¶`）导致 `ClassNotFoundException`，与代码无关。
+
+## v0.74.0（versionCode 163）
+
+**Git 仓库初始化；人设心情上会话列表；任务「失败」终态；ROADMAP 三项候选落地。**
+
+- **Git 仓库**：本仓库首次提交（`.gitignore` 补 `*.zip`（第三方模型包）/ `*.tmp`；**先只提交、不配远程**）。
+- **人设心情进会话列表**（`data/CompanionState.kt` 加 `badgeOf()` 纯函数 + `SettingsRepository.companionStates`
+  批量流）：消息页每行名字右边一颗表情，四档优先级——
+  `connection ≥ REACH_OUT_AT` → 🥺「很想找你」、`connection ≥ CONSIDER_AT && pride ≥ PRIDE_BLOCK` → 😤「想找你但拉不下脸」、
+  其余按 valence/arousal 情绪簇（😄/🙂/😖/😔/😰/😌/🙂/😐/😶）。
+  ⚠️ **列表只读已落盘状态、不实时 tick**（tick 会写盘）；行上带 `semantics` 无障碍说明。
+- **任务「失败」终态**（Room **v22**，`tasks` 加 `isFailed` 列，带默认值 ALTER，不动存量数据）：
+  `toggleTask` 完成与失败互斥（勾选即清 `isFailed`）；`markFailed` 设失败、清完成记录、取消闹钟、**不写回执**；
+  `clearFailed` 回到未处理并重排提醒。UI 长按菜单新增「标为失败 / 取消失败」，失败任务独立分组成**最底一组**（逾期之后）
+  并打「已失败」危险色标签。**失败计入完成率分母**（分母本就是全部任务数，自动满足）。
+- **ROADMAP 三项候选**（用户拍板"三项全做"，**不做角色拖动位置持久化**）：
+  - **① 点击互动配置界面**：新增 `interaction_bindings` 表（Room **v23**，纯新增空表）+ `InteractionBindingDao`；
+    `InteractionBindings` 加 `headActionId` / `bodyActionId`（0 = 用内置默认，删动作时自动收回）；
+    角色空间右上角新增「点击互动」圆钮 → `InteractionConfigSheet`：点头部/点身体可指定任意动作，
+    **点其他固定"随机趣味动作"不给挑**。未指定走内置默认（点头 → 摇头、点身体 → 摆手）。
+  - **② 动作编辑器高级模式**：`ActionComposer.scaleTracks` 逐通道幅度倍率（0.2×–2.0×，纯函数 + 4 项单测）；
+    编辑器加「高级」折叠区，列出这套动作真正用到的通道各一行倍率滑块。
+    **刻意不做逐关键帧编辑**（那是另一个量级，对绝大多数用户是负担）。
+  - **③ 角色空间背景支持视频**：`StageBackground` 改 sealed interface（`Preset` / `Image` / `Video`），
+    `StageBackgroundLayer(bg, modifier)` 新签名（预设永远铺底，图片/视频叠其上）；
+    新增 `StageVideoBackgroundEngine`（ExoPlayer + 裸 `TextureView`，**绝不引 media3-ui**，静音 + `REPEAT_MODE_ONE` +
+    出错只退回预设不降级）；`Live2dSpaceStore` / `CallBackgroundStore` 各加视频档
+    （`video:` 前缀 + 独立 `video/` 子目录 + 导入校验：**80MB / 30 秒 / 有画面轨 / 本机有解码器**）；
+    角色空间背景弹层与通话背景弹层各加「视频背景」一行。
+- **验证**：`:app:compileDebugKotlin` BUILD SUCCESSFUL；`Live2dActionTest` + `CompanionStateTest` 全绿
+  （新增：互动绑定 actionIdOf 1 项、倍率 4 项、badgeOf 4 项、任务失败 4 项）。
+
+
 
 **动态（推特式时间线）上线；备忘本整块下线；任务页从底栏搬进数据页。**
 

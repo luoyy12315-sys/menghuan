@@ -54,6 +54,7 @@ import com.menghuan.app.live2d.ActionComposer
 import com.menghuan.app.live2d.ActionPart
 import com.menghuan.app.live2d.ActionSource
 import com.menghuan.app.live2d.ActionType
+import com.menghuan.app.live2d.GenericChannel
 import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.ui.common.NeuMenuItem
 import com.menghuan.app.ui.common.NeuMenu
@@ -256,14 +257,17 @@ private fun subtitleOf(action: Live2dAction): String {
 // =====================================================================
 
 /**
- * 「新建动作」编辑器 —— **普通模式**（用户拍板第一阶段只做这一层）。
+ * 「新建动作」编辑器 —— 普通模式 + **高级模式**（v0.74.0 ROADMAP 候选②）。
  *
- * 用户看到的是：名字、基础动作、强度、速度、时长、四个部位开关、表情、预览、保存。
+ * 普通模式用户看到的是：名字、基础动作、强度、速度、时长、四个部位开关、表情、预览、保存。
  * **全程不出现任何 Live2D 参数名。**
  *
- * 高级模式（逐参数调）不在这一版：参数级编辑要么做成完整的关键帧编辑器
- * （那是另一个量级的工作），要么做成"逐通道幅度滑块"——后者对不懂 Live2D 的人等于没用。
- * 所以这一版先把"选个基础动作 + 调手感"这条最常用的路走通。
+ * 高级模式（用户点标题右侧的「高级」展开）给的是**逐通道的幅度倍率**：
+ * 每个用到的通道一行滑块（0.2×–2.0×），解决"整体强度调大之后，某一条动得过了/不够"这种事。
+ *
+ * ⚠️ 高级模式**刻意不做逐关键帧编辑**：那是完整关键帧编辑器的量级，对绝大多数用户是负担。
+ * 倍率是"整体强度"与"逐帧坐标"之间唯一真正能用的一层。
+ * 普通模式里那四个部位开关在高级模式下依然有效（筛轨道的动作不变），两层叠加。
  */
 @Composable
 fun ActionEditorSheet(
@@ -284,6 +288,9 @@ fun ActionEditorSheet(
     var durationMs by remember(base) { mutableStateOf(base?.safeDurationMs ?: 2400) }
     var parts by remember(base) { mutableStateOf(ActionComposer.partsOf(base)) }
     var expression by remember(base) { mutableStateOf(base?.expression.orEmpty()) }
+    // 高级模式：展开 + 逐通道倍率表（空表 = 全 1.0）
+    var advanced by remember(base) { mutableStateOf(false) }
+    var channelFactors by remember(base) { mutableStateOf(emptyMap<GenericChannel, Float>()) }
 
     val selectedTemplate = remember(chosenKey, chosenId, templates, base) {
         when {
@@ -294,6 +301,13 @@ fun ActionEditorSheet(
         }
     }
 
+    // 高级模式要调的通道 = 这套动作真正用到的那些（按部位开关筛完之后的）
+    val advChannels = remember(selectedTemplate, parts) {
+        val raw = selectedTemplate?.tracks?.takeIf { it.isNotEmpty() }
+            ?: ActionComposer.defaultTracks(parts)
+        raw.map { it.channel }.distinct()
+    }
+
     fun build() = ActionComposer.compose(
         base = selectedTemplate,
         name = name,
@@ -302,6 +316,7 @@ fun ActionEditorSheet(
         durationMs = durationMs,
         parts = parts,
         expression = expression,
+        channelFactors = if (advanced) channelFactors else emptyMap(),
     )
 
     NeuSheetScaffold(title = if (base != null) "调整动作" else "新建动作", onDismiss = onDismiss) {
@@ -397,6 +412,61 @@ fun ActionEditorSheet(
             }
         }
 
+        // ---- 高级模式（v0.74.0）：逐通道幅度倍率 ----
+        Spacer(Modifier.height(16.dp))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                    indication = null,
+                    onClick = { advanced = !advanced },
+                )
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("高级", fontSize = 14.5.sp, color = TextPrimary, modifier = Modifier.weight(1f))
+            Text(if (advanced) "▾" else "▸", fontSize = 13.sp, color = MutedText)
+        }
+        if (advanced) {
+            Spacer(Modifier.height(6.dp))
+            if (advChannels.isEmpty()) {
+                Text("这套动作还没有可调的通道", fontSize = 12.sp, color = MutedText)
+            } else {
+                advChannels.forEach { ch ->
+                    val f = channelFactors[ch] ?: 1f
+                    SliderRow(
+                        label = channelLabel(ch),
+                        value = f,
+                        range = ActionComposer.MIN_CHANNEL_FACTOR..ActionComposer.MAX_CHANNEL_FACTOR,
+                        display = "×%.2f".format(f),
+                    ) {
+                        // 拖回 1.0 就从表里删掉：表越干净，"这条其实没调过"越一眼可见
+                        channelFactors = if (kotlin.math.abs(it - 1f) < 0.005f) {
+                            channelFactors - ch
+                        } else {
+                            channelFactors + (ch to it)
+                        }
+                    }
+                }
+                if (channelFactors.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "恢复全部",
+                        fontSize = 12.5.sp,
+                        color = NeuAccent,
+                        modifier = Modifier
+                            .clickable(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                indication = null,
+                                onClick = { channelFactors = emptyMap() },
+                            )
+                            .padding(vertical = 4.dp),
+                    )
+                }
+            }
+        }
+
         Spacer(Modifier.height(20.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(Modifier.weight(1f)) {
@@ -429,6 +499,9 @@ fun ActionEditorSheet(
 }
 
 private const val NONE_KEY = "__none__"
+
+/** 高级模式里一条通道叫什么：`组名 · 通道名`（"头部 · 上下点头"），比裸通道名好认 */
+private fun channelLabel(ch: GenericChannel): String = "${ch.group.label} · ${ch.label}"
 
 // =====================================================================
 // AI 生成
@@ -542,21 +615,26 @@ private val AI_EXAMPLES = listOf(
 // =====================================================================
 
 /**
- * 背景选择：v0.65.0 用户点名**只留两档** —— 系统预设 / 自定义背景。
+ * 背景选择：v0.65.0 用户点名**只留两档** —— 系统预设 / 自定义背景；
+ * v0.74.0 再加**视频背景**一档（用户点名"角色空间背景支持视频"）。
  *
  * 原来那"主题底色 + 4 张内置渐变 + 相册图"六行里，用户真正会用的只有"要不要换成自己的图"
  * 这一件事；四档渐变是给用户添麻烦的（选了第 3 档的人，事后说不出那三档有什么差别）。
- * 老数据（`theme`、`builtin:1..3`）不用迁移：不是 `file:` 的一律按系统预设画。
+ * 老数据（`theme`、`builtin:1..3`）不用迁移：不是 `file:` / `video:` 的一律按系统预设画。
  */
 @Composable
 fun SpaceBackgroundSheet(
     current: Live2dSpaceStore.SpaceConfig,
     onPick: (Live2dSpaceStore.SpaceConfig) -> Unit,
     onImport: (Uri) -> Unit,
+    onImportVideo: (Uri) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) onImport(uri)
+    }
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) onImportVideo(uri)
     }
 
     NeuSheetScaffold(title = "角色空间背景", onDismiss = onDismiss) {
@@ -569,8 +647,14 @@ fun SpaceBackgroundSheet(
         Spacer(Modifier.height(8.dp))
         BackgroundRow(
             label = "自定义背景",
-            selected = current.isCustom,
+            selected = current.fileName != null,
             onClick = { picker.launch("image/*") },
+        )
+        Spacer(Modifier.height(8.dp))
+        BackgroundRow(
+            label = "视频背景（≤30 秒）",
+            selected = current.isVideo,
+            onClick = { videoPicker.launch("video/*") },
         )
         Spacer(Modifier.height(10.dp))
     }
@@ -593,6 +677,131 @@ private fun BackgroundRow(label: String, selected: Boolean, onClick: () -> Unit)
         Text(label, fontSize = 15.sp, color = TextPrimary, modifier = Modifier.weight(1f))
         if (selected) {
             Text("✓", fontSize = 15.sp, color = NeuAccent, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+// =====================================================================
+// 点击互动配置（v0.74.0）
+// =====================================================================
+
+/**
+ * 「点击互动」配置弹层（v0.74.0，ROADMAP 候选①）。
+ *
+ * 三行 = 三个区域（头部 / 身体 / 其他），点一行 → 展开该区的动作列表挑一条。
+ *
+ * 两条讲究：
+ * 1. **"其他"区没有单独指定**：它按需求永远是"从趣味动作里随机一个"（用户原话），
+ *    所以这一行只显示当前行为、不给挑 —— 硬给一个单选反而让"随机"这件事讲不清。
+ * 2. **挑动作时列表用动作库那份**（内置 + 我的 + AI，模型自带也算），
+ *    行上带"默认"一项：选它 = 解除指定、回到系统默认（点头 → 摇头、点身体 → 摆手）。
+ *
+ * ⚠️ 不写说明性小字（AGENTS §四）："点一行选一个动作"由行本身交代。
+ */
+@Composable
+fun InteractionConfigSheet(
+    bindings: com.menghuan.app.live2d.InteractionBindings,
+    actions: List<Live2dAction>,
+    onPick: (region: com.menghuan.app.live2d.InteractionRegion, actionId: Long) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // null = 没展开任何区；点一行展开它的动作列表
+    var expanded by remember { mutableStateOf<com.menghuan.app.live2d.InteractionRegion?>(null) }
+
+    val nameOf = remember(actions) { actions.associate { it.id to it.name } }
+
+    fun currentLabel(region: com.menghuan.app.live2d.InteractionRegion): String {
+        val bound = bindings.actionIdOf(region)
+        return if (bound > 0L) nameOf[bound] ?: "自定义动作" else "默认"
+    }
+
+    NeuSheetScaffold(title = "点击互动", onDismiss = onDismiss) {
+        Spacer(Modifier.height(6.dp))
+        val rows = listOf(
+            com.menghuan.app.live2d.InteractionRegion.HEAD to "点头部",
+            com.menghuan.app.live2d.InteractionRegion.BODY to "点身体",
+            com.menghuan.app.live2d.InteractionRegion.OTHER to "点其他",
+        )
+        rows.forEach { (region, label) ->
+            val selected = expanded == region
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .neuSurface(14.dp, color = if (selected) NeuTrack else NeuSurface)
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                        onClick = {
+                            // "其他"区是随机行为，不给展开（见类注释）
+                            if (region != com.menghuan.app.live2d.InteractionRegion.OTHER) {
+                                expanded = if (selected) null else region
+                            }
+                        },
+                    )
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(label, fontSize = 15.sp, color = TextPrimary, modifier = Modifier.weight(1f))
+                Text(
+                    if (region == com.menghuan.app.live2d.InteractionRegion.OTHER) "随机趣味动作"
+                    else currentLabel(region),
+                    fontSize = 13.sp,
+                    color = MutedText,
+                )
+                if (region != com.menghuan.app.live2d.InteractionRegion.OTHER) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (selected) "▾" else "▸", fontSize = 13.sp, color = MutedText)
+                }
+            }
+            // 展开区：默认 + 全部动作，挑一条即定
+            if (selected) {
+                Spacer(Modifier.height(6.dp))
+                InteractionActionRow(
+                    label = "默认",
+                    selected = bindings.actionIdOf(region) <= 0L,
+                    onClick = { onPick(region, 0L); expanded = null },
+                )
+                Spacer(Modifier.height(6.dp))
+                actions.forEach { action ->
+                    InteractionActionRow(
+                        label = action.name,
+                        selected = bindings.actionIdOf(region) == action.id,
+                        onClick = { onPick(region, action.id); expanded = null },
+                    )
+                    Spacer(Modifier.height(6.dp))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+@Composable
+private fun InteractionActionRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 14.dp)
+            .neuSurface(12.dp, color = if (selected) NeuTrack else NeuSurface)
+            .clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            fontSize = 14.sp,
+            color = TextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        if (selected) {
+            Text("✓", fontSize = 14.sp, color = NeuAccent, fontWeight = FontWeight.Bold)
         }
     }
 }

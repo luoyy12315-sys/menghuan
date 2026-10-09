@@ -184,12 +184,32 @@ data class TaskItem(
     val repeatDaily: Boolean = false, // 每日任务：无日期概念，每天重置未完成，提醒走每日重复闹钟
     @ColumnInfo(defaultValue = "0")
     val completionDate: Long = 0,   // 完成归属日（epochDay）：每日任务跨天即视为未完成
+    /**
+     * 任务失败（v0.74.0）。**与 [isDone] 互斥的正式终态**，不是标记：
+     * 落库、可取消、**计入完成率分母**（用户拍板"失败计入分母"）。
+     *
+     * ⚠️ 为什么不复用 `isDone` + 另一个布尔：失败与完成在**提醒、统计、回执、逾期判定**
+     * 四处行为都不同（见各处 `isFailed` 分支），揉进 `isDone` 会让每次读 `isDone` 都要先问
+     * "这次到底是成是败"，很快就分不清。多一列反而让每个分支都自解释。
+     *
+     * ⚠️ 失败**不写 task_completions**：那张表是"打卡成功"的记录，
+     * 热力/连续天数只认成功，失败进了它等于把失败算成打卡。
+     */
+    @ColumnInfo(defaultValue = "0")
+    val isFailed: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
 /** 当天有效完成状态：每日任务跨天自动回到未完成（展示层判定，不等 BootReceiver 归一化） */
 fun TaskItem.isEffectivelyDone(todayEpochDay: Long = java.time.LocalDate.now().toEpochDay()): Boolean =
-    if (repeatDaily) isDone && completionDate == todayEpochDay else isDone
+    if (repeatDaily) isDone && completionDate == todayEpochDay && !isFailed else isDone && !isFailed
+
+/**
+ * 当天有效失败状态（v0.74.0）。与 [isEffectivelyDone] 对称：
+ * 每日任务跨天重置，失败也一并回到未处理；`isFailed` 与 `isDone` 互斥由写入侧保证。
+ */
+fun TaskItem.isEffectivelyFailed(todayEpochDay: Long = java.time.LocalDate.now().toEpochDay()): Boolean =
+    if (repeatDaily) isFailed && completionDate == todayEpochDay else isFailed
 
 /** 打卡完成记录：每次勾选完成写一行（近 7 天热力 / 打卡小圆点 / AI 提炼任务上下文的数据源） */
 @Entity(tableName = "task_completions", primaryKeys = ["taskId", "day"])
@@ -520,6 +540,13 @@ data class CallTurn(
  * `personaId`：0 = 用户本人发的，非 0 = 哪个 AI 发的。点赞没有单独的表，
  * `likedBy` 存逗号分隔的 id 串（用户固定是 `u`）；数据量级用不上关系表，
  * 多一张表就多一次 join 与一处不一致。
+ *
+ * v0.76.0 加了 [images] / [location] 两列：
+ * - `images`：**\n 分隔的本机绝对路径**，文件落在 `filesDir/moment_images/`
+ *   （见 [com.menghuan.app.data.MomentImageStore]）。不存相册 Uri —— 用户删了原图
+ *   或换了 App，Uri 读出来的就是一片空白。只有帖子用得上，回复恒为空串。
+ * - `location`：**自由文字的地址**，不是经纬度。发的人本来就是手写"家""西湖边的星巴克"，
+ *   存经纬度反而要再引地图 SDK 逆地理才有字（大陆机器上基本拿不到）。
  */
 @Entity(
     tableName = "moments",
@@ -532,4 +559,8 @@ data class MomentEntry(
     @ColumnInfo(defaultValue = "") val text: String = "",
     @ColumnInfo(defaultValue = "0") val createdAt: Long = System.currentTimeMillis(),
     @ColumnInfo(defaultValue = "") val likedBy: String = "",
+    /** v0.76.0：多图（\n 分隔的本机绝对路径；上限 [MomentMath.IMAGES_MAX] 张） */
+    @ColumnInfo(defaultValue = "") val images: String = "",
+    /** v0.76.0：位置（自由文字，上限 [MomentMath.LOCATION_MAX] 字） */
+    @ColumnInfo(defaultValue = "") val location: String = "",
 )

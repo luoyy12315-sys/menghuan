@@ -17,6 +17,7 @@ import com.github.takahirom.roborazzi.captureRoboImage
 import com.menghuan.app.data.settingsStore
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -70,6 +71,23 @@ class UiRenderTest {
             app.db.profileFactDao().upsert(com.menghuan.app.data.model.ProfileFact(key = "作息", value = "通常 00:30–07:45"))
             app.db.profileFactDao().upsert(com.menghuan.app.data.model.ProfileFact(key = "职业", value = "自由职业"))
             app.db.profileFactDao().upsert(com.menghuan.app.data.model.ProfileFact(key = "关注领域", value = "睡眠 · 英语 · 健身"))
+
+            // v0.77.0：预置两条「心情计」读数，让消息列表截图同时覆盖三种状态 ——
+            // 阿布 = 心情好（进度条偏满）、严格教练 = 心情差（进度条见底）、苏格拉底不写 = 不占位
+            // （没聊过的角色没有心情数据，画一条空条反而像"她在生气"）。
+            val store = app.settingsRepository
+            store.setCompanionStateRaw(
+                1L,
+                com.menghuan.app.data.CompanionLogic.encode(
+                    com.menghuan.app.data.CompanionState(valence = 0.7f, arousal = 0.3f),
+                ),
+            )
+            store.setCompanionStateRaw(
+                2L,
+                com.menghuan.app.data.CompanionLogic.encode(
+                    com.menghuan.app.data.CompanionState(valence = -0.7f, arousal = 0.1f),
+                ),
+            )
         }
     }
 
@@ -103,10 +121,27 @@ class UiRenderTest {
         throw AssertionError("等待文本超时（45s）：$text", lastError)
     }
 
+    /**
+     * 等一个无障碍描述上屏。
+     *
+     * v0.79.0：改成与 [awaitText] 同一套**轮询 + 重试**。以前裸 `waitUntil` 在 Robolectric 下
+     * 会漏掉滞留的 invalidation 直接超时；而且滚动金额这类节点在动画收敛前根本不进语义树。
+     */
     private fun awaitDesc(desc: String) {
-        compose.waitUntil(15_000) {
-            compose.onAllNodesWithContentDescription(desc).fetchSemanticsNodes().isNotEmpty()
+        val deadline = System.currentTimeMillis() + 45_000
+        var lastError: Throwable? = null
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                if (compose.onAllNodesWithContentDescription(desc).fetchSemanticsNodes().isNotEmpty()) {
+                    return
+                }
+                compose.waitForIdle()
+            } catch (e: AssertionError) {
+                lastError = e // 动画未收敛时 waitForIdle 可能超时：继续轮询
+            }
+            Thread.sleep(120)
         }
+        throw AssertionError("等待描述超时（45s）：$desc", lastError)
     }
 
     /**
@@ -178,6 +213,20 @@ class UiRenderTest {
         repeat(3) { attempt ->
             try {
                 compose.onNodeWithTag(tag).performScrollTo().performClick()
+                return
+            } catch (e: AssertionError) {
+                if (attempt == 2) throw e
+                compose.waitForIdle()
+                Thread.sleep(400)
+            }
+        }
+    }
+
+    /** 同上，但按文案找（会话设置页最底部那几行没有 tag）。 */
+    private fun scrollToTextAndClick(text: String) {
+        repeat(3) { attempt ->
+            try {
+                compose.onNodeWithText(text).performScrollTo().performClick()
                 return
             } catch (e: AssertionError) {
                 if (attempt == 2) throw e
@@ -454,7 +503,15 @@ class UiRenderTest {
         snap("55-voice-library")
     }
 
-    /** v0.52.0 语音合成页：一家一段手风琴，点开谁填谁，切家不再串味 */
+    /**
+     * 语音合成页（v0.53.0 起的形状，2026-10-09 改写）。
+     *
+     * ⚠️ 本用例原来断言"三家平铺在页面上"（硅基流动 / 小米 MiMo / 自定义端点 + 当前生效那家
+     * 默认展开），那是**旧版**布局——用户点名"**不要**把三段摊在页面上"，改成
+     * **只列已配好的卡片 + 一个「＋ 添加接入」**（点开才选家）。旧断言从此一直红。
+     * 现在守的是新形状：只硅基配齐 → 页面上只有它一张卡（标题=模型名、副标题=去协议的地址），
+     * 另两家只在「＋ 添加接入」的弹层里出现。
+     */
     @Test
     fun render28TtsConfigScreen() {
         val app = compose.activity.application as MenghuanApp
@@ -476,19 +533,29 @@ class UiRenderTest {
         clickText("模型配置")
         awaitText("语音模型")
         clickText("语音模型")
-        awaitText("硅基流动")
-        awaitText("小米 MiMo")
-        awaitText("自定义端点")
-        awaitText("当前生效")
-        awaitText("API Key") // 当前生效那家默认展开，字段就在
+        // 只有硅基配齐了 → 页面上只有它这一张卡（模型名 + 去协议的地址）
+        awaitText("FunAudioLLM/CosyVoice2-0.5B")
+        awaitText("127.0.0.1:9/v1")
+        assertFalse(
+            "没配的家不该摊在页面上",
+            compose.onAllNodesWithText("小米 MiMo").fetchSemanticsNodes().isNotEmpty(),
+        )
+        assertFalse(
+            "没配的家不该摊在页面上",
+            compose.onAllNodesWithText("自定义端点").fetchSemanticsNodes().isNotEmpty(),
+        )
         // 克隆与音色管理已经搬去独立的「音色」页，这一页只管配置
         assertFalse(compose.onAllNodesWithText("音色克隆").fetchSemanticsNodes().isNotEmpty())
         snap("52-tts-config")
 
-        // 切到小米：看到的是小米自己那份（空），不是硅基的 sk-sf
-        clickText("小米 MiMo")
-        awaitText("接口地址")
-        snap("53-tts-config-mimo")
+        // 「＋ 添加接入」弹层才是选家：三家芯片 + 已接入清单
+        clickText("＋ 添加接入")
+        awaitText("添加到哪一家")
+        awaitText("硅基流动")
+        awaitText("小米 MiMo")
+        awaitText("自定义端点")
+        awaitText("已接入的：硅基流动")
+        snap("53-tts-config-add")
     }
 
     /** v0.53.4 API 配置：按模型列表展示，点一行直接进详情（列表里没有勾选、没有输入框）；v0.54.1 独立成「对话模型」页 */
@@ -635,9 +702,17 @@ class UiRenderTest {
         snap("6-chat-long")
     }
 
-    /** 搜索态：输入关键字 → 人设/消息命中结果上屏 */
+    /**
+     * 聊天记录页搜索：输入关键字 → 命中消息上屏。
+     *
+     * ⚠️ v0.79.0 改写：本用例原来点的是**消息页那行「搜索」**，而消息页搜索整条链路
+     * 在 v0.56.8 就按用户点名删掉了（用户："消息页不要搜索，顶栏放大镜也不要"），
+     * 此后一直是一条红——守的是个不存在的入口。
+     * 搜索现在住在「会话设置 → 查看聊天记录」（v0.53.6），守的是同一件事：
+     * 命中消息能上屏。
+     */
     @Test
-    fun render6Search() {
+    fun render6ChatHistorySearch() {
         // 搜索走真实 DB（种子演示消息不入库），先预置一条可命中的消息
         val app = compose.activity.application as MenghuanApp
         kotlinx.coroutines.runBlocking {
@@ -652,12 +727,17 @@ class UiRenderTest {
         // DAO 直查：证明搜索 SQL 本身能命中（失败则问题在查询；成功则问题在 UI 链路）
         val hits = kotlinx.coroutines.runBlocking { app.db.messageDao().searchMessages("睡前") }
         assert(hits.isNotEmpty()) { "searchMessages 应命中预置消息，实得 ${hits.size} 条" }
-        clickText("搜索") // 搜索行（列表态唯一）
-        // 搜索态输入框是主窗口 BasicTextField，可直接输入
+
+        clickText("阿布") // 进这个会话
+        clickDesc("会话设置") // 右上角三点 → 整页会话设置
+        awaitText("会话设置")
+        scrollToTextAndClick("查看聊天记录") // 这一行在列表最底部
+        awaitText("与 阿布 的聊天记录")
+        // 搜索框是那一页的 BasicTextField，可直接输入
         compose.onNode(androidx.compose.ui.test.hasSetTextAction())
             .performTextInput("睡前")
         awaitText("睡前刷手机") // 命中结果上屏
-        snap("7-search")
+        snap("7-chat-history-search")
     }
 
     /** 数据页真数据态：AI 洞察（提炼产物）+ 近 7 天打卡热力 + 真实完成度圆环 */
@@ -763,10 +843,71 @@ class UiRenderTest {
     /** 「我的」页：人设管理 / 基础档案 / 设置 三组行卡 */
     @Test
     fun render11Me() {
+        val app = compose.activity.application as MenghuanApp
+        awaitText("阿布")
+        // v0.80.0：预置一份自己的档案 —— 顶部档案卡要能看到"有内容"的形状，
+        // 而不是只看"没设置过"的兜底态（兜底态另有断言覆盖：昵称显示「我」）
+        kotlinx.coroutines.runBlocking {
+            app.settingsRepository.setMyProfile(
+                com.menghuan.app.data.MyProfile(nickname = "小舟", bio = "晚睡患者，正在改"),
+            )
+            app.settingsRepository.setUserAvatar(com.menghuan.app.data.UserAvatar(emoji = "\uD83C\uDF19"))
+        }
+        compose.onNodeWithTag("bottom_tab_3").performClick()
+        // v0.80.0：「基础档案」那张行卡已取消、内容并入顶部档案卡，
+        // 所以这里断言的是档案卡的昵称与下方三张行卡（人设管理 / AI 图库 / 设置）。
+        awaitText("小舟")
+        awaitText("人设管理")
+        awaitText("AI 图库")
+        snap("12-me")
+        // 点档案卡 → 个人档案页（头像 / 昵称 / 简介 + 基础档案条目都在这儿改）
+        clickText("小舟")
+        awaitText("个人档案")
+        // v0.80.0：头像选择换成编辑人设那一套（emoji 滚轮 + 细线胶囊），
+        // 「更换头像」按钮与选头像弹层都撤了；昵称/简介也换成同款输入框（值是"小舟"/那句简介）。
+        awaitText("点击编辑") // 头像下面那颗细线胶囊（没选图时写这个）
+        awaitText("昵称")
+        awaitText("简介")
+        awaitText("晚睡患者，正在改")
+        awaitText("基础档案 · 注入 AI 的用户画像")
+        // emoji 滚轮确实铺上了：预设立的表情出现在语义树里
+        // （框里是预置的月亮 🌙，不在预设名单里 → 滚轮落在第一个预设上）
+        assertTrue(
+            "emoji 滚轮没渲染出来",
+            compose.onAllNodesWithText("🙂").fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithText("😊").fetchSemanticsNodes().isNotEmpty(),
+        )
+        snap("70-me-profile")
+    }
+
+    /**
+     * v0.81.0 守门：**没设过任何头像**的人点进「个人档案」页，逛一圈出来，
+     * 头像必须还是"没设过"（框里是黑底白「我」）—— 滚轮首次定位那一下不算用户选择。
+     *
+     * 这条守的是 `AvatarEmojiWheel.commitInitialAnchor = false`：档案页是**改完即时落盘**的，
+     * 要是把首帧锚点当成选择写下去，用户一进页面「我」就被换成某个表情了（bug 观感）。
+     */
+    @Test
+    fun render12ProfileKeepsEmptyAvatar() {
+        val app = compose.activity.application as MenghuanApp
+        // 只设昵称、**不设头像** —— 要验的就是"头像从没设过"这一态。
+        // ⚠️ 头像要**显式清空**：settings 的 DataStore 是**进程级单例**，别的用例设过的
+        // 头像会漏到这里来（第一版就是被 render11Me 的 🌙 漏进来，看着像"页面自己改了头像"）。
+        kotlinx.coroutines.runBlocking {
+            app.settingsRepository.setMyProfile(com.menghuan.app.data.MyProfile(nickname = "小舟"))
+            app.settingsRepository.setUserAvatar(com.menghuan.app.data.UserAvatar())
+        }
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_3").performClick()
-        awaitText("基础档案") // 行卡上屏
-        snap("12-me")
+        awaitText("小舟")
+        clickText("小舟") // 顶部档案卡
+        awaitText("个人档案")
+        awaitText("点击编辑") // 头像下面那颗细线胶囊在（滚轮也铺上了）
+        val after = kotlinx.coroutines.runBlocking { app.settingsRepository.userAvatar.first() }
+        assertTrue(
+            "没选过头像的人，进页面后仍该是「没设过」（实得 emoji='" + after.emoji + "' image='" + after.imagePath + "'）",
+            after.emoji.isBlank() && after.imagePath.isBlank(),
+        )
     }
 
     /**
@@ -810,6 +951,11 @@ class UiRenderTest {
         awaitText("跟随系统")
         awaitText("浅色")
         awaitText("深色")
+        // v0.80.0：外观页现在有"聊天气泡"整段（明暗切换 + 实时预览 + 自己/对方两套 + 字体三件套）
+        awaitText("聊天气泡")
+        awaitText("深色主题")
+        awaitText("自己发的")
+        snap("28-appearance")
         // 切到浅色确认生效，然后还原（settingsStore 是进程级单例）
         clickText("浅色")
         awaitState("点了「浅色」后 themeMode 应为 LIGHT") {
@@ -1004,7 +1150,14 @@ class UiRenderTest {
         snap("14-persona-editor")
         clickText("查看写作规范")
         awaitText("设定词写作规范")
-        awaitText("示例：健身教练")
+        // v0.79.0：面板改成"一份可以复制给别的 AI 的规范" —— 主体是规范原文 + 复制按钮；
+        // 「示例：健身教练 / 学习教练」那两段按用户点名删掉了（"不要模板，也不要例子"）。
+        awaitText("复制规范")
+        awaitText("角色真实拥有的能力")
+        assertFalse(
+            "旧示例不该还在",
+            compose.onAllNodesWithText("示例：健身教练").fetchSemanticsNodes().isNotEmpty(),
+        )
         snap("15-persona-guide")
     }
 
@@ -1044,7 +1197,10 @@ class UiRenderTest {
         awaitText("记账本")
         scrollToTagAndClick("ledger_entry_row") // 底部入口 → 全屏记账页
         awaitText("月度统计") // 只存在于记账本全屏页：用于确认真的跳走了（数据页也有「现金余额」）
-        awaitText("636.20") // 800 - 35.8 - 128 = 636.2
+        // v0.79.0：余额是滚动金额（每一位一个 Text）。整串要按**无障碍描述**找 ——
+        // `RollingAmountText` 现在把完整金额合成一个节点（读屏也不再一位一位念）。
+        // 800 - 35.8 - 128 = 636.2
+        awaitDesc("636.20")
         awaitText("午餐") // 流水行（含来源标签）
         awaitText("识图")
         snap("40-ledger")

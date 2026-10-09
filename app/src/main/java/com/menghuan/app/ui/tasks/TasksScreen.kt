@@ -68,6 +68,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menghuan.app.data.model.TaskItem
 import com.menghuan.app.data.model.isEffectivelyDone
+import com.menghuan.app.data.model.isEffectivelyFailed
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuCard
@@ -137,20 +138,32 @@ fun TasksScreen(
 
     val today = LocalDate.now()
     val tomorrow = today.plusDays(1)
-    // 「隐藏已完成」筛选：勾掉的（含当日已完成的每日任务）全部退出各分组
-    fun List<TaskItem>.dropDone() = if (hideDone) filter { !it.isEffectivelyDone() } else this
-    // 每日任务板块：无日期概念，当天未完成的排前面
-    val dailyTasks = tasks.filter { it.repeatDaily }.sortedBy { it.isEffectivelyDone() }.dropDone()
+    // 「隐藏已完成」筛选：勾掉的（含当日已完成的每日任务）**与已失败**一起退出各分组
+    //
+    // v0.74.0：失败也算"已了结"，跟着隐藏——这个筛子的语义是"只看还要我处理的"，
+    // 留下失败的任务等于让用户以为它还在等他动手。
+    fun List<TaskItem>.dropDone() =
+        if (hideDone) filter { !it.isEffectivelyDone() && !it.isEffectivelyFailed() } else this
+    // 每日任务板块：无日期概念，当天未完成的排前面（失败也视为已了结，排后面）
+    val dailyTasks = tasks.filter { it.repeatDaily }
+        .sortedBy { it.isEffectivelyDone() || it.isEffectivelyFailed() }
+    // 每天失败的每日任务单独沉底：与基础任务的失败同待遇（见下面 failedTasks）
+    val dailyActive = dailyTasks.filter { !it.isEffectivelyFailed() }.dropDone()
     // 基础任务板块：一次性，按日期分组（现有逻辑）
     val basicTasks = tasks.filter { !it.repeatDaily }
-    val overdue = basicTasks.filter { dueDateOf(it) < today }.dropDone()
-    val todayTasks = basicTasks.filter { dueDateOf(it) == today }.dropDone()
-    val tomorrowTasks = basicTasks.filter { dueDateOf(it) == tomorrow }.dropDone()
-    val laterTasks = basicTasks.filter { dueDateOf(it) > tomorrow }.dropDone()
+    // 失败任务单独成组、沉到最底（v0.74.0）：与「已逾期」并列但语义不同 ——
+    // 逾期是"还没做且晚了"，失败是"已经了结、结果是没做成"。混在日期组里会被当成待办。
+    val failedTasks = tasks.filter { it.isEffectivelyFailed() }
+        .let { if (hideDone) emptyList() else it }
+    val basicActive = basicTasks.filter { !it.isEffectivelyFailed() }
+    val overdue = basicActive.filter { dueDateOf(it) < today }.dropDone()
+    val todayTasks = basicActive.filter { dueDateOf(it) == today }.dropDone()
+    val tomorrowTasks = basicActive.filter { dueDateOf(it) == tomorrow }.dropDone()
+    val laterTasks = basicActive.filter { dueDateOf(it) > tomorrow }.dropDone()
     // 「基础任务」分组头随筛选联动：四个子分组全空就不再出现
     val basicVisible = todayTasks.isNotEmpty() || tomorrowTasks.isNotEmpty() ||
         laterTasks.isNotEmpty() || overdue.isNotEmpty()
-    val visibleAny = dailyTasks.isNotEmpty() || basicVisible
+    val visibleAny = dailyActive.isNotEmpty() || basicVisible || failedTasks.isNotEmpty()
 
     Column(
         Modifier
@@ -225,13 +238,13 @@ fun TasksScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                if (dailyTasks.isNotEmpty()) {
+                if (dailyActive.isNotEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         NeuSectionTitle("每日任务", modifier = Modifier.padding(top = 10.dp))
                     }
-                    itemsIndexed(dailyTasks, key = { _, t -> t.id }) { index, task ->
+                    itemsIndexed(dailyActive, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                         }
                     }
                 }
@@ -246,7 +259,7 @@ fun TasksScreen(
                     }
                     itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                         }
                     }
                 }
@@ -256,7 +269,7 @@ fun TasksScreen(
                     }
                     itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                         }
                     }
                 }
@@ -266,18 +279,29 @@ fun TasksScreen(
                     }
                     itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                         }
                     }
                 }
-                // 逾期组置底：红字分组头 + 卡片红色左边线
+                // 逾期组置底：红字分组头（v0.77.0 起卡片不再画红色左边线）
                 if (overdue.isNotEmpty()) {
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp))
                     }
                     itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
                         Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
+                        }
+                    }
+                }
+                // 已失败组：沉在最底（v0.74.0），在逾期之后 —— 它是"已了结"，比"还没做"更该沉底
+                if (failedTasks.isNotEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        NeuSectionTitle("已失败", modifier = Modifier.padding(start = 4.dp))
+                    }
+                    itemsIndexed(failedTasks, key = { _, t -> t.id }) { index, task ->
+                        Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
+                            TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                         }
                     }
                 }
@@ -291,11 +315,11 @@ fun TasksScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // 板块一：每日任务（无日期，每天重置；当天完成的排后面）
-            if (dailyTasks.isNotEmpty()) {
+            if (dailyActive.isNotEmpty()) {
                 item { NeuSectionTitle("每日任务", modifier = Modifier.padding(top = 10.dp)) }
-                itemsIndexed(dailyTasks, key = { _, t -> t.id }) { index, task ->
+                itemsIndexed(dailyActive, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                     }
                 }
             }
@@ -307,7 +331,7 @@ fun TasksScreen(
                 item { NeuSectionTitle("今天 · ${today.monthValue}月${today.dayOfMonth}日", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(todayTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                     }
                 }
             }
@@ -315,7 +339,7 @@ fun TasksScreen(
                 item { NeuSectionTitle("明天", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(tomorrowTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                     }
                 }
             }
@@ -323,16 +347,25 @@ fun TasksScreen(
                 item { NeuSectionTitle("以后", modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(laterTasks, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                     }
                 }
             }
-            // 逾期组置底：红字分组头 + 卡片红色左边线
+            // 逾期组置底：红字分组头（v0.77.0 起卡片不再画红色左边线）
             if (overdue.isNotEmpty()) {
                 item { NeuSectionTitle("已逾期", accent = true, modifier = Modifier.padding(start = 4.dp)) }
                 itemsIndexed(overdue, key = { _, t -> t.id }) { index, task ->
                     Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
-                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) })
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
+                    }
+                }
+            }
+            // 已失败组：沉在最底（v0.74.0），在逾期之后
+            if (failedTasks.isNotEmpty()) {
+                item { NeuSectionTitle("已失败", modifier = Modifier.padding(start = 4.dp)) }
+                itemsIndexed(failedTasks, key = { _, t -> t.id }) { index, task ->
+                    Box(Modifier.animateItem(fadeInSpec = tween(200, delayMillis = (index * 16).coerceAtMost(120)), placementSpec = TaskPlacementSpring)) {
+                        TaskRow(task, onToggle = { vm.toggle(task) }, onEdit = { editingTask = it; showTaskSheet = true }, onDelete = { vm.delete(task) }, onFail = { vm.markFailed(it) }, onClearFail = { vm.clearFailed(it) })
                     }
                 }
             }
@@ -670,6 +703,10 @@ private fun TaskRow(
     onToggle: () -> Unit,
     onEdit: (TaskItem) -> Unit,
     onDelete: (TaskItem) -> Unit,
+    /** v0.74.0：标为失败（终态） */
+    onFail: (TaskItem) -> Unit = {},
+    /** v0.74.0：取消失败，回到未处理 */
+    onClearFail: (TaskItem) -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -682,8 +719,11 @@ private fun TaskRow(
         menuOpen = true
     }
     val done = task.isEffectivelyDone()
-    val isOverdue = !task.repeatDaily && !done && dueDateOf(task) < LocalDate.now()
+    val failed = task.isEffectivelyFailed()
+    // 逾期 = 一次性任务、既没完成也没失败（失败本身就是一个终态，不该再叠"逾期"）
+    val isOverdue = !task.repeatDaily && !done && !failed && dueDateOf(task) < LocalDate.now()
     val tag = when {
+        failed -> "已失败"
         task.repeatDaily -> if (done) "已完成" else "每日"
         done -> "已完成"
         isOverdue -> "已逾期"
@@ -692,6 +732,7 @@ private fun TaskRow(
     }
     val tagColor = when (tag) {
         "已逾期" -> NeuDanger
+        "已失败" -> NeuDanger
         "AI 建议" -> NeuAccent
         else -> MutedText
     }
@@ -699,23 +740,8 @@ private fun TaskRow(
         NeuCard(
             cornerRadius = 20.dp,
             contentPadding = 13.dp,
-            modifier = Modifier
-                .fillMaxWidth()
-                // 逾期未完成：卡片左缘红色边线（clip 内层绘制，跟随圆角）
-                .then(
-                    if (isOverdue) {
-                        val danger = NeuDanger
-                        Modifier.drawBehind {
-                            drawRoundRect(
-                                color = danger,
-                                size = androidx.compose.ui.geometry.Size(2.5.dp.toPx(), size.height),
-                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(20.dp.toPx()),
-                            )
-                        }
-                    } else {
-                        Modifier
-                    },
-                ),
+            // v0.77.0：逾期卡片的红色左边线已按用户要求删除 —— 逾期语义由分组头红字 +
+            // 「已逾期」红标签承担，卡片本身不再叠一层红（同一张卡上有两处红色太吵）。
         ) {
             // v0.55.0：任务行补**按压缩放**。注释里写着"反馈靠卡片按压与勾选动画"，
             // 但按压那半个从来没做 —— 点一下只有勾选圈动，整行是"死"的。
@@ -743,8 +769,13 @@ private fun TaskRow(
                     Text(
                         task.title,
                         fontSize = 15.sp,
-                        color = if (done) FaintText else TextPrimary,
-                        textDecoration = if (done) TextDecoration.LineThrough else TextDecoration.None,
+                        // 完成 / 失败都是"已了结"，标题都转灰；
+                        // 区别在删除线：完成划掉（做完了），失败**也划掉但不描红**——
+                        // 红色是我们给"逾期/危险"的语义，一条失败的任务再描红会让整页很吵。
+                        // 失败靠右侧「已失败」红标签 + 未勾选的空圈区分（圆点仍是空的，
+                        // 因为失败不是完成，那颗圈代表"我做成过吗"，答案是没有）。
+                        color = if (done || failed) FaintText else TextPrimary,
+                        textDecoration = if (done || failed) TextDecoration.LineThrough else TextDecoration.None,
                     )
                     task.note.takeIf { it.isNotBlank() }?.let {
                         Text(it, fontSize = 12.sp, color = MutedText, maxLines = 1)
@@ -768,6 +799,27 @@ private fun TaskRow(
                         onEdit(task)
                     },
                 )
+                // v0.74.0：失败是正式终态。菜单项按当前状态**互斥显示**——
+                // 已完成的显示「标为失败」（它其实是"我搞砸了"），失败中的显示「取消失败」。
+                // 不做成两个都常驻：一条任务不可能既是完成又是失败，菜单里同时挂着两个
+                // 方向相反的项，用户会以为能同时选。
+                if (failed) {
+                    NeuMenuItem(
+                        "取消失败",
+                        onClick = {
+                            menuOpen = false
+                            onClearFail(task)
+                        },
+                    )
+                } else if (!done) {
+                    NeuMenuItem(
+                        "标为失败",
+                        onClick = {
+                            menuOpen = false
+                            onFail(task)
+                        },
+                    )
+                }
                 NeuMenuItem(
                     "删除",
                     danger = true,

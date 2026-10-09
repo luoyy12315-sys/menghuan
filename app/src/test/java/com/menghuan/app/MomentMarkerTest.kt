@@ -85,4 +85,69 @@ class MomentMarkerTest {
         assertTrue(p.contains("[动态#帖子id:一句话]"))
         assertTrue(p.contains("不要为了刷存在感而发"))
     }
+
+    // ===== v0.77.0：AI 点赞 =====
+
+    @Test
+    fun `点赞标记抽出 id 并剥干净正文`() {
+        val d = MomentMarker.parse("这条我喜欢。\n[点赞:7]")
+        assertEquals(listOf(7L), d.likes)
+        assertTrue(d.posts.isEmpty())
+        assertTrue(d.replies.isEmpty())
+        assertEquals("这条我喜欢。", d.cleanText)
+        assertFalse("点赞标记必须剥干净", d.cleanText.contains("点赞"))
+    }
+
+    @Test
+    fun `点赞与回帖可以同时在一条里`() {
+        val d = MomentMarker.parse("[动态#3:不错]\n[点赞:3]")
+        assertEquals(listOf(3L to "不错"), d.replies)
+        assertEquals(listOf(3L), d.likes)
+        assertEquals("", d.cleanText)
+    }
+
+    @Test
+    fun `全角冒号的点赞也认`() {
+        val d = MomentMarker.parse("[点赞：12]")
+        assertEquals(listOf(12L), d.likes)
+    }
+
+    @Test
+    fun `点赞 id 去重`() {
+        // 模型可能重复说两遍，落库前先去重（避免同一条帖子写好几次）
+        val d = MomentMarker.parse("[点赞:5] 好喜欢 [点赞:5]")
+        assertEquals(listOf(5L), d.likes)
+    }
+
+    @Test
+    fun `只点赞也算想做点什么`() {
+        assertTrue(MomentMarker.parse("[点赞:1]").wantsAnything)
+    }
+
+    @Test
+    fun `超长点赞编号不当标记`() {
+        val raw = "[点赞:1234567890123]"
+        val d = MomentMarker.parse(raw)
+        assertTrue("过长 id 不该被认成点赞标记", d.likes.isEmpty())
+        assertTrue("正文要原样留着", d.cleanText.contains("点赞"))
+    }
+
+    @Test
+    fun `固定说明里点赞语法在_且点名了看动态的两个时机与记忆可读`() {
+        val p = MomentMarker.promptSection()
+        assertTrue("要点出点赞语法", p.contains("[点赞:帖子id]"))
+        // v0.79.0 **改正**：v0.77.0 把用户那句"AI 回复动态只能在跟 AI 聊天时回复"当成了产品要求，
+        // 写成"你只能在聊天里顺手做、没有刷动态的能力"——**理解反了**。
+        // 用户原话是"不跟 AI 聊的时候它也会看我动态，像真人一样"。
+        assertTrue("要点出看动态的两个时机", p.contains("你看到动态的时机有两个"))
+        assertTrue("主动找用户时也能看到动态", p.contains("让你主动去找用户"))
+        assertFalse(
+            "不许再写「只能在聊天里做」",
+            p.contains("所有动态动作都只发生在你回复用户这条消息的过程中"),
+        )
+        // 保留的仍然是"别假装自己一直在线"（不诚实，也不是真话）
+        assertTrue("要禁止假装随时在线", p.contains("别假装自己一直在线"))
+        // v0.77.0：AI 记忆可读要说清楚
+        assertTrue("要说清 AI 看得到记忆", p.contains("你看得到用户的记忆"))
+    }
 }

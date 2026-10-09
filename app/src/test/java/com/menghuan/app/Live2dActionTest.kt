@@ -353,6 +353,20 @@ class Live2dActionTest {
         assertEquals(InteractionRegion.OTHER, InteractionRegion.fromKey(null))
     }
 
+    @Test
+    fun `互动绑定默认没有指定动作，指定后按区取回`() {
+        val d = InteractionBindings.DEFAULT
+        assertEquals(0L, d.actionIdOf(InteractionRegion.HEAD))
+        assertEquals(0L, d.actionIdOf(InteractionRegion.BODY))
+        // 其他区永远是随机，不接受指定
+        assertEquals(0L, d.actionIdOf(InteractionRegion.OTHER))
+
+        val bound = InteractionBindings(headActionId = 7L, bodyActionId = 9L)
+        assertEquals(7L, bound.actionIdOf(InteractionRegion.HEAD))
+        assertEquals(9L, bound.actionIdOf(InteractionRegion.BODY))
+        assertEquals(0L, bound.actionIdOf(InteractionRegion.OTHER))
+    }
+
     // ---------------------------------------------------------------
     // 通话状态 → 动作槽（同名不同义的坑）
     // ---------------------------------------------------------------
@@ -434,6 +448,58 @@ class Live2dActionTest {
             setOf(ActionPart.BODY, ActionPart.ARM, ActionPart.HEAD, ActionPart.STAGE),
             ActionComposer.partsOf(BuiltinActions.split()),
         )
+    }
+
+    // ---------------------------------------------------------------
+    // 高级模式：逐通道倍率（v0.74.0）
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `倍率为 1 时轨道一字不改`() {
+        val track = ParameterTrack.of(GenericChannel.HEAD_Z, TrackEasing.IN_OUT, 0f to 0f, 0.5f to 0.4f, 1f to 0f)
+        val same = ActionComposer.scaleTrack(track, 1f)
+        assertEquals(track.keys, same.keys)
+    }
+
+    @Test
+    fun `倍率按通道缩放关键帧数值且夹在上下限内`() {
+        val track = ParameterTrack.of(GenericChannel.HEAD_Z, TrackEasing.IN_OUT, 0f to 0f, 1f to 0.4f)
+        val doubled = ActionComposer.scaleTrack(track, 2f)
+        assertEquals(0.8f, doubled.keys.last().value, 1e-3f)
+        // 超出上限的倍率被夹到 MAX_CHANNEL_FACTOR
+        val huge = ActionComposer.scaleTrack(track, 99f)
+        assertEquals(0.4f * ActionComposer.MAX_CHANNEL_FACTOR, huge.keys.last().value, 1e-3f)
+    }
+
+    @Test
+    fun `倍率表只影响列出来的通道`() {
+        val a = ParameterTrack.of(GenericChannel.HEAD_Z, TrackEasing.IN_OUT, 0f to 0f, 1f to 0.4f)
+        val b = ParameterTrack.of(GenericChannel.BODY_Z, TrackEasing.IN_OUT, 0f to 0f, 1f to 0.3f)
+        val out = ActionComposer.scaleTracks(listOf(a, b), mapOf(GenericChannel.HEAD_Z to 2f))
+        assertEquals(0.8f, out[0].keys.last().value, 1e-3f)
+        // 没在表里 = 不动
+        assertEquals(0.3f, out[1].keys.last().value, 1e-3f)
+    }
+
+    @Test
+    fun `compose 带倍率表改轨道，不带时与普通模式一致`() {
+        val plain = ActionComposer.compose(
+            base = BuiltinActions.wave(), name = "挥手", amplitude = 1f, speed = 1f,
+            durationMs = 2000, parts = ActionComposer.partsOf(BuiltinActions.wave()), expression = "",
+        )
+        val scaled = ActionComposer.compose(
+            base = BuiltinActions.wave(), name = "挥手", amplitude = 1f, speed = 1f,
+            durationMs = 2000, parts = ActionComposer.partsOf(BuiltinActions.wave()), expression = "",
+            channelFactors = mapOf(GenericChannel.ARM_R to 0.2f),
+        )
+        val plainArm = plain.tracks.first { it.channel == GenericChannel.ARM_R }
+        val scaledArm = scaled.tracks.first { it.channel == GenericChannel.ARM_R }
+        // 缩到 0.2 倍：峰值一定比原来小
+        assertTrue(scaledArm.keys.maxOf { kotlin.math.abs(it.value) } < plainArm.keys.maxOf { kotlin.math.abs(it.value) })
+        // 没在倍率表里的通道原样保留
+        val plainHead = plain.tracks.first { it.channel == GenericChannel.HEAD_Z }
+        val scaledHead = scaled.tracks.first { it.channel == GenericChannel.HEAD_Z }
+        assertEquals(plainHead.keys, scaledHead.keys)
     }
 
     // ---------------------------------------------------------------

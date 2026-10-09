@@ -325,6 +325,22 @@ fun ChatSettingsScreen(
         }
     }
 
+    // v0.74.0：通话背景视频（与图片走同一个 store，只是换 video/ 子目录）
+    val callBgVideoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val outcome = withContext(Dispatchers.IO) { CallBackgroundStore.importVideo(context, personaId, uri) }
+            when (outcome) {
+                is CallBackgroundStore.Import.Ok -> {
+                    repo.setCallBackground(personaId, outcome.value)
+                    Toast.makeText(context, "视频背景已保存", Toast.LENGTH_SHORT).show()
+                }
+                is CallBackgroundStore.Import.Failed ->
+                    Toast.makeText(context, outcome.reason, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     // v0.56.1（用户拍板）：所有行**统一单行、全部去掉小标题**；
     // 带开关的行（联网搜索 / 人设主动关心）与「查看聊天记录」挪到列表**底部**，其余入口顺序不变。
     // 行标题仍 17sp，行高与发丝线分隔保持一致。错峰入场序列接新行号。
@@ -824,11 +840,12 @@ fun ChatSettingsScreen(
         }
     }
 
-    // ===== 视频通话背景（底部弹层，v0.66.0）：系统预设 / 自定义图片 两档 =====
+    // ===== 视频通话背景（底部弹层，v0.66.0；v0.74.0 加视频档）：系统预设 / 自定义图片 / 视频 =====
     //
-    // 形状刻意与「聊天背景」「角色空间背景」同款：两行、点一行即定，不叠第二层弹层。
+    // 形状刻意与「聊天背景」「角色空间背景」同款：点一行即定，不叠第二层弹层。
     // 只有视频通话读这个档位（语音通话维持现在的页面底色 —— 用户口径）。
     if (showCallBgSheet) {
+        val isVideo = CallBackgroundStore.isVideo(callBg)
         val custom = CallBackgroundStore.isCustom(callBg)
         NeuSheetScaffold(title = "通话背景", onDismiss = { showCallBgSheet = false }) {
             Spacer(Modifier.height(6.dp))
@@ -836,7 +853,7 @@ fun ChatSettingsScreen(
                 icon = MIcons.Palette,
                 title = "系统预设",
                 subtitle = "App 给的那张渐变",
-                selected = !custom,
+                selected = !custom && !isVideo,
                 onClick = {
                     scope.launch { repo.setCallBackground(personaId, CallBackgroundStore.PRESET) }
                     showCallBgSheet = false
@@ -851,6 +868,17 @@ fun ChatSettingsScreen(
                 onClick = {
                     showCallBgSheet = false
                     callBgPicker.launch("image/*")
+                },
+            )
+            Spacer(Modifier.height(8.dp))
+            NeuSheetRow(
+                icon = MIcons.Video,
+                title = "视频背景",
+                subtitle = if (isVideo) "已设置 · 点此换一段" else "从相册选一段视频（≤30 秒）",
+                selected = isVideo,
+                onClick = {
+                    showCallBgSheet = false
+                    callBgVideoPicker.launch("video/*")
                 },
             )
             Spacer(Modifier.height(10.dp))

@@ -31,6 +31,10 @@ const val DEFAULT_PROACTIVE_WINDOW_END = "23:00"
  *   窗口过完了（或今天的计划条数发完了）就排到明天的窗口 —— "什么时候来"是随机的，不是准点打卡；
  * - 内容交给模型，并**把当前时间告诉它**（现在是几点 + 早上/中午/下午/晚上/深夜），
  *   让它说贴合时间的话（早上问候早、深夜轻声）；
+ * - **顺便看一眼用户的动态**（v0.79.0，用户点名「不跟 AI 聊的时候它也会看我动态、像真人一样」）：
+ *   组装上下文时把用户最近发的、**这个角色还没回过也没赞过**的帖子一并给它（最多 5 条），
+ *   它可以顺手回一句或点个赞 —— 动作走 [MomentMarker] 标记，落库走 [MomentActions]。
+ *   用户不聊天时动态也被回应，就是靠这一条；**不新增闹钟、不多花一次请求**（同一次调用里决定）。
  * - 一轮只服务**这一个角色**（闹钟上带着人设 id）；老版本那条全局闹钟没有 id，
  *   走兼容分支：所有开了开关的角色里挑一个 —— 今天发得最少、其次最久没发过的优先；
  * - 每次都要 API 配置齐全、生成成功才落库与计数 —— 宁缺毋滥，绝不打扰。
@@ -216,6 +220,7 @@ object ProactiveChat {
         val tasks = db.taskDao().observeAll().first()
             .filter { !it.isDone && (it.dueAt == 0L || it.dueAt >= weekAgo) }
             .take(8)
+        val momentsBlock = userMomentsBlock(db, target.id)
         val userContext = buildString {
             append("【现在的时间】").append(hhmm).append("（").append(period).append("）\n\n")
             // 心情只给模型看：promptContext 自己带了「不要把这段念给用户」那句约束
@@ -227,6 +232,16 @@ object ProactiveChat {
             append("\n\n【最近未完成任务】")
             if (tasks.isEmpty()) append("暂无")
             else tasks.forEach { append("\n- ").append(it.title) }
+            // v0.79.0：用户最近发的动态（已经回过/赞过的不再列，避免对同一条反复评论）
+            if (momentsBlock.isNotBlank()) {
+                append("\n\n").append(momentsBlock)
+                append(
+                    "\n\n如果你想对上面某条动态说点什么，可以在消息之外顺手回一句或点个赞：" +
+                        "回帖写 `[动态#编号:内容]`、点赞写 `[点赞:编号]`（编号用行首那个数字）。" +
+                        "**没有想说的就别写** —— 为了凑动作而回比不回更糟；" +
+                        "标记 App 会剥掉，不会显示给用户，正文里也别解释它们。",
+                )
+            }
             append("\n\n请直接输出这条主动消息：")
         }
 
@@ -237,16 +252,54 @@ object ProactiveChat {
                     listOf(ChatMessage(conversationId = 0, isFromUser = true, content = userContext)),
                 )
         }.getOrNull() ?: return false
-        val text = reply.text.trim()
-        if (text.isEmpty()) return false
+        val raw = reply.text.trim()
+        if (raw.isEmpty()) return false
+        // 动态动作（v0.79.0）：标记**先剥掉再落消息** —— 屏幕上出现 `[动态#3:…]` 就是把内部协议漏给用户。
+        // 只剩标记、没有正文的那种回复（模型光顾着回帖忘了说话）整轮丢掉：
+        // 主动关心是要"给你发一句话"，没有一句话就不该打扰你，那一次也不计数（下次窗口照常）。
+        val clean = MomentMarker.parse(raw).cleanText
+        if (clean.isEmpty()) return false
+        MomentActions.apply(db, target.id, raw, MomentActions.Limits.PROACTIVE)
 
         db.messageDao().insert(
-            ChatMessage(conversationId = target.id, isFromUser = false, content = text)
+            ChatMessage(conversationId = target.id, isFromUser = false, content = clean)
         )
         val sent = (counts[target.id] ?: 0) + 1
         settingsRepository.setProactiveToday(target.id, today, sent, plans[target.id] ?: 1)
-        notify(context, target.id, target.name, text)
+        notify(context, target.id, target.name, clean)
         return true
+    }
+
+    /**
+     * 用户最近发的、**这个角色还没回过也没赞过的**帖子（v0.79.0），拼成给模型看的清单。
+     *
+     * 三条边界：
+     * - 只看**用户自己发的**（`personaId == 0`）—— 用户的原话是"我不跟 AI 聊的时候它也会看我动态"，
+     *   重点是"看我的"。别的角色的帖子属于另一件事（真人也会刷到，但那是另一条需求）；
+     * - **已经回过或赞过的不再摆到它面前**：真人不会对同一条反复评论。这天然防止了
+     *   "每天主动关心一次、就把同一条帖子回十遍"的刷屏；
+     * - 最多 5 条、最新的在前（与聊天里那份 [MomentMarker.feedBlock] 同一个形状，
+     *   模型在两条链路上看到的格式一致）。
+     *
+     * 空则返回空串（调用方不塞空标题 —— 那既是白花 token，又会勾模型编一个编号出来）。
+     *
+     * `internal` 而不是 private：这段"挑哪些帖给它看"的规则（只列用户发的、跳过已回/已赞）
+     * 是 v0.79.0 这条链路的核心，值得单独测（`ProactiveChatTest`）。
+     */
+    internal suspend fun userMomentsBlock(db: AppDatabase, personaId: Long): String {
+        val all = runCatching { db.momentDao().observeAll().first() }.getOrDefault(emptyList())
+        val myLikeId = personaId.toString()
+        val fresh = all.filter { it.parentId == 0L && it.personaId == 0L }
+            .sortedByDescending { it.createdAt }
+            .filter { post ->
+                all.none { it.parentId == post.id && it.personaId == personaId } &&
+                    !MomentMath.likedBy(post.likedBy, myLikeId)
+            }
+            .take(5)
+        if (fresh.isEmpty()) return ""
+        return MomentMarker.feedBlock(
+            fresh.map { MomentMarker.feedLine(id = it.id, author = "用户", text = it.text) },
+        )
     }
 
     private fun notify(context: Context, personaId: Long, personaName: String, preview: String) {

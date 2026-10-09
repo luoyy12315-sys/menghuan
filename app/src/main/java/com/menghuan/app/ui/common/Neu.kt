@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
@@ -75,6 +76,7 @@ import com.menghuan.app.ui.theme.NeuHairline
 import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.PaperShadow
+import com.menghuan.app.ui.theme.RaisedShadow
 import com.menghuan.app.ui.theme.SelectionInk
 import com.menghuan.app.ui.theme.SheetGrip
 import com.menghuan.app.ui.theme.TextPrimary
@@ -285,6 +287,31 @@ fun NeuCard(
             content()
         }
     }
+}
+
+/**
+ * 立体卡片面（v0.76.0，**只有动态页用**）。
+ *
+ * 背景 — 投影 — 圆角三件套，层级靠"抬起来"表达，而不是画一圈发丝线。
+ * 之所以不塞进 [neuSurface]：那种纸感的其他页面还在用，把投影混进去
+ * 等于把 v0.42.1 的"全应用去阴影"回退掉。
+ *
+ * ⚠️ `clip = false` + 自己 `background(shape)`：让投影落在形状**外面**，
+ * 走外设它的默认 `clip = true` 会把投影裁成一条贴在边缘的硬边。
+ */
+@Composable
+fun Modifier.raisedCard(
+    cornerRadius: Dp = 20.dp,
+    elevation: Dp = 14.dp,
+    alpha: Float = 1f,
+): Modifier {
+    val shadow = RaisedShadow
+    val surface = NeuSurface
+    val shape = RoundedCornerShape(cornerRadius)
+    return this
+        .shadow(elevation, shape, clip = false, ambientColor = shadow, spotColor = shadow)
+        .background(surface.copy(alpha = alpha.coerceIn(0f, 1f)), shape)
+        .clip(shape)
 }
 
 /** 圆形按压按钮（顶栏/输入栏用）：默认玻璃黑 5% 圆；accent = 纯黑实心圆 */
@@ -587,7 +614,13 @@ private fun animateColorAsStateFast(checked: Boolean) = androidx.compose.animati
     label = "switchTrack",
 )
 
-/** 面板选项行：图标灰圆 + 标题/副题 + 右箭头或选中钩；选中态 = 虚线选择框手柄 */
+/**
+ * 面板选项行：图标灰圆 + 标题/副题 + 右箭头或选中钩；选中态 = 虚线选择框手柄。
+ *
+ * 图标位由 [iconSlot] 决定：null = 画 [icon]（绝大多数行卡），
+ * 给了 = 画调用方自己的东西（「我的」页那张档案卡用它在图标槽里放圆头像）。
+ * ⚠️ 两条路共用**同一个行框与同一个 38dp 图标槽**，所以这几种卡高矮胖瘦必然一致。
+ */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun NeuSheetRow(
@@ -597,6 +630,8 @@ fun NeuSheetRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     selected: Boolean = false,
+    /** v0.80.0：自定义图标位（圆头像）；为 null 时画 [icon] */
+    iconSlot: (@Composable () -> Unit)? = null,
     /**
      * selected 时是否画那颗 ✓。API 配置页的副标题已经写了「默认 · 」，
      * 选中态还有虚线框，勾是多余的（v0.53.4 用户点名去掉）。
@@ -633,12 +668,16 @@ fun NeuSheetRow(
                 .neuSurface(999.dp, color = NeuTrack, inset = true),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = if (selected) NeuAccent else TextPrimary,
+            if (iconSlot != null) {
+                iconSlot()
+            } else {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = if (selected) NeuAccent else TextPrimary,
                 modifier = Modifier.size(19.dp),
-            )
+                )
+            }
         }
         Spacer(Modifier.width(13.dp))
         Column(Modifier.weight(1f)) {
