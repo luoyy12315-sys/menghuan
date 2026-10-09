@@ -157,12 +157,12 @@ fun SettingsScreen(
             Spacer(Modifier.height(14.dp))
         }
 
-        // ① 模型配置（点进去 = 对话 / 生图 / 识别 / 语音 / 联网搜索 五张卡）
+        // ① 模型配置（点进去 = 对话 / 生图 / 识别 / 语音 / 联网搜索 / 语义召回 六张卡）
         SettingsRow(
-            show = hit("模型配置", "对话模型 生图模型 识别模型 语音模型 联网搜索", "模型", "AI 接口"),
+            show = hit("模型配置", "对话模型 生图模型 识别模型 语音模型 联网搜索 记忆语义召回", "模型", "AI 接口"),
             icon = MIcons.Code,
             title = "模型配置",
-            subtitle = "对话 · 生图 · 识别 · 语音模型 · 联网搜索",
+            subtitle = "对话 · 生图 · 识别 · 语音模型 · 联网搜索 · 语义召回",
             onClick = { onOpen(SettingsRoutes.MODEL_CONFIG) },
         )
         // ② 提示词库
@@ -247,6 +247,9 @@ object SettingsRoutes {
     const val CALL_BEHAVIOR = "call_behavior"
     const val REMINDERS = "reminders"
     const val SEARCH_CONFIG = "search_config"
+    /** v0.82.0 P1-2：记忆语义召回（embeddings 端点配置，默认关） */
+    const val EMBEDDING_CONFIG = "embedding_config"
+    const val MCP_SERVERS = "mcp_servers"
     const val CHAT_MODEL = "chat_model"
     const val IMAGE_MODEL = "image_model"
     const val DATA_PRIVACY = "data_privacy"

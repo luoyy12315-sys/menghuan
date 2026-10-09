@@ -170,18 +170,20 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
 
         // 本月用量按模型查表（v0.56.8 用户点名：**直接显示在模型卡片上、模型名的右边**，
         // 文字是「共消耗 X tokens」，字体沿用行内原来的小字）。
-        // 服务商在响应里回了 usage 才计（对话/提炼/周报/Agent/识图都算）。
+        // 服务商在响应里回了 usage 才计（对话/提炼/周报/Agent/识图/主动关心/通话都算，v0.82.0 补齐盲区）。
         val usageByModel by app.settingsRepository.monthlyUsageByModel
             .collectAsState(initial = "" to emptyList())
-        val usageOf = usageByModel.second.toMap()
+        val usageOf = usageByModel.second.associateBy { it.model }
 
         if (kind == ApiModelKind.CHAT) {
             profiles.forEach { profile ->
+                val usageRow = usageOf[profile.model]
                 ModelRow(
                     icon = MIcons.Code,
                     profile = profile,
                     isDefault = profile.id == activeId,
-                    usageTokens = usageOf[profile.model] ?: 0,
+                    usageTokens = usageRow?.tokens ?: 0,
+                    usageCacheRate = usageRow?.cacheHitRate(),
                     onSwitch = {
                         scope.launch {
                             app.settingsRepository.setActiveProfile(profile.id)
@@ -210,7 +212,7 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
                     icon = MIcons.ImageIcon,
                     profile = profile,
                     isDefault = profile.id == imageActiveId,
-                    usageTokens = usageOf[profile.model] ?: 0,
+                    usageTokens = usageOf[profile.model]?.tokens ?: 0,
                     onSwitch = {
                         scope.launch {
                             app.settingsRepository.setActiveImageProfile(profile.id)
@@ -388,14 +390,18 @@ private fun ModelRow(
     isDefault: Boolean,
     /** 本月这个模型消耗的 tokens（v0.56.8）；0 = 不显示 */
     usageTokens: Int,
+    /** 该模型的缓存命中率（v0.82.0，模型行尾追加「· 缓存 xx%」）；null = 服务商没回读数，不编 */
+    usageCacheRate: Double? = null,
     onSwitch: () -> Unit,
     onOpenDetail: () -> Unit,
 ) {
-    // 右侧挂一句「共消耗 X tokens」（字体与行内小字一致）；0 就不占位
+    // 右侧挂一句「共消耗 X tokens」（字体与行内小字一致）；0 就不占位。
+    // 有缓存读数（prompt>0）时顺手带上命中率——用户选型时能直接看出哪个模型缓存友好。
     val usageSlot: (@Composable () -> Unit)? = if (usageTokens > 0) {
         {
             Text(
-                "共消耗 " + com.menghuan.app.data.UsageTracker.formatTokens(usageTokens) + " tokens",
+                "共消耗 " + com.menghuan.app.data.UsageTracker.formatTokens(usageTokens) + " tokens" +
+                    (usageCacheRate?.let { " · 缓存 " + kotlin.math.round(it * 100).toInt() + "%" } ?: ""),
                 fontSize = 12.sp,
                 color = MutedText,
             )

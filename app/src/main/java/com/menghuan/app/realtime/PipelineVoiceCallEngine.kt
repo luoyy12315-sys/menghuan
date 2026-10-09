@@ -88,6 +88,12 @@ class PipelineVoiceCallEngine(
         personaId: Long, startedAt: Long, endedAt: Long,
         turns: List<CallTurnData>, status: String, initiatedByAi: Boolean,
     ) -> Unit,
+    /**
+     * 每轮 LLM 调用的用量回执（v0.82.0）：引擎不知道 SettingsRepository，把数交出去，
+     * 由创建方记进 [com.menghuan.app.data.UsageTracker]。通话是多轮长会话，之前整个盲区。
+     * null = 不记（单测等不关心账本的调用点）。
+     */
+    private val onUsage: ((tokens: Int, promptTokens: Int, cachedTokens: Int) -> Unit)? = null,
 ) : VoiceCallEngine {
 
     private val appContext = context.applicationContext
@@ -378,6 +384,10 @@ class PipelineVoiceCallEngine(
             ttsJob = scope.launch { ttsPlayer(channel) }
 
             val buf = StringBuilder()
+            // v0.82.0：这一轮的用量读数（服务商在流末尾带 usage 才有；没有就是 0，UsageTracker 对 0 不记）
+            var usageTokens = 0
+            var usagePrompt = 0
+            var usageCached = 0
             // v0.53.9：**字幕跟着"整段回复"走**。以前切句时把 buf 清成"还没念的那截"，
             // 字幕也就跟着退成那一截 —— 等到念完才由 AiFinal 一次性补全，
             // 真机反馈就是"他先说完话，文字才出来"。现在 shown 只增不减，
@@ -425,7 +435,14 @@ class PipelineVoiceCallEngine(
                                 RealtimeCallEvent.AiDelta(CallExpressionMarker.stripForDisplay(shown.toString()))
                             )
                         }
+                    } else if (ev is StreamEvent.Usage) {
+                        usageTokens = ev.tokens
+                        usagePrompt = ev.promptTokens
+                        usageCached = ev.cachedPromptTokens
                     }
+                }
+                if (usageTokens > 0 || usagePrompt > 0 || usageCached > 0) {
+                    runCatching { onUsage?.invoke(usageTokens, usagePrompt, usageCached) }
                 }
                 val tail = buf.toString().trim()
                 if (tail.isNotEmpty()) {

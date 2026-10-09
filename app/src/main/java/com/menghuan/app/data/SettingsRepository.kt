@@ -58,6 +58,16 @@ data class ApiConfig(
 }
 
 /**
+ * 用户自配的 embeddings 接口（v0.82.0 P1-2，OpenAI 兼容 `/embeddings`）。
+ * Key 允许为空：部分自建端点不校验 Authorization（与对话接口不同，不强制三件套齐全）。
+ */
+data class EmbeddingConfig(
+    val baseUrl: String = "",
+    val apiKey: String = "",
+    val model: String = "",
+)
+
+/**
  * 用户配置仓库。API Key 加密存储（AGENTS §五.4，v0.2.3 起）：
  * - 首选 AndroidKeyStore AES-256-GCM 加密，DataStore 只落密文 `api_key_enc`
  * - 升级迁移：读到旧明文 `api_key` 时自动加密搬移并删除明文；Keystore 不可用时回退读明文（不删，密钥不丢）
@@ -469,6 +479,15 @@ class SettingsRepository(
     private val keyAgentChatStrategy = stringPreferencesKey("agent_chat_strategy")
     // v0.50.0：AI 语音条策略（标记格式 【语音条】 硬编码在 VOICE_NOTE_FRAMEWORK）
     private val keyVoiceNoteStrategy = stringPreferencesKey("voice_note_strategy")
+    // v0.82.0 P1-1：滚动摘要（总开关默认开 + 摘要策略可编辑，框架硬编码在 SummaryExtractor）
+    private val keyRollingSummaryEnabled = booleanPreferencesKey("rolling_summary_enabled")
+    private val keySummaryStrategy = stringPreferencesKey("summary_strategy")
+    // v0.82.0 P1-2：记忆语义召回（OpenAI 兼容 /embeddings，默认关，地址/Key/模型用户自己填）
+    private val keyEmbeddingEnabled = booleanPreferencesKey("embedding_enabled")
+    private val keyEmbeddingBaseUrl = stringPreferencesKey("embedding_base_url")
+    private val keyEmbeddingModel = stringPreferencesKey("embedding_model")
+    private val keyEmbeddingKeyEnc = stringPreferencesKey("embedding_key_enc")
+    private val keyEmbeddingKeyPlain = stringPreferencesKey("embedding_key_plain")
     // v0.38.0：Agent 进度通知 / token 用量记账
     private val keyAgentNotifyEnabled = booleanPreferencesKey("agent_notify_enabled")
     // v0.54.4：人设主动关心改为**按角色**（旧的两个全局键 proactive_enabled / proactive_last_day 已删除）
@@ -693,6 +712,106 @@ class SettingsRepository(
             }
         }
     }
+
+    /**
+     * 滚动摘要总开关（v0.82.0 P1-1，**默认开**）。
+     *
+     * 关掉 = 不压缩、不注入（已有的摘要留在库里不动，重新打开即恢复）；
+     * 摘要在「会话设置 → 对话摘要」里按会话查看/删除。
+     */
+    val rollingSummaryEnabled: Flow<Boolean> =
+        store.data.map { it[keyRollingSummaryEnabled] ?: true }
+
+    suspend fun setRollingSummaryEnabled(enabled: Boolean) {
+        store.edit { prefs ->
+            if (enabled) prefs.remove(keyRollingSummaryEnabled) else prefs[keyRollingSummaryEnabled] = false
+        }
+    }
+
+    /** 对话摘要策略（框架"已有摘要+新增对话→自包含新摘要"硬编码在 [SummaryExtractor.FRAMEWORK]） */
+    val summaryStrategy: Flow<String> =
+        store.data.map { it[keySummaryStrategy] ?: SummaryExtractor.DEFAULT_STRATEGY }
+
+    suspend fun setSummaryStrategy(text: String) {
+        store.edit { prefs ->
+            val trimmed = text.trim()
+            if (trimmed.isEmpty() || trimmed == SummaryExtractor.DEFAULT_STRATEGY) {
+                prefs.remove(keySummaryStrategy)
+            } else {
+                prefs[keySummaryStrategy] = trimmed
+            }
+        }
+    }
+
+    // ===== v0.82.0 P1-2：记忆语义召回（embeddings）=====
+    //
+    // 与纯词法召回是**并列的两条路**，靠这个开关手动切；
+    // 地址/Key/模型都由用户自己填（不猜服务商，AGENTS §零.6）。**绝不做自动回落**——
+    // 开了而端点调不通时，本轮召回退回纯词法、但不偷偷把开关关掉（与 ASR 双引擎同一纪律）。
+
+    /** 语义召回开关（默认关：开了之后记忆内容会发给用户自配的 embeddings 服务商） */
+    val embeddingEnabled: Flow<Boolean> = store.data.map { it[keyEmbeddingEnabled] ?: false }
+
+    suspend fun setEmbeddingEnabled(enabled: Boolean) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            if (enabled) prefs[keyEmbeddingEnabled] = true else prefs.remove(keyEmbeddingEnabled)
+        }
+    }
+
+    val embeddingBaseUrl: Flow<String> = store.data.map { it[keyEmbeddingBaseUrl] ?: "" }
+
+    suspend fun setEmbeddingBaseUrl(url: String) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            if (url.isBlank()) prefs.remove(keyEmbeddingBaseUrl) else prefs[keyEmbeddingBaseUrl] = url.trim()
+        }
+    }
+
+    val embeddingModel: Flow<String> = store.data.map { it[keyEmbeddingModel] ?: "" }
+
+    suspend fun setEmbeddingModel(model: String) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            if (model.isBlank()) prefs.remove(keyEmbeddingModel) else prefs[keyEmbeddingModel] = model.trim()
+        }
+    }
+
+    /** embeddings 的 Key（密文优先，规矩与其余 Key 一致） */
+    val embeddingApiKey: Flow<String> = store.data.map { prefs ->
+        val sealed = prefs[keyEmbeddingKeyEnc]
+        if (sealed.isNullOrBlank()) {
+            prefs[keyEmbeddingKeyPlain] ?: ""
+        } else {
+            resolveSealed(sealed) ?: (prefs[keyEmbeddingKeyPlain] ?: "")
+        }
+    }
+
+    suspend fun setEmbeddingApiKey(key: String) = withContext(Dispatchers.IO) {
+        val sealed = if (key.isEmpty()) null else ApiKeyCipher.encrypt(key)
+        store.edit { prefs ->
+            when {
+                sealed != null -> {
+                    prefs[keyEmbeddingKeyEnc] = sealed; prefs.remove(keyEmbeddingKeyPlain)
+                }
+                key.isNotEmpty() -> {
+                    prefs[keyEmbeddingKeyPlain] = key; prefs.remove(keyEmbeddingKeyEnc)
+                }
+                else -> {
+                    prefs.remove(keyEmbeddingKeyEnc); prefs.remove(keyEmbeddingKeyPlain)
+                }
+            }
+        }
+    }
+
+    /** 语义召回是否可发请求（开关 + 三件套齐全）；向量按 "baseUrl|model" 分桶存，见 [embeddingBucketOf] */
+    suspend fun embeddingConfigOrNull(): EmbeddingConfig? {
+        if (!embeddingEnabled.first()) return null
+        val url = embeddingBaseUrl.first()
+        val model = embeddingModel.first()
+        if (url.isBlank() || model.isBlank()) return null
+        return EmbeddingConfig(url, embeddingApiKey.first(), model)
+    }
+
+    /** 当前配置的分桶键：换地址或换模型后旧向量整体作废（读取带桶过滤，桶外由后台重算补齐） */
+    fun embeddingBucketOf(config: EmbeddingConfig): String = "${config.baseUrl}|${config.model}"
 
     /** Agent 执行期间的进度通知（默认开：低重要度常驻通知，实时显示第几步） */
     val agentNotifyEnabled: Flow<Boolean> = store.data.map { it[keyAgentNotifyEnabled] ?: true }
@@ -1758,19 +1877,15 @@ class SettingsRepository(
     }
 
     /**
-     * 本月用量**按模型分开看**（v0.56.7）：`月键 to (模型 → tokens)`，按 tokens 降序。
-     * 只有服务商回了 usage 才记（拿不到的不猜），与总数同一口径。
+     * 本月用量**按模型分开看**（v0.56.7；v0.82.0 行格式扩到 5 列带 prompt/cached 读数）：
+     * `月键 to 用量行`，按 tokens 降序。只有服务商回了 usage 才记（拿不到的不猜），与总数同一口径。
+     * ⚠️ 兼容：v0.82.0 之前落盘的老行只有 3 列（无 prompt/cached），解析按缺省 0 处理，不丢行。
      */
-    val monthlyUsageByModel: Flow<Pair<String, List<Pair<String, Int>>>> = store.data.map { prefs ->
+    val monthlyUsageByModel: Flow<Pair<String, List<ModelUsageRow>>> = store.data.map { prefs ->
         val month = prefs[keyUsageMonth] ?: ""
         val rows = (prefs[keyUsageByModel] ?: "").lines()
-            .mapNotNull { line ->
-                val parts = line.split('\t')
-                if (parts.size < 3 || parts[0] != month) return@mapNotNull null
-                val tokens = parts[2].trim().toIntOrNull() ?: return@mapNotNull null
-                parts[1] to tokens
-            }
-            .sortedByDescending { it.second }
+            .mapNotNull { line -> ModelUsageRow.parse(line, month) }
+            .sortedByDescending { it.tokens }
         month to rows
     }
 
@@ -1790,26 +1905,53 @@ class SettingsRepository(
     }
 
     /**
-     * 记一笔**某个模型**的用量（v0.56.7）。表按"月键 → 模型 → 累计 tokens"存成 `月\t模型\ttokens`，
+     * 记一笔**某个模型**的用量（v0.56.7；v0.82.0 起行格式 `月\t模型\ttokens\tprompt\tcached`）。
      * 跨月整体重置（与总数一致）；模型名里的制表符/换行先洗掉，免得把行拆坏。
+     * tokens/prompt/cached 三者全 0 不记（调用点兜底）。老 3 列行读出来当 prompt/cached=0 再写回 5 列。
      */
-    suspend fun addUsageTokensForModel(month: String, model: String, tokens: Int) {
-        if (tokens <= 0) return
+    suspend fun addUsageTokensForModel(
+        month: String,
+        model: String,
+        tokens: Int,
+        promptTokens: Int = 0,
+        cachedTokens: Int = 0,
+    ) {
+        if (tokens <= 0 && promptTokens <= 0 && cachedTokens <= 0) return
         val label = model.trim().replace('\t', ' ').replace('\n', ' ').ifBlank { "（未填模型）" }
         store.edit { prefs ->
             val rows = (prefs[keyUsageByModel] ?: "").lines()
                 .filter { it.isNotBlank() }
                 // 跨月：旧月的行整批丢掉（总数也是这个口径）
                 .filter { it.substringBefore('\t') == month }
+                .map { line ->
+                    val parts = line.split('\t')
+                    ModelUsageRow(
+                        model = parts.getOrNull(1) ?: "",
+                        tokens = parts.getOrNull(2)?.toIntOrNull() ?: 0,
+                        promptTokens = parts.getOrNull(3)?.toIntOrNull() ?: 0,
+                        cachedTokens = parts.getOrNull(4)?.toIntOrNull() ?: 0,
+                    )
+                }
                 .toMutableList()
-            val index = rows.indexOfFirst { it.substringBeforeLast('\t').substringAfter('\t') == label }
+            val index = rows.indexOfFirst { it.model == label }
             if (index >= 0) {
-                val old = rows[index].substringAfterLast('\t').toIntOrNull() ?: 0
-                rows[index] = "$month\t$label\t${old + tokens}"
+                val old = rows[index]
+                rows[index] = old.copy(
+                    tokens = old.tokens + tokens,
+                    promptTokens = old.promptTokens + promptTokens.coerceAtLeast(0),
+                    cachedTokens = old.cachedTokens + cachedTokens.coerceAtLeast(0),
+                )
             } else {
-                rows += "$month\t$label\t$tokens"
+                rows += ModelUsageRow(
+                    model = label,
+                    tokens = tokens,
+                    promptTokens = promptTokens.coerceAtLeast(0),
+                    cachedTokens = cachedTokens.coerceAtLeast(0),
+                )
             }
-            prefs[keyUsageByModel] = rows.joinToString("\n")
+            prefs[keyUsageByModel] = rows.joinToString("\n") {
+                "${month}\t${it.model}\t${it.tokens}\t${it.promptTokens}\t${it.cachedTokens}"
+            }
         }
     }
 
@@ -2020,6 +2162,90 @@ class SettingsRepository(
         cachedThemeMode = mode
         store.edit { prefs ->
             if (mode == DEFAULT_THEME_MODE) prefs.remove(keyThemeMode) else prefs[keyThemeMode] = mode
+        }
+    }
+
+    // ===== MCP 服务器（P3-3）=====
+    //
+    // 白名单制：用户手动添加（名称 + Streamable HTTP URL + 可选 token），
+    // 没有任何"发现机制"。清单整张塞 `mcp_servers` 一个键（JSON 数组，编解码见
+    // McpServerCodec）；token 按 id 走 Keystore 加密单独存（与 ApiConfig 的 Key 同一纪律）。
+    private val keyMcpServers = stringPreferencesKey("mcp_servers")
+
+    /** 服务器清单流（设置页列表用） */
+    val mcpServersFlow: Flow<List<com.menghuan.app.mcp.McpServerConfig>> =
+        store.data.map { com.menghuan.app.mcp.McpServerCodec.decode(it[keyMcpServers] ?: "") }
+
+    suspend fun mcpServers(): List<com.menghuan.app.mcp.McpServerConfig> =
+        com.menghuan.app.mcp.McpServerCodec.decode(store.data.first()[keyMcpServers] ?: "")
+
+    /** 新增/覆盖一条（按 id 替换）；[token] 为空串 = 清除该服务器的 token，null = 不动它 */
+    suspend fun saveMcpServer(server: com.menghuan.app.mcp.McpServerConfig, token: String? = null) =
+        withContext(Dispatchers.IO) {
+            val sealed = if (token.isNullOrEmpty()) null else ApiKeyCipher.encrypt(token)
+            store.edit { prefs ->
+                val list = com.menghuan.app.mcp.McpServerCodec.decode(prefs[keyMcpServers] ?: "")
+                    .filterNot { it.id == server.id } + server
+                prefs[keyMcpServers] = com.menghuan.app.mcp.McpServerCodec.encode(list)
+                if (token != null) {
+                    val encKey = stringPreferencesKey("mcp_token_${server.id}_enc")
+                    val plainKey = stringPreferencesKey("mcp_token_${server.id}_plain")
+                    when {
+                        sealed != null -> {
+                            prefs[encKey] = sealed
+                            prefs.remove(plainKey)
+                        }
+
+                        token.isNotEmpty() -> {
+                            prefs[plainKey] = token
+                            prefs.remove(encKey)
+                        }
+
+                        else -> {
+                            prefs.remove(encKey)
+                            prefs.remove(plainKey)
+                        }
+                    }
+                }
+            }
+        }
+
+    suspend fun removeMcpServer(id: String) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            val list = com.menghuan.app.mcp.McpServerCodec.decode(prefs[keyMcpServers] ?: "")
+                .filterNot { it.id == id }
+            prefs[keyMcpServers] = com.menghuan.app.mcp.McpServerCodec.encode(list)
+            prefs.remove(stringPreferencesKey("mcp_token_${id}_enc"))
+            prefs.remove(stringPreferencesKey("mcp_token_${id}_plain"))
+        }
+    }
+
+    /** 某台服务器的 token（密文优先，Keystore 不可用时回退明文；没有 = 空串） */
+    suspend fun mcpTokenFor(id: String): String {
+        val prefs = store.data.first()
+        val sealed = prefs[stringPreferencesKey("mcp_token_${id}_enc")]
+        return if (sealed.isNullOrBlank()) {
+            prefs[stringPreferencesKey("mcp_token_${id}_plain")] ?: ""
+        } else {
+            resolveSealed(sealed) ?: (prefs[stringPreferencesKey("mcp_token_${id}_plain")] ?: "")
+        }
+    }
+
+    // ---- tools 能力探测缓存（P3-1）：按 `baseUrl|model` 记，换配置旧结论自动作废 ----
+    private val keyMcpToolsProbe = stringPreferencesKey("mcp_tools_probe")
+
+    /** 某端点的 tools 探测结论："ok" = 支持；其余字符串 = 失败原因；null = 没探过 */
+    suspend fun toolsProbeFor(endpointKey: String): String? = runCatching {
+        org.json.JSONObject(store.data.first()[keyMcpToolsProbe] ?: "{}")
+            .optString(endpointKey).takeIf { it.isNotBlank() }
+    }.getOrNull()
+
+    suspend fun setToolsProbe(endpointKey: String, result: String?) = withContext(Dispatchers.IO) {
+        store.edit { prefs ->
+            val table = runCatching { org.json.JSONObject(prefs[keyMcpToolsProbe] ?: "{}") }
+                .getOrDefault(org.json.JSONObject())
+            if (result == null) table.remove(endpointKey) else table.put(endpointKey, result)
+            prefs[keyMcpToolsProbe] = table.toString()
         }
     }
 

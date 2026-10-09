@@ -71,6 +71,36 @@ object VisionImage {
 }
 
 /**
+ * 分模型的一行用量（v0.82.0）：tokens 总量 + 输入/缓存命中两个读数。
+ * 行格式 `月\t模型\ttokens\tprompt\tcached`；v0.82.0 之前落盘的老行只有 3 列，
+ * [parse] 按 prompt/cached=0 兼容，不丢历史行。
+ */
+data class ModelUsageRow(
+    val model: String,
+    val tokens: Int,
+    val promptTokens: Int,
+    val cachedTokens: Int,
+) {
+    /** 该行缓存命中率的展示口径：没读数（prompt=0）返回 null，不编百分比。 */
+    fun cacheHitRate(): Double? = UsageTracker.cacheHitRate(promptTokens, cachedTokens)
+
+    companion object {
+        /** 解析一行存储文本；月份不匹配或缺 tokens 列返回 null（丢弃）。 */
+        fun parse(line: String, month: String): ModelUsageRow? {
+            val parts = line.split('\t')
+            if (parts.size < 3 || parts[0] != month) return null
+            val tokens = parts[2].trim().toIntOrNull() ?: return null
+            return ModelUsageRow(
+                model = parts[1],
+                tokens = tokens,
+                promptTokens = parts.getOrNull(3)?.trim()?.toIntOrNull() ?: 0,
+                cachedTokens = parts.getOrNull(4)?.trim()?.toIntOrNull() ?: 0,
+            )
+        }
+    }
+}
+
+/**
  * API token 用量记账（v0.38.0）：按自然月累计 total_tokens，
  * 只有服务商在响应里回了 usage 才记（拿不到的不猜）。
  */
@@ -132,6 +162,9 @@ object UsageTracker {
         settingsRepository.addUsageTokens(month, tokens, promptTokens, cachedTokens)
         // v0.56.7：同时记到**这个模型自己**的账上（用户要求"按每个模型分别算各自的用量"）。
         // 调用点都拿得到 ApiConfig.model；拿不到时落到"（未填模型）"这一桶，不丢数。
-        if (tokens > 0) settingsRepository.addUsageTokensForModel(month, model, tokens)
+        // v0.82.0：分模型也带 prompt/cached（v0.69.0 只对月度总数记了读数，分模型口径之前是缺的）。
+        settingsRepository.addUsageTokensForModel(
+            month, model, tokens, promptTokens, cachedTokens,
+        )
     }
 }

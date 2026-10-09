@@ -5,6 +5,7 @@ import com.menghuan.app.data.CallVisualManifestCodec
 import com.menghuan.app.data.CallVisualSlots
 import com.menghuan.app.data.CallVisualStatus
 import com.menghuan.app.data.CallVisualType
+import com.menghuan.app.data.CallVisualStore
 import com.menghuan.app.data.Live2dPackageCheck
 import com.menghuan.app.data.ZipEntryGuard
 import com.menghuan.app.realtime.CallAudioLevel
@@ -234,6 +235,43 @@ class CallVisualTest {
         assertNull(ZipEntryGuard.safeRelativePath("/absolute/evil.txt"))
         assertNull(ZipEntryGuard.safeRelativePath("C:/Windows/evil.txt"))
         assertNull(ZipEntryGuard.safeRelativePath(""))
+    }
+
+    // ---- 30.2v2 导入进度与扩展名兜底（v0.82.0 P2-1）----
+
+    @Test
+    fun `扩展名兜底只认 zip，大小写不敏感`() {
+        assertTrue(CallVisualStore.looksLikeZip("model.zip"))
+        assertTrue(CallVisualStore.looksLikeZip("免费模型—奶蛙.ZIP"))
+        assertTrue(CallVisualStore.looksLikeZip("  a.zip  "))
+        // 关键的两条误判：`.zipx` 与压缩包之外的格式都不许放行
+        assertFalse(CallVisualStore.looksLikeZip("model.zipx"))
+        assertFalse(CallVisualStore.looksLikeZip("model.rar"))
+        assertFalse(CallVisualStore.looksLikeZip("model.7z"))
+        assertFalse(CallVisualStore.looksLikeZip("model"))
+        assertFalse(CallVisualStore.looksLikeZip("   "))
+    }
+
+    @Test
+    fun `进度文案与条数只在有分母时才有读数`() {
+        // 读取压缩包：服务商给得回总长 → 有百分比、条能画出来
+        val reading = CallVisualStore.ImportProgress.Reading(5242880L, 10485760L)
+        assertEquals("正在读取压缩包 50%…", reading.label())
+        assertEquals(0.5f, reading.fraction()!!, 1e-4f)
+        // 问不出总长（老 provider 常见）：只给文字，不画条
+        val unknown = CallVisualStore.ImportProgress.Reading(1024L, -1L)
+        assertEquals("正在读取压缩包…", unknown.label())
+        assertNull(unknown.fraction())
+
+        val unzipping = CallVisualStore.ImportProgress.Unzipping(3, 10)
+        assertEquals("正在解压 3/10 项…", unzipping.label())
+        assertEquals(0.3f, unzipping.fraction()!!, 1e-4f)
+
+        // 校验与落盘都是一瞬间：只出字、不画条（闪一下比没有更糟）
+        assertEquals("正在校验模型包…", CallVisualStore.ImportProgress.Verifying.label())
+        assertNull(CallVisualStore.ImportProgress.Verifying.fraction())
+        assertEquals("正在落盘…", CallVisualStore.ImportProgress.Moving.label())
+        assertNull(CallVisualStore.ImportProgress.Moving.fraction())
     }
 
     // ---- 30.2 口型电平 ----

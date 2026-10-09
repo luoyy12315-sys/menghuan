@@ -4,6 +4,137 @@
 > 老用户升级路径：先在 v0.35.3 里「设置 · 数据与隐私 · 导出全部数据」，装新版后「导入数据」；
 > API Key 因 Keystore 与包名绑定必须重填。
 
+## v0.82.0（versionCode 171，2026-10-09 出包：`梦欢-v0.82.0-release.apk`，38,248,171 B，md5 `f56574a05b0d6ed6a8c5471be03ba354`）
+
+**P0 批次（按改进路线图）：用量记账盲区补齐 + 分模型缓存读数、聊天页消息分页、档案注入封顶、记忆待审聊天内提示。**
+
+- **用量口径补齐**：主动关心（`ProactiveChat`）、AI 来电开场白（`AiCall.generateGreeting`）、
+  通话每轮 LLM 调用（`PipelineVoiceCallEngine` 新增 `onUsage` 回执）全部计入 `UsageTracker` ——
+  之前这三块是"看不见的自动消耗"，用户月底对账会低估。
+- **分模型缓存读数**：`usage_by_model` 行格式扩为 `月\t模型\ttokens\tprompt\tcached`，
+  模型卡片右侧「共消耗 X tokens」后面带**缓存命中率**（「· 缓存 NN%」）；
+  老 3 列行按缺省零兼容解析，不丢历史。`ModelUsageRow`（纯函数解析，含单测）。
+- **聊天页消息分页**：`MessageDao` 新增 `observeRecentConversation` / `getRecentPaged` / `getLatest`；
+  聊天页首屏 200 条、**滚到顶部自动多拉**（日期头 key 从索引改成按标签，前置消息时滚动锚点不丢）；
+  LLM 历史组装改**从新到旧分页拉**（每页 500 条、攒够 20 万字即停），超长会话不再整表读进内存；
+  来电开场白（最近 6 条）、定时电话判据（最新 1 条）等"只需要末尾"的调用点同步改限量查询。
+  聊天记录搜索页与导出 Markdown 保留全量（功能语义需要）。
+- **档案注入封顶**：system prompt 里档案条目上限 **30 条**（`MemoryScope.visible` 本来就 core 置顶 +
+  id 稳定序，截断先动 active、不动用户设为永久的），超出折叠一行"（另有 N 条记忆…你会想起来）"，
+  靠召回块兜底。前缀长度从此有顶。
+- **记忆待审聊天内提示**：AI 新暂存记忆（`staging` 新增条目 >0）时，聊天流落一条居中灰色系统气泡
+  「💭 我记住了 N 件新事，点我去『TA 的记忆』里看看吧」，**点它跳记忆页**；同一时刻只留最新一条。
+  新 `MediaKind.MEMORY_NOTICE`：**不进 LLM 历史、不进提炼、不进导出**（调用点均已剔除）。
+- 助手手册同步（`AiPrompts` 两条 replace + `AiPromptsTest` 成对断言）：
+  模型卡片命中率与统计口径、记忆待审气泡。
+
+**P1 批次（改进路线图 · 记忆增强，用户拍板三项全做）：**
+
+- **滚动摘要（P1-1）**：掉出 20 万字历史预算的旧对话不再蒸发——积压掉出窗口超 **3 万字**（用户拍板）
+  就把最旧一段（单次封顶 4 万字，输入有界）连同旧摘要发给 LLM 滚动压缩；
+  摘要按会话存 `conversation_summaries`（水位线 = `coveredMessageId`），拼在 **system prompt 尾部**
+  （同一水位线逐字节稳定，前缀缓存不伤）。新 `SummaryEngine`（应用级作用域 + Mutex 串行，失败静默），
+  提炼同款水位线手法；应用助手会话与提炼同纪律不摘要。
+  **入口**：会话设置新增「对话摘要」行（查看全文 / 删除，删了水位线归零重新积累）；
+  **总开关**（默认开）与摘要策略在「设置 · AI 提示词 · 对话摘要策略」段（框架/策略分层，与提炼同款可编辑体系）。
+- **记忆自动升降级（P1-3）**：`profile_facts` 加 `lastRecalledAt` 列；召回块命中即记录"被想起的时刻"；
+  **90 天**没被想起的 active 自动降 archived（core 豁免；老数据 `lastRecalledAt=0` 按 `updatedAt` 算，
+  升级瞬间不会整批归档），清扫挂进程启动 + 提炼顺手；archived 被高分召回（≥80，比常规 60 严）
+  当场升回 active（想起即复活）。纯函数判定在 `MemoryScope.shouldAutoArchive`，单测钉死豁免规则。
+- **记忆语义召回（P1-2，默认关）**：设置 → 模型配置新增「记忆语义召回」页——
+  用户自配 OpenAI 兼容 `/embeddings`（地址/Key/模型，Key 可空，带「测试向量接口」按钮显示维度与耗时）；
+  开了之后记忆写入召回链路顺手算向量存 `memory_embeddings`（float32 小端 BLOB，
+  按 `baseUrl|model` **分桶**，换配置旧向量整体作废不混算）；召回 = bigram 词法分与向量余弦**融合**
+  （任一路够格即命中；语义-only 门槛 0.75 比词法 60 严）。
+  **不做自动回落**：端点调不通本轮退回纯词法，开关绝不被偷改（与 ASR 双引擎同一纪律）；
+  懒索引（`MemoryEmbeddingIndexer`，一次请求最多 16 条），不为冷门记忆白烧请求。
+  隐私语义写在页面上与手册里：开了记忆内容会发给该服务商（用户拍板接受）。
+- **Room v25 迁移**：`profile_facts.lastRecalledAt` 带默认值加列 + 两张全新空表
+  （`conversation_summaries` / `memory_embeddings`），存量零改动；
+  `DbMigrationTest` 补 24→25 用例（含反向验尸注释）。
+- **级联清理**：删人设连带其摘要与记忆向量；记忆页/基础档案删条目连带向量；
+  「清除全部数据」新增两张表（`resetAll` 走 `clearAllTables` 自动覆盖）。
+- 手册再追加一条 replace（P1 三件套一段说完）+ `AiPromptsTest` 成对断言。
+
+**P2 批次（改进路线图 · Live2D 易用性收尾，用户拍板并入 v0.82.0 而非另开版本）：**
+
+- **P2-1 导入体验**：选文件那一步从「什么都能选」改成**只认 zip**
+  （`OpenDocument` + `application/zip` / `application/x-zip-compressed`；
+  部分 ROM 不认这个 mime 就仍退回 `*/*`，但**按扩展名前置校验**，不是 zip 当场报错，不让人干等）。
+  解压管线改成 **`ZipFile` 随机访问**（先读中央目录拿总条目与声明解压大小，分母是真的，
+  也能在开工前就拒掉超限包），分四段报进度 —— 读压缩包（%）/ 解压第几项 / 检查 / 落盘；
+  弹层里行内文字换成阶段文案，下面补一条进度条（没有分母时干脆不画，不假装知道）。
+  zip bomb 与 Zip Slip 双闸都留着（声明总量预检 + 写入端硬顶 `PackageTooBig`），
+  条目名仍按 **GBK** 解码（中文模型包）。
+- **P2-2 角色空间缩放**：**双指捏合**缩放（0.5×～2.0×），越界走橡皮筋减速、松手弹回边界；
+  **双击**复位到 1.0×。缩放**只落在投影矩阵**上（渲染矩阵路线、**零参数依赖**，
+  符合动作引擎铁律③ —— 任何模型都能被捏大捏小），中心是角色自己，
+  拖到画面边上再捏也只是原地长大。用户拍板：**单击立即反应**（第一下马上播互动动作，
+  300ms 内再来第二下才判双击）+ **缩放不持久化**（每次进来都是 1.0×）。
+- **P2-3 大文件拆分（纯搬家、不改行为）**：`Live2dCharacter.kt`(42KB) 按职责拆三段 ——
+  参数接线 `Live2dModelWiring`（清单解析：眨眼/口型/动作组/表情/点击区域）、
+  资产加载 `Live2dAssetLoading`（读包内文件/建渲染器/传贴图）、
+  命中检测 `Live2dHitResolver`（触点 → 互动区域，四个 volatile float 快照）；
+  主类只剩"按什么顺序把它们接起来"（`bindModel` 必须在任何 motion 跑起来之前）。
+  `Live2dActionSheets.kt`(40KB) 五个弹层各自成文件
+  （`ActionLibrarySheet` / `ActionEditorSheet` / `AiActionSheet` /
+  `SpaceBackgroundSheet` / `InteractionConfigSheet`），
+  共用组件抽到 `Live2dSheetWidgets.kt`。
+- 手册追加两条 replace（导入口径 / 缩放手感）+ `AiPromptsTest` 成对断言。
+  ⚠️ 按用户拍板**不加**「去角色空间试播」的引导小字，所以手册里也只写手感、不写入口引导。
+
+**P3 批次（改进路线图 · tools 回环 + MCP 客户端，用户拍板"直接上 MCP"、P3-2 本地工具集跳过）：**
+
+- **OpenAI tools 回环（P3-1 地基）**：`OpenAiClient.streamEvents` 支持 `tools` 参数与流式
+  `tool_calls` 解析——`ToolCallAccumulator` 按 index 分槽聚合（id/name 分片追加，防网关切片）；
+  `probeToolSupport` 端点能力探测（仿 `ImageProbe`，按 `baseUrl|model` 缓存），**不支持就隐藏入口，
+  不自创格式硬发**；ChatViewModel 工具循环（上限 4 轮）：assistant tool_calls 回显 +
+  `role:tool` 结果回灌走 extraMessages **不落库**；工具结果统一过 `McpManager.wrapUntrusted`
+  不可信包裹（截断 8000 字，防 prompt injection）；**非只读工具挂起等用户点头**
+  （`UiState.toolConfirm` + 确认弹层，关掉 = 拒绝）。
+- **MCP 客户端（P3-3）**：⚠️ 官方 kotlin-sdk 中央仓全版本要求 Kotlin 2.2+（项目锁 2.0.21，
+  读不了元数据）→ 用户拍板**手撸极简客户端**（OkHttp + org.json ≈300 行，零新依赖）：
+  Streamable HTTP（initialize / tools/list / tools/call + SSE 捞 id + Mcp-Session-Id 头 +
+  nextCursor 翻页）；`McpManager` 聚合 `mcp__<id>__<tool>` 命名空间防撞、按前缀路由；
+  白名单制手动添加（名称 + 远程 HTTP URL + 可选 token 走 Keystore），UI 明示不支持本地 stdio。
+- **设置入口**：模型配置 → MCP 服务器（新增 `McpServersScreen`，服务器增删改 + 手动重探工具）。
+- 手册追加一条 replace（MCP 入口 + 只读免确认 + 点头执行 + 不支持自动隐藏）+ `AiPromptsTest` 成对断言。
+- 新增测试：`ToolCallAccumulatorTest` / `OpenAiClientToolsTest` / `McpClientTest` /
+  `McpServerCodecTest` / `McpManagerTest`。
+
+**P4 批次（工程底座，无功能行为变化）：**
+
+- **CI**：提交 gradle wrapper（8.14.3，本地 `./gradlew` 亦可直接用）+
+  `.github/workflows/test.yml`（JDK17 + android-35 + `./gradlew :app:testDebugUnitTest`，
+  测试报告传 artifact）。
+- **AiPrompts 手册自检**：补丁链 221 条 `.replace` 全改 `.manualPatch`（未命中即记录，
+  命中行为不变）；`AiPromptsTest` 新增「P4 手册补丁链全部命中」总自检；debug 包启动自检
+  失败写崩溃日志页（`CrashLog.reportNonFatal` 追加写，不覆盖真实崩溃）。
+  自检首跑揪出 3 条历史死补丁（v0.56.8 凭印象写的两条 + 被长串先行消费的一条），已删，
+  手册输出逐字节不变。以后加补丁只许 `.manualPatch()`（AGENTS.md §零.5 已同步）。
+- 桌宠/悬浮窗形态：用户拍板本轮不做。
+
+### 验证
+- `:app:compileDebugKotlin` ✅；全量 `:app:testDebugUnitTest` ✅ **644 项 / 57 类 / 0 红**
+  （基线 597 项 / 52 类，本批 +47 项）。
+- P0 新增 `UsageCacheTest` 三条：`ModelUsageRow` 新 5 列解析 / 老 3 列兼容 / 跨月与非法行丢弃。
+- P2 新增 `CallVisualTest` 两条：扩展名兜底只认 zip（大小写不敏感、防 `.zipx`/`.rar`/`.7z` 误判）、
+  进度文案与条数只在有分母时才有读数。
+- P2 新增 `Live2dActionTest` 五条：捏合范围内相乘 / 越界减速仍跟手 / 松手夹回边界 /
+  范围守住 1 在中 / 连续捏顶在硬顶上。
+- P2 `AiPromptsTest` 补一条：两条手册条目（导入 + 缩放）挂在各自锚点后面且顺序正确。
+- P3/P4 追加验证：`compileDebugKotlin` + `compileDebugUnitTestKotlin` ✅；
+  `AiPromptsTest` 72 项单跑 ✅（含「P4 手册补丁链全部命中」）。
+  P3 新增 5 个测试类（ToolCallAccumulator / OpenAiClientTools / McpClient / McpServerCodec / McpManager）
+  + P4 自检 1 项，**全量未重跑**（用户拍板直接出包，交 CI 首跑兜底）。
+
+### 拆分后文件规模（P2-3 目标达成）
+| 文件 | 之前 | 之后 |
+| --- | --- | --- |
+| `Live2dCharacter.kt` | 42KB | 33KB（+ `Live2dModelWiring` 14KB / `Live2dAssetLoading` 3.7KB / `Live2dHitResolver` 7.8KB） |
+| `Live2dActionSheets.kt` | 40KB（已删） | 五个弹层各自成文件，共用件进 `Live2dSheetWidgets` |
+- 待跑全量 `:app:testDebugUnitTest`（重点 `AiPromptsTest`、`UsageCacheTest`、`ChatViewModelTest`）。
+
 ## v0.81.0（versionCode 170）
 
 **个人档案页头像与字段改版（用户点名三条）：头像选择换成编辑人设那一套滚轮；昵称 / 简介换成同款输入框。**

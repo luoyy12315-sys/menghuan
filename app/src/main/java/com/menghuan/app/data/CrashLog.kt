@@ -53,6 +53,24 @@ object CrashLog {
         runCatching { file(context).delete() }
     }
 
+    /**
+     * 非致命问题落盘（P4：debug 包的手册补丁链自检失败等）。
+     *
+     * **追加**在崩溃日志后面、不覆盖真实崩溃现场；同样能在「我的 → 设置 → 关于」看到。
+     * 仅限 debug 自检这类"用户没感知但必须留痕"的场景，别拿它当普通日志用。
+     */
+    fun reportNonFatal(context: Context, title: String, body: String) {
+        runCatching {
+            val when1 = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(Date())
+            val text = buildString {
+                append(when1).append("  梦欢 v").append(BuildConfig.VERSION_NAME).append('\n')
+                append("【非致命】").append(title).append('\n')
+                append(body.take(MAX_CHARS)).append('\n')
+            }
+            file(context).appendText(text)
+        }
+    }
+
     private fun write(context: Context, thread: Thread, error: Throwable) {
         val stack = StringWriter().use { sw ->
             error.printStackTrace(PrintWriter(sw))

@@ -107,6 +107,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -230,6 +231,32 @@ fun ChatScreen(
                     onOpenCall()
                 },
             )
+        }
+    }
+    // P3-3：非只读 MCP 工具的确认弹层（计划定稿：列出服务器/工具/参数，用户点头才执行）。
+    // 关掉弹层 = 拒绝（onDismiss 与「拒绝」同一条路径，结果以"用户拒绝"回灌给模型）。
+    uiState.toolConfirm?.let { req ->
+        NeuSheetScaffold(title = "AI 想调用工具", onDismiss = { vm.resolveToolConfirm(false) }) {
+            Text(
+                "${req.serverName} · ${req.toolName}",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text("参数", fontSize = 12.sp, color = MutedText)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                // 参数原样给用户看（它本来就是模型生成的 JSON）；过长截断，弹层不是阅读器
+                req.argumentsJson.take(500),
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+                color = MutedText,
+            )
+            Spacer(Modifier.height(16.dp))
+            NeuTextButton(text = "执行一次", onClick = { vm.resolveToolConfirm(true) })
+            Spacer(Modifier.height(8.dp))
+            NeuTextButton(text = "拒绝", onClick = { vm.resolveToolConfirm(false) })
         }
     }
     val taskSuggestions by vm.taskSuggestions.collectAsState()
@@ -554,6 +581,14 @@ fun ChatScreen(
         animationSpec = tween(180),
         label = "topBarLine",
     )
+    // v0.82.0：滚到顶部自动加载更早的消息（分页窗口由 VM 的 historyLimit 控制）。
+    // snapshotFlow 只在索引变化时回调：加载完新页用户还停在顶部不会重复触发；
+    // 条目用 DB id 稳定 key，窗口扩大时滚动位置锚在原处不动。
+    val hasMoreHistory by vm.hasMoreHistory.collectAsState()
+    LaunchedEffect(listState, hasMoreHistory) {
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .collect { index -> if (index == 0 && hasMoreHistory) vm.loadOlderMessages() }
+    }
     // ⚠️ 令牌是 `@Composable get()`，不能在 drawBehind 的 lambda 里读（见 Theme.kt 说明），先取成局部值
     val topBarLineInk = NeuHairline
 
@@ -918,6 +953,26 @@ fun ChatScreen(
                                             )
                                         }
                                     }
+
+                                    // 记忆待审系统气泡（v0.82.0）：AI 暂存了新记忆时落的居中提示行，
+                                    // 点一下跳「TA 的记忆」页去审批；不进 LLM 历史/提炼/导出。
+                                    MediaKind.MEMORY_NOTICE ->
+                                        Box(
+                                            Modifier.fillMaxWidth(),
+                                            contentAlignment = Alignment.Center,
+                                        ) {
+                                            Text(
+                                                msg.content,
+                                                fontSize = 12.sp,
+                                                color = FaintText,
+                                                modifier = Modifier
+                                                    .padding(vertical = 4.dp)
+                                                    .clickable(
+                                                        interactionSource = remember { MutableInteractionSource() },
+                                                        indication = null,
+                                                    ) { onOpenSettings("memory/$personaId") },
+                                            )
+                                        }
 
                                     MediaKind.TEXT -> MessageBubble(
                                         msg,
@@ -2770,7 +2825,9 @@ private fun dayLabel(date: LocalDate): String = when (date) {
  * id 稳定 = 滚动时 LazyColumn 能识别"同一条消息"，条目状态与位图缓存跨滚动保留。
  */
 private fun chatKeyOf(items: List<ChatListItem>, idx: Int): Any = when (val item = items[idx]) {
-    is ChatListItem.DayHeader -> "d$idx"
+    // v0.82.0：日期头 key 用标签而不是索引——分页在顶部插入更早的消息时索引整体平移，
+    // 索引 key 会让全部头重建、滚动锚点丢失；标签在列表内唯一，前置消息不影响既有 key。
+    is ChatListItem.DayHeader -> "d${item.label}"
     is ChatListItem.Msg ->
         if (item.message.id != 0L) "m${item.message.id}" else "n$idx"
 }

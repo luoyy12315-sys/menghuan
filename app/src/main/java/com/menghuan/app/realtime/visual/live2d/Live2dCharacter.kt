@@ -1,13 +1,9 @@
 package com.menghuan.app.realtime.visual.live2d
 
-import android.graphics.BitmapFactory
 import android.opengl.GLES20
-import android.opengl.GLUtils
 import com.live2d.sdk.cubism.framework.CubismDefaultParameterId
 import com.live2d.sdk.cubism.framework.CubismFramework
 import com.live2d.sdk.cubism.framework.CubismModelSettingJson
-import com.live2d.sdk.cubism.framework.effect.CubismBreath
-import com.live2d.sdk.cubism.framework.effect.CubismEyeBlink
 import com.live2d.sdk.cubism.framework.id.CubismId
 import com.live2d.sdk.cubism.framework.math.CubismMatrix44
 import com.live2d.sdk.cubism.framework.model.CubismModel
@@ -26,7 +22,6 @@ import com.live2d.sdk.cubism.framework.rendering.android.CubismRendererAndroid
 import com.menghuan.app.live2d.ActionPlayer
 import com.menghuan.app.live2d.ActionType
 import com.menghuan.app.live2d.InteractionRegion
-import com.menghuan.app.live2d.InteractionRules
 import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.live2d.ModelActionCatalog
 import com.menghuan.app.live2d.ModelCapability
@@ -54,6 +49,16 @@ import kotlin.math.exp
  * ⚠️ 除 [setMouthLevel] 与 [playAction] / [stopAction] / [resetFrameClock] 是跨线程写
  * （字段都是 volatile）之外，其余方法都**必须在 GL 线程**调用
  * （纹路与渲染器的创建/销毁都绑 EGL 上下文）。
+ *
+ * ### 这个文件为什么只留"编排"
+ * v0.82.0 P2-3 把加载时那三段各自搬走了，本类只剩"按什么顺序把它们接起来"：
+ * - **参数接线**（眨眼 / 口型 / 呼吸 / 动作组 / 表情 / 点击区域）→ [Live2dModelWiring]；
+ * - **资产加载**（读包内文件 / 建渲染器 / 传贴图）→ [Live2dAssetLoading]；
+ * - **命中检测**（触点 → 互动区域）→ [Live2dHitResolver]。
+ *
+ * 顺序本身有含义（特别是 `bindModel` 必须在任何 motion 跑起来之前），
+ * 所以搬走的是代码、留在这里的是顺序 —— 顺序一旦被改动，表现就是
+ * "每次播动作都从上一动作结束的位置跳回来"那一类最难查的观感问题。
  */
 class Live2dCharacter(
     private val baseDir: File,
@@ -139,59 +144,27 @@ class Live2dCharacter(
     private var pivotX = 0f
     private var pivotY = 0f
 
-    /**
-     * 命中检测用的投影**四个数**（缩放 X/Y + 平移 X/Y，**不含舞台姿态**）。
-     *
-     * 为什么要专门留一份而不是直接拿那个 `CubismMatrix44`：
-     * ① 翻跟斗那类动作会把整张画布转起来，而命中检测必须按"角色静止时画在哪"来算 ——
-     *    用转过的矩阵去反算触点，结果会跟着转，用户点脸可能判成点身体；
-     * ② ⚠️ 触点是从 **UI 线程**来的（`hitRegion` 由点角色的那条路调），
-     *    而矩阵是 GL 线程每帧重写的。共享一个可变对象去读它，会读到"半新半旧"的一份 ——
-     *    不至于崩（都是 float），但会**偶发地点错区域**：用户点了头、判成身体。
-     *    四个 `@Volatile` 的 float（32 位写入本身是原子的）把这件事彻底消掉：
-     *    最坏只是这四个数来自相邻的两帧，对"点哪儿"这种判定毫无影响。
-     *
-     * 反算就是 `invertTransformX/Y` 的定义：`model = (ndc - t) / s`，
-     * 与原来交给 `CubismMatrix44` 做的是同一个式子，只是不再共享那个对象。
-     */
-    @Volatile private var hitScaleX = 0f
-    @Volatile private var hitScaleY = 0f
-    @Volatile private var hitTranslateX = 0f
-    @Volatile private var hitTranslateY = 0f
-
     /** 舞台姿态的矩阵（复用一个实例，别每帧 new —— 动作播放是每帧都在跑的） */
     private val stageMatrix = CubismMatrix44.create()
 
-    /** 模型自带 HitArea（`Head` / `Body`）的 CubismId；模型没写 `HitAreas` 时是 null */
-    private var headHitId: CubismId? = null
-    private var bodyHitId: CubismId? = null
-
-    /**
-     * 是否需要几何兜底命中检测：**只有当模型没定义 `Head`/`Body` 两个 HitArea 时才开**。
-     *
-     * 开着就要额外求一次模型包围盒（遍历全部顶点），所以刷新频率收在
-     * [BOUNDS_INTERVAL_SECONDS] 一次，不是每帧（见 [update] 里那段）。
-     * 而绝大多数正规模型都有 HitArea，压根不该为它们付这份开销。
-     */
-    private var needsGeometricHitTest = false
-
-    /** 几何兜底用的模型包围盒（模型坐标系，GL 线程刷，UI 线程读） */
-    @Volatile private var boundLeft = 0f
-    @Volatile private var boundRight = 0f
-    @Volatile private var boundTop = 0f
-    @Volatile private var boundBottom = 0f
-    @Volatile private var boundsReady = false
-
-    /** 距离上一次刷新包围盒过了多少秒，见 [BOUNDS_INTERVAL_SECONDS] */
-    private var boundsAgeSeconds = Float.MAX_VALUE
-
     /** [stageMatrix] 的临时数组，复用同一个：舞台动作是**每帧**都在跑的 */
     private val stageMatrixArray = FloatArray(16)
+
+    /**
+     * 命中检测。
+     *
+     * 拆到 [Live2dHitResolver] 里是因为它跟"渲染"完全是两回事：它跨线程（触点从 UI 线程来），
+     * 而且必须按"角色静止时画在哪"来判（翻跟斗时画布是转着的）。
+     */
+    private val hitResolver = Live2dHitResolver()
 
     // ---- 加载 ----
 
     /**
      * 读模型 + 建渲染器 + 上传纹理。**必须在 GL 线程**（`onSurfaceCreated` 里调）。
+     *
+     * 这里只留下**顺序**：先 moc → 再解析清单与接线 → 登记更新器 → 最后建渲染器与纹理。
+     * 每一步的活由上面那三个协作者各做各的。
      */
     fun loadAssets(width: Int, height: Int) {
         runCatching {
@@ -203,36 +176,38 @@ class Live2dCharacter(
             val mocRel = setting.modelFileName ?: error("model3.json 里没有 Moc 引用")
             loadModel(readRef(mocRel), true)   // 一致性校验：损坏的 moc 宁可拒绝也不要在通话里崩
             val model = this.model ?: error("模型创建失败")
-
             val idm = CubismFramework.getIdManager()
             fun std(name: CubismDefaultParameterId.ParameterId) = idm.getId(name.getId())
 
-            // 1.5) v0.64.0 动作系统接上：探测这张模型有哪些通用通道，然后让播放器认住它。
+            // 1.5) 参数接线 + 素材清单（眨眼 / 口型 / 呼吸 / 动作组 / 表情 / 点击区域）。
             //
             // ⚠️ 顺序不能挪到 loadModel 之后之外的任何地方：`bindModel` 要读每个参数的
             // **静止值**（模型自己的默认姿态），而那条值只在"还没播过任何动作与原生 motion"
             // 的这一刻是准的。放到第一帧 update 之后，读到的就是 motion 摆过的位置，
             // 之后每次播动作都会从那里"跳"回来。
-            val capability = ModelCapability.detect { name -> model.getParameterIndex(idm.getId(name)) >= 0 }
-            this.capability = capability
-            this.player.bindModel(model, capability) { name -> model.getParameterIndex(idm.getId(name)) }
+            val loaded = Live2dModelWiring.wire(
+                modelJsonRelPath = modelJsonRelPath,
+                setting = setting,
+                model = model,
+                readRef = { rel -> readRef(rel) },
+                stdId = ::std,
+                paramIndex = { name -> model.getParameterIndex(idm.getId(name)) },
+                loadMotion = { bytes -> loadMotion(bytes) },
+                loadExpression = { bytes -> loadExpression(bytes) },
+            )
+            capability = loaded.capability
+            player.bindModel(model, loaded.capability) { name -> model.getParameterIndex(idm.getId(name)) }
 
-            // 1.6) 互动区域：优先用模型自带的 HitArea（`HitAreas` 段里 Name = Head / Body，
-            // 这是 Live2D 官方约定的名字，配合 TapBody / Tap 那套动作组）。
-            // 免费模型这块十有八九是空的，那就退回几何分区 —— 两条都要有，
-            // 只留一条会在另一半模型上完全点不动。
-            headHitId = null
-            bodyHitId = null
-            for (i in 0 until setting.hitAreasCount) {
-                val name = runCatching { setting.getHitAreaName(i) }.getOrNull() ?: continue
-                val id = runCatching { setting.getHitAreaId(i) }.getOrNull() ?: continue
-                when {
-                    name.equals(InteractionRules.HIT_AREA_HEAD, ignoreCase = true) -> headHitId = id
-                    name.equals(InteractionRules.HIT_AREA_BODY, ignoreCase = true) -> bodyHitId = id
-                }
-            }
-            needsGeometricHitTest = headHitId == null && bodyHitId == null
-            boundsReady = false
+            motions.clear()
+            motions.putAll(loaded.motions)
+            motionGroups.clear()
+            motionGroups.addAll(loaded.motionGroups)
+            lipSyncIds.clear()
+            lipSyncIds.addAll(loaded.lipSyncIds)
+            expressions.clear()
+            expressions.putAll(loaded.expressions)
+            // 互动区域交给命中解析器：自带 HitArea 优先，两条都没有才开几何兜底
+            hitResolver.configure(loaded.headHitId, loaded.bodyHitId)
 
             // 2) 物理与摇摆：引用了才加载，缺文件不算错（导入阶段已校验过）
             setting.physicsFileName?.takeIf { it.isNotBlank() }?.let {
@@ -248,119 +223,44 @@ class Live2dCharacter(
                 }
             }
 
-            // 3~5) 眨眼与口型的参数来源。
-            //
-            // 正规做法是读 model3.json 的 `Groups`（EyeBlink / LipSync 两段的参数清单），
-            // 但**大量免费模型这里是空的** —— 真机用的"奶蛙"包就是 `Groups: [{EyeBlink: []}]`
-            // 连 LipSync 段都没有、也没有 Motions，全靠 Cubism 的标准参数名工作（VTube 系都这样）。
-            // 只按清单走的话结果不是报错，而是**角色一动不动 / 嘴不张**（最难查的那种失败），
-            // 所以清单空就回退标准参数 id，并且**只认这个模型里真存在的那个**：
-            // 指一个不存在的参数，框架不会吭声，只会白跑。
-
-            val blinkIds = ArrayList<CubismId>()
-            for (i in 0 until setting.eyeBlinkParameterCount) {
-                setting.getEyeBlinkParameterId(i)?.let { blinkIds.add(it) }
-            }
-            if (blinkIds.isEmpty()) {
-                listOf(std(CubismDefaultParameterId.ParameterId.EYE_L_OPEN), std(CubismDefaultParameterId.ParameterId.EYE_R_OPEN))
-                    .filterTo(blinkIds) { model.getParameterIndex(it) >= 0 }
-            }
-            val eyeBlink = CubismEyeBlink.create(setting)
-            if (eyeBlink != null && blinkIds.isNotEmpty()) {
-                eyeBlink.setParameterIds(blinkIds)
-                this.eyeBlink = eyeBlink
-                updateScheduler.addUpdatableList(
-                    CubismEyeBlinkUpdater(IBooleanSupplier { motionUpdated }, eyeBlink),
-                )
+            // 3) 眨眼：参数清单由 [Live2dModelWiring] 解析（清单空则回退标准参数）。
+            //    回退出来的那一份要**再喂给眨眼效果一次**（create 时它读的是原始清单，
+            //    清单为空它就一个参数都不认 —— 差这一步表现就是"角色不眨眼"）。
+            if (loaded.blinkIds.isNotEmpty()) {
+                loaded.eyeBlink?.let { blink ->
+                    blink.setParameterIds(loaded.blinkIds)
+                    this.eyeBlink = blink
+                    updateScheduler.addUpdatableList(
+                        CubismEyeBlinkUpdater(IBooleanSupplier { motionUpdated }, blink),
+                    )
+                }
             }
 
-            // 4) 呼吸：照官方 Sample 的参数与周期（角度微摆 + ParamBreath）
-            val breath = CubismBreath.create()
-            breath.setParameters(
-                listOf(
-                    CubismBreath.BreathParameterData(
-                        std(CubismDefaultParameterId.ParameterId.ANGLE_Z),
-                        0.0f, 15.0f, 6.5345f, 0.5f,
-                    ),
-                    CubismBreath.BreathParameterData(
-                        std(CubismDefaultParameterId.ParameterId.BODY_ANGLE_Z),
-                        0.0f, 8.0f, 3.5345f, 0.5f,
-                    ),
-                    CubismBreath.BreathParameterData(
-                        std(CubismDefaultParameterId.ParameterId.BREATH),
-                        0.5f, 0.5f, 3.2345f, 0.5f,
-                    ),
-                ),
-            )
-            this.breath = breath
-            updateScheduler.addUpdatableList(CubismBreathUpdater(breath))
+            // 4) 呼吸：无条件挂上（它写的是框架标准 id，不依赖这张模型有没有那个参数）
+            this.breath = loaded.breath
+            updateScheduler.addUpdatableList(CubismBreathUpdater(loaded.breath))
 
             // 5) 口型：把实时电平接进框架的 lip-sync 更新器
-            for (i in 0 until setting.lipSyncParameterCount) {
-                setting.getLipSyncParameterId(i)?.let { lipSyncIds.add(it) }
-            }
-            if (lipSyncIds.isEmpty()) {
-                val mouthOpen = std(CubismDefaultParameterId.ParameterId.MOUTH_OPEN_Y)
-                if (model.getParameterIndex(mouthOpen) >= 0) lipSyncIds.add(mouthOpen)
-            }
-            if (lipSyncIds.isNotEmpty()) {
-                updateScheduler.addUpdatableList(CubismLipSyncUpdater(lipSyncIds, mouth))
+            if (loaded.lipSyncIds.isNotEmpty()) {
+                updateScheduler.addUpdatableList(CubismLipSyncUpdater(loaded.lipSyncIds, mouth))
             }
 
-            // 6) 动作组（"模型自带动作"那一档就是从这个循环里来的）
-            val groupCounts = LinkedHashMap<String, Int>()
-            for (g in 0 until setting.motionGroupCount) {
-                val group = setting.getMotionGroupName(g) ?: continue
-                if (group !in motionGroups) motionGroups.add(group)
-                var loaded = 0
-                for (i in 0 until setting.getMotionCount(group)) {
-                    val file = setting.getMotionFileName(group, i) ?: continue
-                    if (file.isBlank()) continue
-                    val motion = loadMotion(readRef(file)) ?: continue
-                    setting.getMotionFadeInTimeValue(group, i)
-                        .takeIf { it != -1.0f }?.let { motion.setFadeInTime(it) }
-                    setting.getMotionFadeOutTimeValue(group, i)
-                        .takeIf { it != -1.0f }?.let { motion.setFadeOutTime(it) }
-                    motion.setEffectIds(eyeBlinkIds(), lipSyncIds)
-                    motions["${group}_$i"] = motion
-                    loaded++
-                }
-                if (loaded > 0) groupCounts[group] = loaded
-            }
-
-            // 6.5) 表情（v0.64.0）：`Expressions` 段里的 `.exp3.json`，名字就是 model3.json
-            // 里写的 Name。加载失败只跳过这一条 —— 缺一个表情不该让整张模型降级。
-            val expressionNames = ArrayList<String>()
-            for (i in 0 until setting.expressionCount) {
-                val name = setting.getExpressionName(i)?.takeIf { it.isNotBlank() } ?: continue
-                val file = setting.getExpressionFileName(i)?.takeIf { it.isNotBlank() } ?: continue
-                val motion = runCatching { loadExpression(readRef(file)) }.getOrNull() ?: continue
-                expressions[name] = motion
-                expressionNames.add(name)
-            }
-            if (expressions.isNotEmpty()) {
-                // 与官方 Sample 同一个位置：表情也走 updateScheduler，在动作/物理之前叠到脸上
+            // 6) 表情：有表情才挂（框架的 expressionManager 本来就在，空挂只会白跑一遍）
+            if (loaded.expressions.isNotEmpty()) {
                 updateScheduler.addUpdatableList(CubismExpressionUpdater(expressionManager))
             }
             updateScheduler.sortUpdatableList()
 
-            // 6.6) 把"模型自带素材"的清单发出去，由仓库层同步进动作库。
-            // 只在**真有东西**时发：一张既没动作组也没表情的模型（免费包常见）
-            // 不该在库里留下一批空动作。
-            val catalog = ModelActionCatalog(
-                modelKey = modelJsonRelPath,
-                motionGroups = groupCounts,
-                expressions = expressionNames,
-            )
-            this.catalog = catalog
-            onCatalogReady?.invoke(catalog)
+            // 6.6) 清单对外发出去（回调在 GL 线程，里面只许转手，见 [onCatalogReady]）
+            onCatalogReady?.invoke(loaded.catalog)
 
             // 7) 渲染器与纹理（都要 EGL 上下文）
             // CubismRendererAndroid.create 的返回类型是基类 CubismRenderer，Android 实现才有
             // bindTexture —— 拿不到具体类型就是这套渲染器不对，直接判失败降级
-            val renderer = createRenderer(width, height)
+            val renderer = Live2dAssetLoading.createRenderer(width, height)
             setupRenderer(renderer)
-            setupTextures(renderer)
+            textureIds.clear()
+            textureIds.addAll(Live2dAssetLoading.setupTextures(setting, baseDir, modelJsonRelPath, renderer))
 
             lastFrameNanos = System.nanoTime()
             ready = true
@@ -370,14 +270,18 @@ class Live2dCharacter(
         }
     }
 
+    /** 读包内文件 —— `model3.json` 里的引用都是相对它自己所在目录的，实现见 [Live2dAssetLoading] */
+    private fun readRef(rel: String): ByteArray =
+        Live2dAssetLoading.readRef(baseDir, modelJsonRelPath, rel)
+
     /** EGL 上下文丢失后重建渲染器与纹理（GL 线程） */
     fun reloadRenderer(width: Int, height: Int) {
         if (setting == null) return
         runCatching { deleteRenderer() }
         textureIds.clear()
-        val renderer = createRenderer(width, height)
+        val renderer = Live2dAssetLoading.createRenderer(width, height)
         setupRenderer(renderer)
-        setupTextures(renderer)
+        textureIds.addAll(Live2dAssetLoading.setupTextures(setting!!, baseDir, modelJsonRelPath, renderer))
         lastFrameNanos = System.nanoTime()
     }
 
@@ -392,65 +296,14 @@ class Live2dCharacter(
         lastFrameNanos = System.nanoTime()
     }
 
-    /**
-     * `CubismRendererAndroid.create` 声明返回基类 `CubismRenderer`（框架自己的写法），
-     * 但 Android 实现只有 `CubismRendererAndroid` 一个，取不到就是初始化失败 ——
-     * 抛出去由调用方降级成头像，不许在这里返回 null 让后面 NPE。
-     */
-    private fun createRenderer(width: Int, height: Int): CubismRendererAndroid =
-        CubismRendererAndroid.create(width, height) as? CubismRendererAndroid
-            ?: error("Live2D 渲染器创建失败（这台机器的 OpenGL 环境不支持）")
-
-    private fun setupTextures(renderer: CubismRendererAndroid) {
-        for (i in 0 until (setting?.textureCount ?: 0)) {
-            val rel = setting?.getTextureFileName(i) ?: continue
-            val bytes = runCatching { readRef(rel) }.getOrNull() ?: continue
-            val id = uploadTexture(bytes) ?: continue
-            renderer.bindTexture(i, id)
-            textureIds.add(id)
-        }
-        renderer.isPremultipliedAlpha(true)
-    }
-
-    private fun uploadTexture(bytes: ByteArray): Int? = runCatching {
-        val opts = BitmapFactory.Options().apply { inPremultiplied = true }
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
-        val ids = IntArray(1)
-        GLES20.glGenTextures(1, ids, 0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
-        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
-        GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
-        GLES20.glTexParameteri(
-            GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR,
-        )
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        bitmap.recycle()
-        ids[0]
-    }.getOrNull()
-
-    /** model3.json 里的引用都是相对它自己所在目录的 */
-    private fun readRef(rel: String): ByteArray {
-        val jsonDir = File(baseDir, modelJsonRelPath).parentFile ?: baseDir
-        val direct = File(jsonDir, rel)
-        if (direct.isFile) return direct.readBytes()
-        // 少数导出包会把路径写成相对包根，兜一次
-        val atRoot = File(baseDir, rel)
-        if (atRoot.isFile) return atRoot.readBytes()
-        error("模型包缺少文件 $rel")
-    }
-
-    private fun eyeBlinkIds(): List<CubismId> {
-        val s = setting ?: return emptyList()
-        val out = ArrayList<CubismId>()
-        for (i in 0 until s.eyeBlinkParameterCount) {
-            s.getEyeBlinkParameterId(i)?.let { out.add(it) }
-        }
-        return out
-    }
-
     // ---- 每帧 ----
 
-    /** 更新（GL 线程）。顺序严格照官方：loadParameters → motion → saveParameters → lateUpdate → update */
+    /**
+     * 更新（GL 线程）。
+     *
+     * 顺序严格照官方 `loadParameters → 接线落实 → motion → saveParameters → lateUpdate → update`，
+     * 动作轨道插在 `saveParameters` 之后（动作引擎铁律①，见 [player] 那一步的注释）。
+     */
     fun update() {
         val model = model ?: return
         isUpdated(false)
@@ -484,17 +337,7 @@ class Live2dCharacter(
         updateScheduler.onLateUpdate(model, dt)
 
         model.update()
-        if (needsGeometricHitTest) {
-            // 包围盒**不用每帧算**：这个值只在用户点下去的那一刻用，
-            // 而算一次要把全部 drawable 的全部顶点读一遍（免费模型几千到几万次数组读）。
-            // 角色自己呼吸摆动让包围盒缓慢变形，但点的判档本来就带区间余量，
-            // 15Hz 与 60Hz 用户点起来没有任何区别。
-            boundsAgeSeconds += dt
-            if (boundsAgeSeconds >= BOUNDS_INTERVAL_SECONDS) {
-                boundsAgeSeconds = 0f
-                refreshModelBounds(model)
-            }
-        }
+        hitResolver.maybeRefreshBounds(model, dt)
         isUpdated(true)
     }
 
@@ -555,6 +398,14 @@ class Live2dCharacter(
         /** 角色额外位移（画面比例，v0.64.0 角色空间拖动用） */
         offsetX: Float = 0f,
         offsetY: Float = 0f,
+        /**
+         * 角色缩放倍数（v0.82.0 P2-2 捏合缩放用）：1.0 = 舞台默认大小。
+         *
+         * 乘进投影的缩放项（而不是改 modelMatrix —— 那个每帧被 [fitProjection] 自己重置），
+         * 平移项不改，于是缩放是**绕角色自己**（= 平移点，见 [pivotX]）发生的：
+         * 角色被拖到画面边上再捏合，它就在原地长大，不会往屏幕中心蹿。
+         */
+        userScale: Float = 1f,
     ) {
         val model = model ?: return
         val inset = bottomInset.coerceIn(0f, MAX_BOTTOM_INSET)
@@ -562,6 +413,9 @@ class Live2dCharacter(
         // 所以语音通话与不分区的那条老路径行为一个字都没变。
         val shrink = 1f - inset
         val availHeight = (viewHeight * shrink).coerceAtLeast(1f)
+        // 夹一次：手势那头（PinchScale.apply）已经夹过，这里是引擎自己的底线，
+        // 免得将来别的调用方直接传个 0 进来把矩阵乘没了
+        val zoom = userScale.coerceIn(0.25f, 4f)
 
         projection.loadIdentity()
         val aspectRatio = if (viewHeight == 0) 1f else viewWidth.toFloat() / viewHeight.toFloat()
@@ -571,11 +425,11 @@ class Live2dCharacter(
         if (canvasRatio < displayRatio) {
             // 横长的模型：按宽度铺满，纵向压一下比例（不压的话半身模型会变成"长短腿"）
             modelMatrix.setWidth(2.0f)
-            projection.scale(1.0f, aspectRatio)
+            projection.scale(zoom, aspectRatio * zoom)
         } else {
             // 竖长的模型：按高度铺满**可用区域**（乘 shrink），横向反压
             modelMatrix.setHeight(2.0f)
-            projection.scale(shrink / aspectRatio, shrink)
+            projection.scale(shrink / aspectRatio * zoom, shrink * zoom)
         }
         // 把角色摆到可用区域的中间：NDC 的 y 从 -1（底）到 +1（顶），
         // 可用区域是 [2*inset-1, 1]，它的中点就是 inset。
@@ -587,16 +441,9 @@ class Live2dCharacter(
         pivotY = inset + offsetY * 2f
 
         // 命中检测要用完整变换（modelMatrix × projection），且必须是**不含舞台姿态**的那一份，
-        // 见 [hitScaleX] 的说明。这里只把反算要用的四个数抄下来 —— 不再每帧做一次矩阵乘法，
+        // 见 [Live2dHitResolver]。这里只把反算要用的四个数抄下来 —— 不再每帧做一次矩阵乘法，
         // 也不再把一个可变对象交给 UI 线程去读。
-        val m = modelMatrix.array
-        val p = projection.array
-        hitScaleX = m[0] * p[0]
-        hitScaleY = m[5] * p[5]
-        // (M·P) 的平移列 = M 的缩放 × P 的平移 + M 自己的平移 —— 少加那一项的话，
-        // 一旦 modelMatrix 带过 setPosition（模型画布不居中）点击就会整体偏一位
-        hitTranslateX = m[0] * p[12] + m[12]
-        hitTranslateY = m[5] * p[13] + m[13]
+        hitResolver.snapshot(modelMatrix, projection)
     }
 
     // ---- v0.64.0：动作与互动 ----
@@ -634,6 +481,7 @@ class Live2dCharacter(
                 if (action.expression.isNotBlank()) wantExpression = action.expression
             }
         }
+
     }
 
     /** 停掉一切动作，回到模型自己的待机（挂断、离开角色空间时调） */
@@ -688,65 +536,16 @@ class Live2dCharacter(
         return true
     }
 
-    /** 点在某处该算哪个互动区域（**任意线程可调**）。
+    /**
+     * 点在某处该算哪个互动区域（**任意线程可调**）。
      *
-     * 两级判定：模型自带的 `HitArea` 优先，没有就走几何分区（见 [InteractionRules]）。
-     * 传进来的是 **NDC 坐标**（-1..1，y 向上）—— 与 `fitProjection` 建立的投影一致。
+     * 判定本身在 [Live2dHitResolver] 里（那边解释了两级判定与跨线程快照的讲究），
+     * 这里只负责把"模型自带的 isHit"这一张牌递过去 ——
+     * `isHit` 是 `CubismUserModel` 的方法，受保护的调用留在角色内部是老规矩。
      */
     fun hitRegion(ndcX: Float, ndcY: Float): InteractionRegion {
         if (model == null) return InteractionRegion.OTHER
-        // NDC → 模型坐标：与 `CubismMatrix44.invertTransformX/Y` 同一个式子，
-        // 但读的是四个 volatile 快照，不再跨线程共享那个每帧被重写的矩阵对象（见 [hitScaleX]）
-        val sx = hitScaleX
-        val sy = hitScaleY
-        if (abs(sx) < 1e-6f || abs(sy) < 1e-6f) return InteractionRegion.OTHER
-        val mx = (ndcX - hitTranslateX) / sx
-        val my = (ndcY - hitTranslateY) / sy
-
-        val head = headHitId
-        val body = bodyHitId
-        if (head != null || body != null) {
-            val headHit = head?.let { runCatching { isHit(it, mx, my) }.getOrDefault(false) } ?: false
-            val bodyHit = body?.let { runCatching { isHit(it, mx, my) }.getOrDefault(false) } ?: false
-            return InteractionRules.fromHitAreas(headHit, bodyHit)
-        }
-
-        if (!boundsReady) return InteractionRegion.OTHER
-        val spanX = boundRight - boundLeft
-        val spanY = boundBottom - boundTop
-        if (spanX <= 1e-4f || spanY <= 1e-4f) return InteractionRegion.OTHER
-        val nx = (mx - boundLeft) / spanX
-        // 模型坐标 y 向上、屏幕 y 向下，所以这里要翻过来
-        val ny = (boundBottom - my) / spanY
-        if (nx < 0f || nx > 1f) return InteractionRegion.OTHER
-        return InteractionRules.fromBands(ny)
-    }
-
-    /** GL 线程：把整张模型所有顶点的包围盒算出来（只在没有 HitArea 的模型上跑） */
-    private fun refreshModelBounds(m: CubismModel) {
-        var l = Float.MAX_VALUE
-        var r = -Float.MAX_VALUE
-        var t = Float.MAX_VALUE
-        var b = -Float.MAX_VALUE
-        for (i in 0 until m.drawableCount) {
-            val v = runCatching { m.getDrawableVertexPositions(i) }.getOrNull() ?: continue
-            var k = 0
-            while (k + 1 < v.size) {
-                val x = v[k]
-                val y = v[k + 1]
-                if (x < l) l = x
-                if (x > r) r = x
-                if (y < t) t = y
-                if (y > b) b = y
-                k += 2
-            }
-        }
-        if (l > r || t > b) return
-        boundLeft = l
-        boundRight = r
-        boundTop = t
-        boundBottom = b
-        boundsReady = true
+        return hitResolver.regionAt(ndcX, ndcY) { id, x, y -> isHit(id, x, y) }
     }
 
     // ---- 状态与电平（跨线程安全） ----
@@ -786,16 +585,15 @@ class Live2dCharacter(
         lipSyncIds.clear()
         textureIds.clear()
         expressions.clear()
-        headHitId = null
-        bodyHitId = null
-        needsGeometricHitTest = false
-        boundsReady = false
+        hitResolver.reset()
         stagePose = StagePose.NONE
     }
 
+    /** 某个动作组的候选组名：待机组要试一堆别名，别的组就是它自己 + 待机别名兜底 */
     private fun motionCandidates(group: String): List<String> =
         if (group == IDLE_GROUP) IDLE_ALIASES else listOf(group) + IDLE_ALIASES
 
+    /** 加载失败时写在页面上的一句话（不写就只能靠猜，AGENTS §零.7） */
     private fun describe(t: Throwable): String {
         val m = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
         return "Live2D 模型加载失败：$m"
@@ -858,11 +656,7 @@ class Live2dCharacter(
         /** 底部 UI 最多能占掉多少画面：超过这个数角色只剩一条缝，那是布局算错了，不是需求 */
         private const val MAX_BOTTOM_INSET = 0.8f
 
-        /** 几何兜底的包围盒多久刷一次（秒）。见 [needsGeometricHitTest] 与 [update] */
-        private const val BOUNDS_INTERVAL_SECONDS = 1f / 15f
-
         /** 第一帧还没有基准时刻时按多少秒推进（60fps 的一帧） */
         private const val DEFAULT_FRAME_SECONDS = 1f / 60f
-
     }
 }

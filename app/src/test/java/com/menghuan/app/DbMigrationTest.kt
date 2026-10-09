@@ -46,6 +46,7 @@ class DbMigrationTest {
         AppDatabase.MIGRATION_19_20, AppDatabase.MIGRATION_20_21, AppDatabase.MIGRATION_21_22,
         AppDatabase.MIGRATION_22_23,
         AppDatabase.MIGRATION_23_24,
+        AppDatabase.MIGRATION_24_25,
     )
 
     /** 读 `app/schemas/<version>.json`，返回 (表名 → 建表 SQL) */
@@ -269,6 +270,53 @@ class DbMigrationTest {
                 db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = '$idx'").use { c ->
                     assertTrue("索引 $idx 迁移后应仍在", c.moveToFirst())
                 }
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    /**
+     * v24 → 25（v0.82.0 P1 记忆增强）。
+     *
+     * **断言的事**：① 存量记忆一条不动，新列 `lastRecalledAt` 落 0（"从没被想起过"，
+     * 自动归档按 max(lastRecalledAt, updatedAt) 算，老数据不会被升级瞬间整批归档）；
+     * ② 两张新表 `conversation_summaries` / `memory_embeddings` 建出来且为空。
+     *
+     * **反向验尸**：把 `AppDatabase.MIGRATION_24_25` 里任一条语句删掉，本测试必须变红
+     * （Room identityHash 校验抛 "Migration didn't properly handle"）。
+     */
+    @Test
+    fun migrate24To25_keepsFactsAndCreatesNewTables() {
+        val name = "mig24.db"
+        createVersionedDb(24, name) { db ->
+            db.execSQL(
+                "INSERT INTO profile_facts (id, key, value, source, updatedAt, personaId, category, lifecycle) " +
+                    "VALUES (1, '口味', '爱吃辣', 'manual', 1700000000000, 2, '', 'active')"
+            )
+        }
+
+        val room = openWithRoom(name)
+        try {
+            val db = room.openHelper.writableDatabase
+            // 存量记忆原样保留，新列落 0
+            db.query("SELECT value, lifecycle, lastRecalledAt FROM profile_facts WHERE id = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("爱吃辣", c.getString(0))
+                assertEquals("active", c.getString(1))
+                assertEquals(0L, c.getLong(2))
+            }
+            listOf("conversation_summaries", "memory_embeddings").forEach { t ->
+                db.query("SELECT COUNT(*) FROM $t").use { c ->
+                    assertTrue("$t 表应已建出", c.moveToFirst())
+                    assertEquals(0, c.getInt(0))
+                }
+            }
+            // 新列能写：召回链路 UPDATE lastRecalledAt 不该在老装机上炸
+            db.execSQL("UPDATE profile_facts SET lastRecalledAt = 1700000001000 WHERE id = 1")
+            db.query("SELECT lastRecalledAt FROM profile_facts WHERE id = 1").use { c ->
+                c.moveToFirst()
+                assertEquals(1700000001000L, c.getLong(0))
             }
         } finally {
             room.close()

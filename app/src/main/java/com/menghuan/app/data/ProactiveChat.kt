@@ -252,6 +252,14 @@ object ProactiveChat {
                     listOf(ChatMessage(conversationId = 0, isFromUser = true, content = userContext)),
                 )
         }.getOrNull() ?: return false
+        // v0.82.0：主动关心也要记账——它是"看不见的自动消耗"，之前漏记导致用户月底对账低估用量。
+        runCatching {
+            UsageTracker.add(
+                settingsRepository,
+                reply.usageTokens ?: 0, api.model,
+                reply.promptTokens, reply.cachedPromptTokens,
+            )
+        }
         val raw = reply.text.trim()
         if (raw.isEmpty()) return false
         // 动态动作（v0.79.0）：标记**先剥掉再落消息** —— 屏幕上出现 `[动态#3:…]` 就是把内部协议漏给用户。

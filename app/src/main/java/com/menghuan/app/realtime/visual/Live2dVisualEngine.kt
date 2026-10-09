@@ -106,6 +106,15 @@ class Live2dVisualEngine(
     private var offsetY = 0f
 
     /**
+     * 角色缩放倍数（v0.82.0 P2-2）。跨线程写、GL 线程读（同 [offsetX]）。
+     *
+     * 只影响投影矩阵，不动模型参数 —— 于是"任何模型都能被捏大捏小"，
+     * 不需要这张模型带什么特定通道。
+     */
+    @Volatile
+    private var userScale = 1f
+
+    /**
      * 手上正播的是"**临时**动作"（点角色 / 动作胶囊那种演完就要回去的），不是状态本身。
      *
      * v0.67.0 加这个是因为一次性动作演完之后 [ActionPlayer] 就撒手了 —— 参数交还给模型自己，
@@ -252,7 +261,8 @@ class Live2dVisualEngine(
 
                 // 画布比例适配（算法在 Live2dCharacter 里，同官方 onUpdate）。
                 // v0.64.0：多传两个东西 —— 底部要留给 UI 的高度（分区布局）、角色位移（空间拖动）
-                c.fitProjection(projection, viewWidth, viewHeight, bottomInset, offsetX, offsetY)
+                // v0.82.0 P2-2：再多个缩放倍数（捏合），同样只影响矩阵
+                c.fitProjection(projection, viewWidth, viewHeight, bottomInset, offsetX, offsetY, userScale)
                 c.update()
                 c.draw(projection)
                 restoreStateActionIfNeeded(c)
@@ -386,6 +396,16 @@ class Live2dVisualEngine(
     override fun setOffset(x: Float, y: Float) {
         offsetX = x
         offsetY = y
+    }
+
+    /**
+     * 缩放：主线程的捏合手势一路调进来，只改一个 float，下一帧的投影自然变大/变小。
+     *
+     * 夹的范围比 [PinchScale.MIN] / [PinchScale.MAX] 宽一档，是为了给橡皮筋留一点余量 ——
+     * 橡皮筋的最终值由 ViewModel 决定，这里只负责"再离谱也不许把角色捏没了"。
+     */
+    override fun setScale(scale: Float) {
+        userScale = scale.coerceIn(0.25f, 4f)
     }
 
     override fun hit(ndcX: Float, ndcY: Float): InteractionRegion =

@@ -20,6 +20,7 @@ import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.live2d.ModelCapability
 import com.menghuan.app.live2d.ModelCompatibility
 import com.menghuan.app.live2d.ParameterTrack
+import com.menghuan.app.live2d.PinchScale
 import com.menghuan.app.live2d.StagePose
 import com.menghuan.app.live2d.TrackEasing
 import com.menghuan.app.live2d.TrackKey
@@ -880,5 +881,60 @@ class Live2dActionTest {
                 action.tracks.any { it.channel == GenericChannel.EYE },
             )
         }
+    }
+
+    // ---------------------------------------------------------------
+    // 角色空间捏合缩放（v0.82.0 P2-2）
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `捏合在范围内就是老老实实相乘`() {
+        assertEquals(1.0f, PinchScale.apply(1.0f, 1.0f), 1e-4f)
+        assertEquals(1.5f, PinchScale.apply(1.0f, 1.5f), 1e-4f)
+        assertEquals(1.5f, PinchScale.apply(2.0f, 0.75f), 1e-4f)
+        assertEquals(0.75f, PinchScale.apply(0.5f, 1.5f), 1e-4f)
+    }
+
+    @Test
+    fun `捏过边界会减速但还跟得动手`() {
+        // 越界的部分只跟 0.35：从 1.9× 再撑开 20% = 2.28×，
+        // 越过 2.0× 的那 0.28 只给 0.098 → 2.098×（不是照单全收的 2.28×）
+        assertEquals(2.098f, PinchScale.apply(1.9f, 1.2f), 1e-4f)
+        // 反向同理：从 0.6× 再收一半 = 0.3×，越过 0.5× 的那 0.2 只给 0.07 → 0.43×
+        assertEquals(0.43f, PinchScale.apply(0.6f, 0.5f), 1e-4f)
+    }
+
+    @Test
+    fun `一直往一个方向捏会顶在硬顶上`() {
+        var s = 1f
+        repeat(40) { s = PinchScale.apply(s, 1.6f) }
+        assertEquals(
+            "橡皮筋应当钉在「边界 + MAX_SLACK」上，别无限涨",
+            PinchScale.MAX + PinchScale.MAX_SLACK, s, 1e-4f,
+        )
+        // 另一头：一直收也只会停在边界外一点点，且**绝不越过下硬顶**。
+        //
+        // ⚠️ 这里不是"钉在下硬顶"：橡皮筋是按当前值连乘的，往外拉有不动点
+        //    （s = 0.325 + 0.21·s → s ≈ 0.411×），所以连续收只会逼近 0.411× 而不是 0.1×。
+        //    硬顶管的是"一次捏太狠"，不是"一直捏"。
+        var t = 1f
+        repeat(40) { t = PinchScale.apply(t, 0.6f) }
+        assertTrue("反向也应当停在边界之外：$t", t < PinchScale.MIN)
+        assertTrue("反向越过了下硬顶：$t", t >= PinchScale.MIN - PinchScale.MAX_SLACK - 1e-4f)
+    }
+
+    @Test
+    fun `松手的目标落在边界内，范围内不动`() {
+        assertEquals(1.0f, PinchScale.settleTarget(1.0f), 1e-4f)
+        assertEquals(PinchScale.MAX, PinchScale.settleTarget(2.4f), 1e-4f)
+        assertEquals(PinchScale.MIN, PinchScale.settleTarget(0.1f), 1e-4f)
+    }
+
+    @Test
+    fun `缩放范围本身守着一条 1 在中间`() {
+        assertTrue(PinchScale.MIN < 1f && 1f < PinchScale.MAX)
+        // 0.5×~2.0×：再宽就"放大只剩一只眼 / 缩小成一个点"了
+        assertEquals(0.5f, PinchScale.MIN, 0f)
+        assertEquals(2.0f, PinchScale.MAX, 0f)
     }
 }

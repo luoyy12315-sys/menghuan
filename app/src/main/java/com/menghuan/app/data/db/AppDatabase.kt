@@ -17,10 +17,12 @@ import com.menghuan.app.data.model.InteractionBindingEntity
 import com.menghuan.app.data.model.CallSession
 import com.menghuan.app.data.model.CallTurn
 import com.menghuan.app.data.model.ChatMessage
+import com.menghuan.app.data.model.ConversationSummary
 import com.menghuan.app.data.model.DailySuggestion
 import com.menghuan.app.data.model.ImageGenerationRecord
 import com.menghuan.app.data.model.LedgerEntry
 import com.menghuan.app.data.model.Live2dActionEntity
+import com.menghuan.app.data.model.MemoryEmbedding
 import com.menghuan.app.data.model.MomentEntry
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.ProfileFact
@@ -76,8 +78,40 @@ interface PersonaDao {
 
 @Dao
 interface MessageDao {
+    /**
+     * 全量观察（聊天记录搜索页用——那个功能语义上就是要翻全库）。
+     * 聊天页与 LLM 历史请走 [observeRecentConversation] / [getRecentPaged]，长会话不再整表读。
+     */
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY timestamp ASC")
     fun observeConversation(conversationId: Long): Flow<List<ChatMessage>>
+
+    /**
+     * 聊天页分页：最新 [limit] 条（v0.82.0）。DESC 取出、调用方 reverse 成时间正序；
+     * 同毫秒的消息按 id 决胜，保证"扩大 limit"时旧窗口的内容一字不动（列表稳定 key 靠它）。
+     */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId " +
+            "ORDER BY timestamp DESC, id DESC LIMIT :limit"
+    )
+    fun observeRecentConversation(conversationId: Long, limit: Int): Flow<List<ChatMessage>>
+
+    /** LLM 历史分段拉取：从新到旧的一页（见 [getRecentPaged] 用途注释）。 */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId " +
+            "ORDER BY timestamp DESC, id DESC LIMIT :limit OFFSET :offset"
+    )
+    suspend fun getRecentPaged(conversationId: Long, limit: Int, offset: Int): List<ChatMessage>
+
+    /** 会话最新一条（来电判断"上次聊天时间"等只需要 last 的调用点，别再整表读）。 */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId " +
+            "ORDER BY timestamp DESC, id DESC LIMIT 1"
+    )
+    suspend fun getLatest(conversationId: Long): ChatMessage?
+
+    /** 清除记忆待审系统气泡（v0.82.0）：同一时刻只保留最新一条，旧的整批删掉。 */
+    @Query("DELETE FROM messages WHERE conversationId = :conversationId AND mediaKind = 'MEMORY_NOTICE'")
+    suspend fun deleteMemoryNotices(conversationId: Long)
 
     /** 每个会话的最后一条消息（会话列表预览用） */
     @Query(
@@ -142,6 +176,21 @@ interface MessageDao {
             "ORDER BY id ASC LIMIT 40"
     )
     suspend fun getAfterId(conversationId: Long, afterId: Long): List<ChatMessage>
+
+    /**
+     * 滚动摘要的积压分段拉取（v0.82.0 P1-1）：水位线之后、从旧到新翻页。
+     * 摘要引擎只吃到"够一段"就停，超长会话不为算积压字数整表读。
+     */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId AND id > :afterId " +
+            "ORDER BY id ASC LIMIT :limit OFFSET :offset"
+    )
+    suspend fun getAfterIdPaged(
+        conversationId: Long,
+        afterId: Long,
+        limit: Int,
+        offset: Int,
+    ): List<ChatMessage>
 
     /** 数据导出：全量消息（本机数据自主权） */
     @Query("SELECT * FROM messages ORDER BY id ASC")
@@ -251,6 +300,79 @@ interface ProfileFactDao {
 
     /** 清除全部数据用（v0.36.5） */
     @Query("DELETE FROM profile_facts")
+    suspend fun deleteAll()
+
+    // ===== v0.82.0 P1-3：召回命中记录与自动升降级 =====
+
+    /** 召回块命中后记录"被想起的时刻"（自动归档判据的数据源，见 ProfileFact.lastRecalledAt） */
+    @Query("UPDATE profile_facts SET lastRecalledAt = :nowMs WHERE id IN (:ids)")
+    suspend fun touchRecalled(ids: List<Long>, nowMs: Long)
+
+    /** 归档条目被高分召回 → 升回 active（P1-3 的"想起即复活"，同时记下这次想起） */
+    @Query("UPDATE profile_facts SET lifecycle = 'active', lastRecalledAt = :nowMs WHERE id = :id")
+    suspend fun promoteToActive(id: Long, nowMs: Long)
+
+    /** 自动归档的候选全集（active 逐条过 [com.menghuan.app.data.MemoryScope.shouldAutoArchive]） */
+    @Query("SELECT * FROM profile_facts WHERE lifecycle = 'active'")
+    suspend fun listActive(): List<ProfileFact>
+
+    /**
+     * 这个角色**能读到的归档记忆**（召回复活链路用）。
+     * 范围判据与 [observeVisibleFor] 对齐：自己的 + 用户基础档案；
+     * 基础档案那部分要不要真给，同样由调用方按「个人档案全部 AI 可读」开关再筛。
+     */
+    @Query("SELECT * FROM profile_facts WHERE personaId IN (0, :personaId) AND lifecycle = 'archived' ORDER BY id ASC")
+    suspend fun listArchivedFor(personaId: Long): List<ProfileFact>
+}
+
+/**
+ * 对话滚动摘要（v0.82.0 P1-1）。一行一个会话，查看/删除都在「会话设置 → 对话摘要」。
+ */
+@Dao
+interface ConversationSummaryDao {
+    @Query("SELECT * FROM conversation_summaries WHERE conversationId = :conversationId")
+    fun observe(conversationId: Long): Flow<ConversationSummary?>
+
+    @Query("SELECT * FROM conversation_summaries WHERE conversationId = :conversationId")
+    suspend fun get(conversationId: Long): ConversationSummary?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(summary: ConversationSummary)
+
+    /** 用户在会话设置里点「删除摘要」：整行抹掉、水位线归零（不是标记隐藏） */
+    @Query("DELETE FROM conversation_summaries WHERE conversationId = :conversationId")
+    suspend fun delete(conversationId: Long)
+
+    /** 清除全部数据用 */
+    @Query("DELETE FROM conversation_summaries")
+    suspend fun deleteAll()
+}
+
+/**
+ * 记忆语义向量（v0.82.0 P1-2）。按 [MemoryEmbedding.bucket] 隔离各家各模型，
+ * 读取必须带桶——桶对不上等于没有，绝不混算。
+ */
+@Dao
+interface MemoryEmbeddingDao {
+    /** 召回时按当前配置桶取向量（只回桶对得上的；桶外的旧向量由后台重算补齐） */
+    @Query("SELECT * FROM memory_embeddings WHERE factId IN (:factIds) AND bucket = :bucket")
+    suspend fun getForFacts(factIds: List<Long>, bucket: String): List<MemoryEmbedding>
+
+    /** 当前桶里还缺向量的条目 id（后台索引器按它补算） */
+    @Query(
+        "SELECT factId FROM memory_embeddings WHERE factId IN (:factIds) AND bucket = :bucket"
+    )
+    suspend fun existingIds(factIds: List<Long>, bucket: String): List<Long>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<MemoryEmbedding>)
+
+    /** 记忆被删除/换桶作废时按 id 清（换桶不主动清：老桶留着，切回去还能用） */
+    @Query("DELETE FROM memory_embeddings WHERE factId IN (:factIds)")
+    suspend fun deleteForFacts(factIds: List<Long>)
+
+    /** 清除全部数据用 */
+    @Query("DELETE FROM memory_embeddings")
     suspend fun deleteAll()
 }
 
@@ -580,8 +702,10 @@ interface InteractionBindingDao {
         Live2dActionEntity::class,
         CallActionBindingEntity::class,
         InteractionBindingEntity::class,
+        ConversationSummary::class,
+        MemoryEmbedding::class,
     ],
-    version = 24,
+    version = 25,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -602,6 +726,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun live2dActionDao(): Live2dActionDao
     abstract fun callActionBindingDao(): CallActionBindingDao
     abstract fun interactionBindingDao(): InteractionBindingDao
+    abstract fun conversationSummaryDao(): ConversationSummaryDao
+    abstract fun memoryEmbeddingDao(): MemoryEmbeddingDao
 
     companion object {
         /**
@@ -667,6 +793,37 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE `moments` ADD COLUMN `images` TEXT NOT NULL DEFAULT ''")
             db.execSQL("ALTER TABLE `moments` ADD COLUMN `location` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v25：记忆增强三件套（v0.82.0 P1）。
+         *
+         * - `profile_facts.lastRecalledAt`：**带默认值加列**，存量记忆落 0 = "从没被想起过"；
+         *   自动归档判定按 `max(lastRecalledAt, updatedAt)` 算，老数据不会被升级瞬间整批归档。
+         * - `conversation_summaries` / `memory_embeddings`：两张**全新空表**，不动任何存量数据。
+         *
+         * 全部零风险手法（与 v0.70.0 / v0.74.0 那几条 ALTER 同款）；
+         * 两张新表都只按主键查，**没有新索引**——实体也没声明，两边保持一致（v0.74.0 的教训）。
+         */
+        val MIGRATION_24_25 = object : Migration(24, 25) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `profile_facts` ADD COLUMN `lastRecalledAt` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `conversation_summaries` (" +
+                        "`conversationId` INTEGER PRIMARY KEY NOT NULL, " +
+                        "`coveredMessageId` INTEGER NOT NULL DEFAULT 0, " +
+                        "`summary` TEXT NOT NULL DEFAULT '', " +
+                        "`updatedAt` INTEGER NOT NULL DEFAULT 0)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `memory_embeddings` (" +
+                        "`factId` INTEGER PRIMARY KEY NOT NULL, " +
+                        "`bucket` TEXT NOT NULL DEFAULT '', " +
+                        // vector 列不带 DEFAULT：实体也没声明 defaultValue，两边一致（Room 校验形状）
+                        "`vector` BLOB NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL DEFAULT 0)"
+                )
             }
         }
 

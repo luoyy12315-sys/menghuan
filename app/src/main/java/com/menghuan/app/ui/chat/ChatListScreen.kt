@@ -284,6 +284,8 @@ class ChatListViewModel(
     fun exportConversation(context: Context, persona: Persona) = viewModelScope.launch {
         runCatching {
             val messages = db.messageDao().observeConversation(persona.id).first()
+                // v0.82.0：记忆待审系统气泡是界面提示，导出的对话记录里不含它
+                .filter { it.mediaKind != com.menghuan.app.data.model.MediaKind.MEMORY_NOTICE.name }
             val markdown = com.menghuan.app.data.ConversationExport.buildMarkdown(
                 personaName = persona.name,
                 personaTitle = persona.title,

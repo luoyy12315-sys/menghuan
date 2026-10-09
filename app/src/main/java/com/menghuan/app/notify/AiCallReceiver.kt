@@ -66,9 +66,9 @@ class AiCallReceiver : BroadcastReceiver() {
                 if (rule == null || !rule.enabled) return@launch
 
                 // ⚠️ 关键：看的是**跟这个人设**的最后一次聊天，不是全局最近一条
+                // v0.82.0：只取最新一条（LIMIT 1），替代整表读
                 val lastChatAt = runCatching {
-                    app.db.messageDao().observeConversation(personaId).first()
-                        .lastOrNull()?.timestamp ?: 0L
+                    app.db.messageDao().getLatest(personaId)?.timestamp ?: 0L
                 }.getOrDefault(0L)
 
                 if (!AiCallRuleLogic.shouldRing(rule, AiCallLogic.minuteOfDayAt(now), today, lastChatAt, now)) {

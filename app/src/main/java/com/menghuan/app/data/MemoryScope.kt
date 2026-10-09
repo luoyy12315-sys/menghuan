@@ -109,6 +109,25 @@ object MemoryScope {
     data class Hit(val fact: ProfileFact, val score: Int)
 
     /**
+     * 在一个**已经筛好的池子**里按词法搜（纯函数）。
+     * 池子的筛法是安全边界（谁能读到哪几条），必须在调用前就筛完——见 [search] 的注释。
+     */
+    fun searchIn(
+        pool: List<ProfileFact>,
+        query: String,
+        minScore: Int = 60,
+        limit: Int = 5,
+    ): List<Hit> {
+        if (pool.isEmpty() || query.isBlank()) return emptyList()
+        return pool.mapNotNull { f ->
+            val s = maxOf(score(query, f.key), score(query, f.value), score(query, "${f.key}：${f.value}"))
+            if (s >= minScore) Hit(f, s) else null
+        }
+            .sortedWith(compareByDescending<Hit> { it.score }.thenByDescending { it.fact.updatedAt })
+            .take(limit)
+    }
+
+    /**
      * 在**这个角色的可见记忆**里搜（先筛范围再搜分数——范围是安全边界，绝不能先搜后筛，
      * 否则 A 角色的内容会带着高分出现在给 B 角色的检索结果里）。
      *
@@ -122,16 +141,83 @@ object MemoryScope {
         query: String,
         minScore: Int = 60,
         limit: Int = 5,
+    ): List<Hit> = searchIn(visible(all, personaId, sharedReadable), query, minScore, limit)
+
+    // ===== v0.82.0 P1-2：语义召回（可选增强，默认关） =====
+
+    /**
+     * 语义-only 命中的最低余弦：没有词法分兜底时，向量说"像"必须像到这个程度才信。
+     * 比词法的 60/100 严是刻意的——语义召回擅长"换个说法也能想起来"，代价是模糊地带更宽，
+     * 门槛不把严就会捞进不相干的记忆（比想不起来更糟，见 memoryRecallBlock 的口径）。
+     */
+    const val SEMANTIC_MIN_COSINE = 0.75f
+
+    /** 余弦相似度（纯函数）：维度不等、空向量、零范数一律 0 —— 算不出的一律当不像，不猜 */
+    fun cosine(a: FloatArray, b: FloatArray): Float {
+        if (a.isEmpty() || b.isEmpty() || a.size != b.size) return 0f
+        var dot = 0.0
+        var na = 0.0
+        var nb = 0.0
+        for (i in a.indices) {
+            dot += a[i].toDouble() * b[i]
+            na += a[i].toDouble() * a[i]
+            nb += b[i].toDouble() * b[i]
+        }
+        if (na == 0.0 || nb == 0.0) return 0f
+        return (dot / (kotlin.math.sqrt(na) * kotlin.math.sqrt(nb))).toFloat().coerceIn(-1f, 1f)
+    }
+
+    /**
+     * 词法 + 语义融合召回（v0.82.0 P1-2）。
+     *
+     * 融合口径（参考 Mem0 的 multi-signal）：**任一路够格就算命中**，展示分取两路的较高者——
+     * 词法分 ≥ [minScore]（原口径一字不动），或余弦 ≥ [SEMANTIC_MIN_COSINE]（语义-only 的更严门槛）。
+     * 没配 embeddings / 本轮向量缺席时 [queryVector] 传 null，行为与 [search] 完全一致（纯词法兜底）。
+     *
+     * ⚠️ 与 ASR 双引擎同一条纪律：**不做"向量不行就回落"的自动切换**——开关是用户明示的选择，
+     * 端点调不通时 [queryVector] 自然为 null、本轮退回词法，但开关本身绝不被偷偷改掉。
+     */
+    fun searchHybrid(
+        all: List<ProfileFact>,
+        personaId: Long,
+        sharedReadable: Boolean,
+        query: String,
+        minScore: Int = 60,
+        limit: Int = 5,
+        queryVector: FloatArray? = null,
+        vectors: Map<Long, FloatArray> = emptyMap(),
     ): List<Hit> {
         val pool = visible(all, personaId, sharedReadable)
         if (pool.isEmpty() || query.isBlank()) return emptyList()
         return pool.mapNotNull { f ->
-            val s = maxOf(score(query, f.key), score(query, f.value), score(query, "${f.key}：${f.value}"))
-            if (s >= minScore) Hit(f, s) else null
+            val lex = maxOf(score(query, f.key), score(query, f.value), score(query, "${f.key}：${f.value}"))
+            val sem = queryVector?.let { qv -> vectors[f.id]?.let { cosine(qv, it) } }
+            val semanticPass = sem != null && sem >= SEMANTIC_MIN_COSINE
+            if (lex >= minScore || semanticPass) {
+                Hit(f, maxOf(lex, ((sem ?: 0f) * 100f).toInt()))
+            } else {
+                null
+            }
         }
             .sortedWith(compareByDescending<Hit> { it.score }.thenByDescending { it.fact.updatedAt })
             .take(limit)
     }
+
+    // ===== v0.82.0 P1-3：自动归档判定 =====
+
+    /** active 条目多久没被想起就自动降 archived（90 天） */
+    const val AUTO_ARCHIVE_AFTER_MS = 90L * 24 * 60 * 60 * 1000
+
+    /**
+     * 这条记忆该不该被自动归档（纯函数）。
+     *
+     * 两个豁免：① `core` 永不归档（用户设为永久是**人的决定**）；② 老数据 `lastRecalledAt = 0`
+     * 按 `updatedAt` 算"上次被想起"——否则升级那一刻全部老记忆立刻满足"90 天没被想起"，
+     * 会被整批归档（那是事故，不是功能）。
+     */
+    fun shouldAutoArchive(fact: ProfileFact, nowMs: Long): Boolean =
+        fact.lifecycle == "active" &&
+            nowMs - maxOf(fact.lastRecalledAt, fact.updatedAt) > AUTO_ARCHIVE_AFTER_MS
 
     private fun Char.isCJK(): Boolean = this in '\u4e00'..'\u9fff' || this in '\u3400'..'\u4dbf'
 }

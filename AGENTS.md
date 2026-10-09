@@ -128,11 +128,15 @@
    的使用手册，用户会直接问它"这个功能怎么用 / 语音怎么配"。它一旦滞后，用户得到的就是**错答案**
    ——比没有助手更糟。所以：
    - **改了功能入口、加了功能、删了功能，同一个版本里必须同步改手册**；
-   - 手册是在 `DEFAULT_ASSISTANT_PROMPT_V038`（**底稿，不要再改它的措辞**）全文上做**定点 `.replace()`**，
-     不把整份文案复制第二遍。⚠️ `replace` 的子串对不上时**静默落空**、不报错不崩，
+   - 手册是在 `DEFAULT_ASSISTANT_PROMPT_V038`（**底稿，不要再改它的措辞**）全文上做**定点 `.manualPatch()`**，
+     不把整份文案复制第二遍。⚠️ 子串对不上时**静默落空**、不报错不崩，
      而底稿经 `trimIndent()` 后**段首是没有缩进的**——搜索串多写一个空格就整段白改
      （v0.50.0 真实踩过）；
-   - 因此**每加一条 replace，必须同时在 `app/src/test/java/com/menghuan/app/AiPromptsTest.kt`
+   - **追加补丁只许用 `.manualPatch()`，不许用裸 `.replace()`**（P4 加固）：
+     `manualPatch` 会把没命中的记进 `assistantManualPatchMisses`，
+     `AiPromptsTest` 末尾的「P4 手册补丁链全部命中」总自检 + debug 包启动自检
+     （失败写崩溃日志页，见 `MenghuanApp.onCreate`）读同一份记录——用裸 `replace` 等于绕过自检；
+   - 因此**每加一条补丁，必须同时在 `app/src/test/java/com/menghuan/app/AiPromptsTest.kt`
      补一对断言**：新措辞 `contains` + 旧措辞 `assertFalse(contains)`。只写一边守不住静默失效；
    - **启动升级机制（v0.51.1 重写，别再改回去）：改手册不需要登记任何"历史版本全文"。**
      只要用户没亲手改过助手的设定词，启动时一律刷成最新 `DEFAULT_ASSISTANT_PROMPT`

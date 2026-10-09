@@ -55,6 +55,15 @@ interface Live2dStage {
      */
     fun setOffset(x: Float, y: Float)
 
+    /**
+     * 缩放角色（v0.82.0 P2-2）：1.0 = 舞台默认大小，合法范围 [PinchScale.MIN], [PinchScale.MAX]。
+     *
+     * 走的是**渲染矩阵**那一路（与底部留白、拖动同源），不写任何模型参数 ——
+     * 所以这张模型有没有"身体侧倾"之类的参数，都不影响它能不能被捏大捏小。
+     * 越界的值由实现自己夹住，调用方（ViewModel 那个橡皮筋）可以放心传。
+     */
+    fun setScale(scale: Float)
+
     /** 点在某处算哪个区域。传 NDC 坐标（-1..1，y 向上） */
     fun hit(ndcX: Float, ndcY: Float): InteractionRegion
 

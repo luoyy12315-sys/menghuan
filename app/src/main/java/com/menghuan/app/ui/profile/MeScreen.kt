@@ -204,6 +204,9 @@ class MeViewModel(
                 db.taskCompletionDao().deleteAll()
                 db.taskDao().deleteAll()
                 db.momentDao().deleteAll()
+                // v0.82.0 P1：滚动摘要与记忆向量同样属于"全部数据"（留着就是指向空气的行）
+                db.conversationSummaryDao().deleteAll()
+                db.memoryEmbeddingDao().deleteAll()
                 // 聊天发图与 AI 生成图一并删掉：消息表清了，图留着就是孤儿文件（v0.38.0）
                 runCatching { java.io.File(app.filesDir, "chat_images").deleteRecursively() }
                 runCatching { java.io.File(app.filesDir, "images").deleteRecursively() }

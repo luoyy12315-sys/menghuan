@@ -202,6 +202,8 @@ fun ChatSettingsScreen(
     // v0.66.0：视频通话背景（系统预设 / 自定义图片，两档，形状与角色空间背景一致）
     var showCallBgSheet by remember { mutableStateOf(false) }
     var showProactiveSheet by remember { mutableStateOf(false) }
+    // v0.82.0 P1-1：对话摘要的查看/删除弹层
+    var showSummarySheet by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ScheduledMessage?>(null) }
 
     // 音色候选（v0.56.6）：**在弹层打开之前**就把名单备好 —— 详见 PersonaVoiceSheet 的说明。
@@ -477,10 +479,42 @@ fun ChatSettingsScreen(
         val stagingCount by app.db.profileFactDao().observeStagingCount(personaId).collectAsState(initial = 0)
         SettingsLineRow(
             if (stagingCount > 0) "TA 的记忆 · $stagingCount 条待确认" else "TA 的记忆",
-            titleSize = 17.sp, index = 15, divider = false,
+            titleSize = 17.sp, index = 15,
         ) { onOpen("memory/$personaId") }
+        // 「对话摘要」（v0.82.0 P1-1）：滚动摘要的查看/删除入口（生成开关在「设置 · AI 提示词」）。
+        val convSummary by app.db.conversationSummaryDao().observe(personaId).collectAsState(initial = null)
+        SettingsLineRow(
+            "对话摘要",
+            titleSize = 17.sp, index = 16, divider = false,
+            trailingText = if (convSummary == null) "还没有" else "已生成",
+        ) { showSummarySheet = true }
 
         Spacer(Modifier.height(24.dp))
+    }
+
+    // ===== 对话摘要（底部弹层，v0.82.0 P1-1）：查看全文 + 删除（删了按"从来没有摘要"重新积累）=====
+    if (showSummarySheet) {
+        val summary by app.db.conversationSummaryDao().observe(personaId).collectAsState(initial = null)
+        NeuSheetScaffold(title = "对话摘要", onDismiss = { showSummarySheet = false }) {
+            Spacer(Modifier.height(6.dp))
+            val text = summary?.summary?.takeIf { it.isNotBlank() }
+            if (text == null) {
+                Text(
+                    "聊得再久一些就会有了：太早的对话装不下时，会先压缩成一段摘要放在这里，TA 不会真的忘掉。",
+                    fontSize = 13.sp,
+                    lineHeight = 20.sp,
+                    color = MutedText,
+                )
+            } else {
+                Text(text, fontSize = 14.sp, lineHeight = 22.sp, color = TextPrimary)
+                Spacer(Modifier.height(14.dp))
+                NeuTextButton("删除这段摘要", color = NeuDanger, onClick = {
+                    scope.launch { app.db.conversationSummaryDao().delete(personaId) }
+                    showSummarySheet = false
+                })
+            }
+            Spacer(Modifier.height(10.dp))
+        }
     }
 
     if (showVoiceSheet) {

@@ -16,7 +16,8 @@ import org.junit.Test
  * 所以每条升级都要**同时**断言"新措辞在"和"旧措辞不在"，缺一不可。
  *
  * ## 加新版本时必须做两件事
- * 1. 在 [AiPrompts] 里补 `.replace(...)`——**不用再登记任何"历史版本全文"**：
+ * 1. 在 [AiPrompts] 里补 `.manualPatch(...)`（**不许用裸 `.replace()`**，那会绕过
+ *    末尾「P4 手册补丁链全部命中」总自检）——**不用再登记任何"历史版本全文"**：
  *    v0.51.1 起启动升级只看"用户有没有亲手改过设定词"，没改过的人启动即刷到最新
  *    （见 `AssistantManualUpgradeTest`）；
  * 2. 在这个测试里补一对断言（新的在 / 旧的不在）。
@@ -1390,4 +1391,161 @@ class AiPromptsTest {
         // 旧：旧的"选一张图或挑一个 emoji，有图就用图"头像描述必须消失（精确子串，避开设置页那句带「都行」的）
         assertFalse("旧的头像选择描述还留在手册里", manual.contains("选一张图或挑一个 emoji，有图就用图"))
     }
+
+/**
+ * v0.82.0：用量口径补齐 + 记忆待审聊天内提示 —— 手册同步。
+ *
+ * ① 模型卡片文案从「共消耗 X tokens」扩成带缓存命中率，并写明统计口径含
+ *    主动关心 / AI 来电 / 通话（v0.82.0 之前这些链路的消耗根本没进账）。
+ * ② AI 新暂存记忆时聊天里会出现居中的提示气泡（用户选定的系统气泡方案），
+ *    点它跳「TA 的记忆」页。
+ *
+ * 成对断言（§零.5）：新措辞在、被它顶掉的旧措辞一次不剩。
+ */
+@Test
+fun `v0_82_0 手册写明模型卡命中率与记忆待审气泡`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    // ① 新：缓存命中率上模型卡片
+    assertTrue("模型卡片命中率没写进手册", manual.contains("「· 缓存 NN%」"))
+    assertTrue("要写明命中率的用途", manual.contains("比较哪个模型缓存更友好"))
+    // ① 新：统计口径补齐
+    assertTrue("统计口径没写进手册", manual.contains("凡是模型跑过的地方都计入"))
+    // ① 旧：「没消耗过就不显示这一句。」必须紧跟在命中率那句后面（一条 replace 的产物），
+    //     旧版整句（以分号结尾、无命中率）一次不剩
+    assertFalse(
+        "旧的模型卡片用量句还留在手册里",
+        manual.contains("（「共消耗 X tokens」，服务商返回用量数据时才统计）；没消耗过就不显示这一句。"),
+    )
+    // ② 新：记忆待审气泡
+    assertTrue("记忆待审气泡没写进手册", manual.contains("💭 我记住了 N 件新事"))
+    assertTrue("要写明点气泡跳记忆页", manual.contains("点它直接跳「TA 的记忆」页"))
+    // ② 旧：v0.71.0 那条「TA 的记忆」入口句本身保留（它是新句的前缀），
+    //     但"待确认"的旧引导句不得被误删
+    assertTrue("「N 条待确认」入口句仍要在", manual.contains("N 条待确认"))
+}
+
+/**
+ * v0.82.0 P1：滚动摘要 + 记忆自动归档 + 记忆语义召回 —— 手册同步。
+ *
+ * 三个功能都改了用户能摸到的东西（会话设置多一行、记忆会自己归档、模型配置多一张卡），
+ * 按 §零.5 必须同版本进手册。成对断言：新措辞在；被插入点顶开的旧衔接（"不会刷屏。"
+ * 紧接着"用户说「她记住了"）一次不剩。
+ */
+@Test
+fun `v0_82_0 手册写明滚动摘要自动归档与语义召回`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    // ① 滚动摘要：是什么 + 会话设置的查看/删除入口 + 总开关位置与默认开
+    assertTrue("滚动摘要没写进手册", manual.contains("最旧的那部分会被压缩成一段**对话摘要**"))
+    assertTrue("摘要入口没写进手册", manual.contains("会话设置里多了一行「对话摘要」"))
+    assertTrue("摘要开关位置没写进手册", manual.contains("提示词库 →「对话摘要策略」段，默认开着"))
+    // ② 自动归档：90 天歇着 + 想起即回来 + 永久豁免
+    assertTrue("自动归档没写进手册", manual.contains("放太久（90 天）没被聊起过，会自己挪进「已忽略」歇着"))
+    assertTrue("想起即回来没写进手册", manual.contains("TA 一想起来它就自己回来"))
+    assertTrue("永久豁免没写进手册", manual.contains("设为「永久」的永远不会被这样收起来"))
+    // ③ 语义召回：默认关 + 配置入口 + 隐私语义（记忆内容发给服务商）
+    assertTrue("语义召回没写进手册", manual.contains("**默认关着**的增强「记忆语义召回」"))
+    assertTrue("配置入口没写进手册", manual.contains("模型配置 → 记忆语义召回"))
+    assertTrue("隐私语义没写进手册", manual.contains("记忆的内容会发给你配的那家服务商去算语义向量"))
+    // 旧衔接：「不会刷屏。」后面原本紧跟 v0.71.0 的「用户说…」，被新三段插入后这个相邻关系必须不存在
+    assertFalse(
+        "旧的相邻关系还留在手册里（replace 静默落空了）",
+        manual.contains("不会刷屏。\n              用户说「她记住了"),
+    )
+}
+
+/**
+ * v0.82.0 P2：Live2D 易用性收尾 —— 手册同步。
+ *
+ * 两条都改了用户能摸到的东西：导入选择器只认 zip 且带进度；角色空间能双指捏合缩放、
+ * 双击复位。按 §零.5 同版本进手册。
+ *
+ * 断言写的是"新内容挂在锚点后面"，而不是"旧措辞不在" —— 后者在搜索串写错、
+ * replace 静默落空时反而照样通过，正是这条纪律要防的情况。
+ */
+@Test
+fun `v0_82_0 手册写明 Live2D 导入口径与角色空间缩放`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    // ① P2-1 导入：只认 zip；选错当场提示而不是白等；进度分段报
+    assertTrue("导入只认 zip 没写进手册", manual.contains("选文件那一步**只认 .zip 整包**"))
+    assertTrue("选错格式的即时反馈没写进手册", manual.contains("不会让你干等"))
+    assertTrue("解压进度没写进手册", manual.contains("再解压第几项"))
+    // ② P2-2 缩放：双指捏合 + 范围 + 双击复位 + 不保存
+    assertTrue("捏合缩放没写进手册", manual.contains("**双指捏合**把角色放大缩小"))
+    assertTrue("缩放范围没写进手册", manual.contains("0.5×～2.0×"))
+    assertTrue("双击复位没写进手册", manual.contains("**双击画面**就回到原来的大小"))
+    assertTrue("缩放不持久化没写进手册", manual.contains("下次进来还是 1.0×"))
+    // 衔接：两段新内容必须**各自挂在自己那条锚点后面**（而不是掉在别处）。
+    //      搜索串一旦写错，replace 静默落空、新文案根本不会出现，断言立刻红。
+    assertTrue(
+        "导入条目没挂在记忆段后面（replace 静默落空了）",
+        manual.contains("不开就是现在的纯词法召回。\n              导入 Live2D 模型包时"),
+    )
+    assertTrue(
+        "缩放条目没紧跟在导入条目后面",
+        manual.contains("包很大也知道走到哪儿了。\n              在**角色空间**里可以"),
+    )
+    // 段落顺序：导入在前、缩放在后
+    assertTrue(
+        "手册里两条新内容的顺序不对",
+        manual.indexOf("导入 Live2D 模型包时") < manual.indexOf("在**角色空间**里可以"),
+    )
+}
+
+// 手册里 P2 那两条只有一处（别被后来的 replace 复制出第二份）
+@Test
+fun `v0_82_0 手册 P2 段落不重复`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    assertEquals(
+        "导入那条在手册里出现了不止一次",
+        manual.indexOf("导入 Live2D 模型包时"),
+        manual.lastIndexOf("导入 Live2D 模型包时"),
+    )
+    assertEquals(
+        "缩放那条在手册里出现了不止一次",
+        manual.indexOf("在**角色空间**里可以"),
+        manual.lastIndexOf("在**角色空间**里可以"),
+    )
+}
+
+/**
+ * P3-1+P3-3：MCP 服务器（tools 回环 + 白名单外部工具）—— 手册同步。
+ *
+ * 新功能入口（设置 → 模型配置 → MCP 服务器）与行为变化（AI 可调用外部工具、
+ * 非只读工具执行前弹确认），按 §零.5 进手册。
+ * 断言写"新文案挂在锚点后面"整段子串，而不是"旧措辞不在"（假绿陷阱，见上文纪律）。
+ */
+@Test
+fun `P3 手册写明 MCP 服务器入口与确认口径`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    assertTrue("MCP 入口没写进手册", manual.contains("设置 → 模型配置 → MCP 服务器"))
+    assertTrue("仅支持远程 HTTP 没写进手册", manual.contains("只支持远程 HTTP 的服务器"))
+    assertTrue("只读免确认口径没写进手册", manual.contains("标着「只读」的直接执行"))
+    assertTrue("执行前确认没写进手册", manual.contains("每次执行前都会先弹出来问你，你点头才算数"))
+    assertTrue("不可信内容口径没写进手册", manual.contains("不会当成你的指令"))
+    assertTrue("端点不支持自动隐藏没写进手册", manual.contains("不支持工具调用时，这个能力会自动藏起来"))
+    assertTrue(
+        "MCP 条目没挂在角色空间缩放那条后面（replace 静默落空了）",
+        manual.contains("下次进来还是 1.0×。\n              还能给 TA 接**外部工具**"),
+    )
+    assertEquals(
+        "MCP 条目在手册里出现了不止一次",
+        manual.indexOf("还能给 TA 接**外部工具**"),
+        manual.lastIndexOf("还能给 TA 接**外部工具**"),
+    )
+}
+
+/**
+ * P4 总自检：补丁链全量命中（与 debug 包启动自检读同一份记录
+ * `AiPrompts.assistantManualPatchMisses`，MenghuanApp.onCreate 失败时写崩溃日志页）。
+ * 红了 = 某条 `.manualPatch` 的旧措辞没对上——多半是锚点被上游改动冲掉，
+ * 或者新补丁错用了裸 `.replace()`（那样根本不会被记录，只能靠逐条断言兜底）。
+ */
+@Test
+fun `P4 手册补丁链全部命中`() {
+    val misses = AiPrompts.assistantManualPatchMisses()
+    assertTrue(
+        "手册补丁未命中 ${misses.size} 条：\n" + misses.joinToString("\n"),
+        misses.isEmpty(),
+    )
+}
 }

@@ -2,8 +2,10 @@ package com.menghuan.app.ui.live2d
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -73,9 +75,13 @@ import com.menghuan.app.ui.theme.TextSecondary
  * 里面不出现任何 Cubism / GL 的名字（老规矩：页面不碰底层 SDK）。
  *
  * 三层结构（从下往上）：
- * ① 背景层：系统预设渐变 / 用户相册图（v0.65.0 起只有这两档）；
- * ② 舞台层：Live2D 角色，可拖动、可点；
+ * ① 背景层：系统预设渐变 / 用户相册图（v0.65.0 起只有这两档）/ 视频背景（v0.74.0）；
+ * ② 舞台层：Live2D 角色，可拖动、可点、**可双指捏合缩放**（v0.82.0 P2-2）；
  * ③ UI 层：顶栏（返回 + 背景）与底部动作条。
+ *
+ * 舞台上的三种手势（拖动 / 捏合 / 点按）**各占一个 pointerInput**，
+ * 由手势竞技场仲裁：单指走拖动、双指走缩放，点按不越过 touchSlop 就照旧命中。
+ * 拖不动 / 捏不动都是"手感"问题，所以判定集中在这里，别散到引擎里。
  */
 @Composable
 fun Live2dSpaceScreen(
@@ -155,12 +161,66 @@ fun Live2dSpaceScreen(
                             } },
                         )
                         .then(
-                            Modifier.pointerInputUnit { detectTapGestures { pos ->
-                                vm.onTap(
-                                    ndcX = pos.x / viewWidth * 2f - 1f,
-                                    ndcY = 1f - pos.y / viewHeight * 2f,
-                                )
-                            } },
+                            // 双指捏合缩放（v0.82.0 P2-2）：只在**两指都在**的时候算"手指间距变了多少"。
+                            // 与拖动各占一个 pointerInput，靠"几根手指"天然隔开 —— 单指走拖动，双指走缩放，
+                            // 都不吞对方（竞技场会自己判），所以捏合时角色还能跟着手指挪一挪。
+                            Modifier.pointerInputUnit {
+                                var prevSpread = 0f
+                                var prevIds: List<Long> = emptyList()
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    prevSpread = 0f
+                                    prevIds = emptyList()
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val pressed = event.changes.filter { it.pressed }
+                                        if (pressed.isEmpty()) break
+                                        if (pressed.size >= 2) {
+                                            val ids = pressed.take(2).map { it.id.value }
+                                            val a = pressed[0].position
+                                            val b = pressed[1].position
+                                            val spread = kotlin.math.hypot(a.x - b.x, a.y - b.y)
+                                            // 只在"还是那两根手指"时才比：抬起一根再落一根时重新起算，
+                                            // 否则新间距对旧间距一比就是"突然跳一下"
+                                            if (prevSpread > 0f && ids == prevIds) {
+                                                vm.pinch(spread / prevSpread)
+                                            }
+                                            prevSpread = spread
+                                            prevIds = ids
+                                        } else {
+                                            prevSpread = 0f
+                                            prevIds = emptyList()
+                                        }
+                                    }
+                                    vm.endPinch()
+                                }
+                            },
+                        )
+                        .then(
+                            // 点角色播互动动作（v0.82.0 P2-2 加了双击复位）。
+                            //
+                            // ⚠️ 这里**刻意不用** `detectTapGestures(onDoubleTap = …)`：那个实现为了让第二下
+                            // 来得及，会把第一下的 onTap 压到双击时间窗（约 300ms）之后才回调 —— 点角色
+                            // 的反应就慢了半拍。现在自己数拍子：第一下**立刻**播，300ms 内又来第二下
+                            // 才算双击、把大小弹回 1.0×（用户拍板"单击立即反应"）。
+                            Modifier.pointerInputUnit {
+                                var lastTapUpMs = 0L
+                                awaitEachGesture {
+                                    awaitFirstDown()
+                                    val up = waitForUpOrCancellation() ?: return@awaitEachGesture
+                                    val now = up.uptimeMillis
+                                    if (now - lastTapUpMs <= viewConfiguration.doubleTapTimeoutMillis) {
+                                        lastTapUpMs = 0L
+                                        vm.resetScale()
+                                    } else {
+                                        lastTapUpMs = now
+                                        vm.onTap(
+                                            ndcX = up.position.x / viewWidth * 2f - 1f,
+                                            ndcY = 1f - up.position.y / viewHeight * 2f,
+                                        )
+                                    }
+                                }
+                            },
                         ),
                     update = {},
                 )

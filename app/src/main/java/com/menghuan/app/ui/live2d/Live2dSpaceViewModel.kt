@@ -1,6 +1,9 @@
 package com.menghuan.app.ui.live2d
 
 import android.util.Log
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -20,6 +23,7 @@ import com.menghuan.app.live2d.InteractionBindings
 import com.menghuan.app.live2d.InteractionRegion
 import com.menghuan.app.live2d.Live2dAction
 import com.menghuan.app.live2d.ModelCapability
+import com.menghuan.app.live2d.PinchScale
 import com.menghuan.app.realtime.visual.Live2dStage
 import com.menghuan.app.realtime.visual.Live2dVisualEngine
 import com.menghuan.app.realtime.visual.VisualRuntime
@@ -231,6 +235,59 @@ class Live2dSpaceViewModel(
     private var offsetX = 0f
     private var offsetY = 0f
 
+    // ---- 缩放（v0.82.0 P2-2）----
+
+    /**
+     * 当前缩放倍数。默认 1.0，且**不持久化**（用户选的：每次进角色空间都是默认大小）。
+     */
+    private var scale = 1f
+
+    /** 松手回弹那一段动画 */
+    private var settleJob: Job? = null
+
+    /**
+     * 双指捏合：factor = 这一下手指又撑开 / 收拢了多少（>1 放大）。
+     *
+     * 越界不硬停而是减速（橡皮筋），松手由 [endPinch] 弹回 —— 手感与"拖到边上"那一档一致。
+     */
+    fun pinch(factor: Float) {
+        settleJob?.cancel()
+        scale = PinchScale.apply(scale, factor)
+        engine?.setScale(scale)
+    }
+
+    /**
+     * 手指离开：越界了才动，在范围内就原地不动。
+     *
+     * 走动画而不是直接赋值：橡皮筋被拉出去的那一段直接跳回去是"闪一下"，
+     * 弹回去才像"顶住了又回来"。
+     */
+    fun endPinch() {
+        val target = PinchScale.settleTarget(scale)
+        if (target == scale) return
+        settleJob?.cancel()
+        settleJob = viewModelScope.launch { animateScaleTo(target) }
+    }
+
+    /** 双击复位：弹回 1.0×（与 [endPinch] 同一条动画，只是目标固定） */
+    fun resetScale() {
+        if (scale == 1f) return
+        settleJob?.cancel()
+        settleJob = viewModelScope.launch { animateScaleTo(1f) }
+    }
+
+    /** 弹簧动画：每一帧把值推给引擎（引擎那边只改矩阵，代价就是一次乘法） */
+    private suspend fun animateScaleTo(target: Float) {
+        val anim = Animatable(scale)
+        anim.animateTo(
+            target,
+            spring(dampingRatio = SETTLE_DAMPING, stiffness = SETTLE_STIFFNESS),
+        ) {
+            scale = value
+            engine?.setScale(value)
+        }
+    }
+
     // ---- 背景 ----
 
     fun setBackground(config: Live2dSpaceStore.SpaceConfig) {
@@ -381,6 +438,7 @@ class Live2dSpaceViewModel(
 
     override fun onCleared() {
         returnToIdleJob?.cancel()
+        settleJob?.cancel()
         runCatching { engine?.release() }
         engine = null
         super.onCleared()
@@ -392,6 +450,10 @@ class Live2dSpaceViewModel(
 
         /** 播完后多等一点点再回待机：淡出还在跑，早回会让两个动作叠在一起 */
         const val RETURN_SLACK_MS = 60L
+
+        /** 松手回弹：略微过冲一点（<1 的阻尼比才有"弹"），与项目里其它弹簧同一档刚度 */
+        const val SETTLE_DAMPING = 0.65f
+        const val SETTLE_STIFFNESS = Spring.StiffnessMediumLow
 
         fun Factory(personaId: Long) = viewModelFactory {
             initializer {

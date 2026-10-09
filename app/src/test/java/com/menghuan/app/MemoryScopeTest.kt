@@ -109,4 +109,90 @@ class MemoryScopeTest {
         val got = MemoryScope.visibleGlobal(pool).map { it.id }
         assertEquals(listOf(6L, 3L), got)
     }
+
+    // ===== v0.82.0 P1-3：自动归档判定 =====
+
+    @Test
+    fun `90天没被想起的active该归档_core与被想起过的豁免`() {
+        val now = 100_000_000_000L
+        val stale = MemoryScope.AUTO_ARCHIVE_AFTER_MS + 1
+        // 超期且从没被想起（lastRecalledAt = 0 的老数据按 updatedAt 算）→ 归档
+        assertTrue(
+            MemoryScope.shouldAutoArchive(
+                fact(1, "a", "b").copy(updatedAt = now - stale, lastRecalledAt = 0), now,
+            ),
+        )
+        // 超期的是 updatedAt，但最近被想起过 → 不归档
+        assertFalse(
+            MemoryScope.shouldAutoArchive(
+                fact(1, "a", "b").copy(updatedAt = now - stale, lastRecalledAt = now - 1000), now,
+            ),
+        )
+        // core 永不动（用户设为永久是人的决定）
+        assertFalse(
+            MemoryScope.shouldAutoArchive(
+                fact(1, "a", "b", lifecycle = "core").copy(updatedAt = now - stale), now,
+            ),
+        )
+        // staging / archived 不在 sweep 范围（active 才会被判）
+        assertFalse(
+            MemoryScope.shouldAutoArchive(
+                fact(1, "a", "b", lifecycle = "staging").copy(updatedAt = now - stale), now,
+            ),
+        )
+        // 没超期的 active 不动
+        assertFalse(
+            MemoryScope.shouldAutoArchive(
+                fact(1, "a", "b").copy(updatedAt = now - 1000), now,
+            ),
+        )
+    }
+
+    // ===== v0.82.0 P1-2：语义召回 =====
+
+    @Test
+    fun `余弦的基本纪律`() {
+        assertEquals(1f, MemoryScope.cosine(floatArrayOf(1f, 0f), floatArrayOf(1f, 0f)), 0.001f)
+        assertEquals(0f, MemoryScope.cosine(floatArrayOf(1f, 0f), floatArrayOf(0f, 1f)), 0.001f)
+        // 维度不等 / 空向量 / 零范数：算不出的一律当不像，不猜
+        assertEquals(0f, MemoryScope.cosine(floatArrayOf(1f), floatArrayOf(1f, 2f)), 0.001f)
+        assertEquals(0f, MemoryScope.cosine(FloatArray(0), floatArrayOf(1f)), 0.001f)
+        assertEquals(0f, MemoryScope.cosine(floatArrayOf(0f, 0f), floatArrayOf(1f, 0f)), 0.001f)
+    }
+
+    @Test
+    fun `语义-only命中要过更严的门槛_词法口径一字不动`() {
+        val f = fact(1, "口味", "喜欢吃火锅", personaId = 7)
+        val pool = listOf(f)
+        // 词法 0 分（查询与记忆完全无字面重叠），但余弦够高 → 语义捞起
+        val hits = MemoryScope.searchHybrid(
+            pool, 7, true, "晚上吃点啥好呢",
+            queryVector = floatArrayOf(1f, 0f),
+            vectors = mapOf(1L to floatArrayOf(0.9f, 0.1f)), // cosine ≈ 0.994 ≥ 0.75
+        )
+        assertEquals("语义-only 命中该被捞起", listOf(1L), hits.map { it.fact.id })
+        // 余弦差一点没过 0.75 → 不捞（语义模糊地带更宽，门槛必须比词法严）
+        val weak = MemoryScope.searchHybrid(
+            pool, 7, true, "晚上吃点啥好呢",
+            queryVector = floatArrayOf(1f, 0f),
+            vectors = mapOf(1L to floatArrayOf(0.7f, 0.7f)), // cosine ≈ 0.707 < 0.75
+        )
+        assertTrue("没到语义门槛就不该捞", weak.isEmpty())
+        // 没给向量（端点本轮没调成）→ 退回纯词法，与 search 行为一致
+        val lexical = MemoryScope.searchHybrid(pool, 7, true, "晚上吃点啥好呢")
+        assertTrue(lexical.isEmpty())
+    }
+
+    @Test
+    fun `向量编解码往返一致_坏数据不出半个float`() {
+        val v = floatArrayOf(0.5f, -1.25f, 3.75f)
+        val round = com.menghuan.app.data.EmbeddingVector.decode(
+            com.menghuan.app.data.EmbeddingVector.encode(v),
+        )
+        assertEquals(v.size, round.size)
+        v.indices.forEach { assertEquals(v[it], round[it], 0.0001f) }
+        // 字节数不是 4 的倍数 = 数据坏了 → 空向量（余弦自然算 0）
+        assertEquals(0, com.menghuan.app.data.EmbeddingVector.decode(byteArrayOf(1, 2, 3)).size)
+        assertEquals(0, com.menghuan.app.data.EmbeddingVector.decode(ByteArray(0)).size)
+    }
 }

@@ -209,11 +209,21 @@ class RealtimeCallViewModel(
                 client,
                 TtsClients.from(ttsConfig, app),
                 app.applicationScope,
-            ) { p, st, et, turns, status, _ ->
-                // 第 6 个参数（谁打的）用闭包里的 initiatedByAi，引擎那边只是转发；
-                // 语音/视频同理 —— 通话类型是页面属性，不是引擎状态
-                repo.saveCall(p, st, et, turns, status, initiatedByAi, videoMode)
-            }
+                saveCall = { p, st, et, turns, status, _ ->
+                    // 第 6 个参数（谁打的）用闭包里的 initiatedByAi，引擎那边只是转发；
+                    // 语音/视频同理 —— 通话类型是页面属性，不是引擎状态
+                    repo.saveCall(p, st, et, turns, status, initiatedByAi, videoMode)
+                },
+                onUsage = { t, prompt, cached ->
+                    // v0.82.0：通话每轮 LLM 调用进用量账（主动消耗里的最大头，之前整个盲区）。
+                    // 引擎在 IO 线程回调，记账经 VM 作用域非阻塞地发出去，不拖通话节奏。
+                    viewModelScope.launch {
+                        runCatching {
+                            com.menghuan.app.data.UsageTracker.add(settings, t, config.model, prompt, cached)
+                        }
+                    }
+                },
+            )
             engine = eng
             // 清单与引擎谁先到都不确定（形象在 init 里就开始加载了），所以两边**互相都补一次推送**：
             // 只补一个方向，就会出现"形象先加载完、引擎后建好、这通电话一辈子拿到空清单"。

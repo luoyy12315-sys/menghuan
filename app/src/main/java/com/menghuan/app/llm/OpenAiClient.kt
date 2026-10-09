@@ -90,6 +90,13 @@ sealed interface StreamEvent {
         val promptTokens: Int = 0,
         val cachedPromptTokens: Int = 0,
     ) : StreamEvent
+
+    /**
+     * 模型要求调用工具（P3-1）：**流结束时一次性给出**，聚合自 `delta.tool_calls` 分片
+     * （聚合纪律见 [ToolCallAccumulator]）。与 Delta 可同轮共存——模型可能先说半句话
+     * 再决定调工具；调用方拿到本事件后执行工具、回灌结果、发起下一轮。
+     */
+    data class ToolCalls(val calls: List<PendingToolCall>) : StreamEvent
 }
 
 /** collectReply 的返回：全量回复文本 + 思考链 + 该次调用的 token 用量（拿不到为 null） */
@@ -145,23 +152,46 @@ class OpenAiClient(
                     prompt = ev.promptTokens
                     cached = ev.cachedPromptTokens
                 }
+
+                // collectReply 的调用点（提炼/周报/主动关心）不带 tools，不会收到这个事件；
+                // 收到也说明模型想调工具而非给正文——忽略，别把调用请求当成回复文本
+                is StreamEvent.ToolCalls -> Unit
             }
         }
         return CollectedReply(text.toString(), usage, reasoning.toString(), prompt, cached)
     }
 
-    /** 事件流（公开：ChatViewModel 一边渲染增量一边收 usage 记账） */
+    /**
+     * 事件流（公开：ChatViewModel 一边渲染增量一边收 usage 记账）
+     *
+     * P3-1 起支持 tools：
+     * - [tools] 非空 → 请求体带 `tools` 数组（OpenAI 格式：`{"type":"function","function":{…}}`），
+     *   流式解析顺带聚合 `tool_calls` 分片，流结束发 [StreamEvent.ToolCalls]；
+     * - [extraMessages] 追加在历史之后——**只服务于工具回环**：assistant 的 tool_calls 消息
+     *   与 `role:tool` 结果消息不落库（它们是本轮推理的中间产物，不是对话内容），
+     *   下一轮请求靠这个参数带上。
+     *
+     * ⚠️ 两个新参数都在 [imageDataUrl] **之后**：尾随 lambda 调用点会**编译报错**而不是
+     * 静默换义（比 buildMessagesJson 那次"加参数位置"教训好的唯一方式是错在编译期），
+     * 报错点改成命名实参 `imageDataUrl = { … }` 即可。
+     */
     fun streamEvents(
         systemPrompt: String,
         history: List<ChatMessage>,
         runtimeContext: String = "",
         imageDataUrl: suspend (String) -> String? = { null },
+        tools: JSONArray? = null,
+        extraMessages: List<JSONObject> = emptyList(),
     ): Flow<StreamEvent> = flow {
         val messages = buildMessagesJson(systemPrompt, history, runtimeContext, imageDataUrl)
-        val body = JSONObject()
+        extraMessages.forEach { messages.put(it) }
+        val bodyJson = JSONObject()
             .put("model", model)
             .put("messages", messages)
             .put("stream", true)
+        // tools 为 null/空 = 纯文本请求体，与 P3 之前逐字节一致（缓存纪律：没工具时不许多一个字段）
+        if (tools != null && tools.length() > 0) bodyJson.put("tools", tools)
+        val body = bodyJson
             .toString()
             .toRequestBody("application/json".toMediaType())
 
@@ -173,6 +203,7 @@ class OpenAiClient(
             .build()
 
         val call = http.newCall(request)
+        val toolAccumulator = ToolCallAccumulator()
         try {
             call.execute().use { resp ->
                 // 非 2xx 一律抛 ApiException：错误文本绝不混进回复流（否则会被当作 AI 回复落库）
@@ -200,10 +231,17 @@ class OpenAiClient(
                     if (reasoning is String && reasoning.isNotEmpty()) {
                         emit(StreamEvent.Reasoning(reasoning))
                     }
+                    // 工具调用分片（P3-1）：只攒不发，流结束一次性给全量（见下方）
+                    delta?.optJSONArray("tool_calls")?.let { toolAccumulator.accept(it) }
                     // 用量块（部分服务商最后一块带 usage，choices 为空）：有就记账
                     parseUsage(json.optJSONObject("usage"))?.let {
                         emit(StreamEvent.Usage(it.totalTokens, it.promptTokens, it.cachedPromptTokens))
                     }
+                }
+                // 流自然结束（[DONE] 或连接耗尽）：有聚合到的 tool_calls 才发事件。
+                // 不依赖 finish_reason=="tool_calls"——部分兼容网关根本不回这个值。
+                if (!toolAccumulator.isEmpty) {
+                    emit(StreamEvent.ToolCalls(toolAccumulator.result()))
                 }
             }
         } catch (e: CancellationException) {
@@ -211,6 +249,52 @@ class OpenAiClient(
             throw e
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * 端点 tools 能力探测（P3-1，仿 [com.menghuan.app.llm.ImageProbe] 的"发一条最小真请求"）：
+     * 带一个 dummy tool 发最小对话，**支持返回 null**，不支持/网络失败返回一句可读原因。
+     *
+     * 为什么必须探测而不是直接发：大量中转网关/老部署不认 `tools` 字段（400 直接拒），
+     * 计划定死的纪律是"支持才开放入口；不支持 = 隐藏，**不自创格式硬发**"。
+     * 调用方（ChatViewModel）按 `baseUrl|model` 缓存结果——同一配置只探一次。
+     */
+    suspend fun probeToolSupport(): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val dummyTool = JSONObject()
+                .put("type", "function")
+                .put(
+                    "function",
+                    JSONObject()
+                        .put("name", "menghuan_probe_noop")
+                        .put("description", "capability probe, never call this")
+                        .put("parameters", JSONObject().put("type", "object")),
+                )
+            val body = JSONObject()
+                .put("model", model.trim())
+                .put(
+                    "messages",
+                    JSONArray().put(JSONObject().put("role", "user").put("content", "hi")),
+                )
+                .put("stream", false)
+                .put("tools", JSONArray().put(dummyTool))
+                .toString()
+                .toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("${baseUrl.trim().trimEnd('/')}/chat/completions")
+                .addHeader("Authorization", "Bearer $apiKey")
+                .post(body)
+                .build()
+            http.newBuilder().readTimeout(20, TimeUnit.SECONDS).build()
+                .newCall(request).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        null
+                    } else {
+                        val detail = NetworkStack.apiErrorText(runCatching { resp.body?.string() }.getOrNull())
+                        "HTTP ${resp.code}" + if (detail != null) "：$detail" else ""
+                    }
+                }
+        }.getOrElse { NetworkStack.describeNetworkFailure(it) }
+    }
 
     /**
      * 测试连接：**真的发一条最小对话请求**，成功返回 null，否则返回一句可读原因。
@@ -317,6 +401,59 @@ class OpenAiClient(
         }
         return out.toList()
     }
+
+    /**
+     * 语义向量（v0.82.0 P1-2）：OpenAI 兼容 `POST {base}/embeddings`。
+     *
+     * 请求体只发 `model` + `input` 两个字段（与"自定义端点只发最小字段"同一纪律：
+     * `encoding_format` / `dimensions` 这类参数各家支持不一，不发）。
+     * 返回与输入顺序对齐的向量列表；非 2xx 抛 [ApiException]，其余失败原样抛出——
+     * 调用方决定吞（业务链路退回纯词法）还是报（设置页「测试」按钮要把原因亮出来）。
+     */
+    suspend fun embedBatchOrThrow(texts: List<String>): List<FloatArray> = withContext(Dispatchers.IO) {
+        require(texts.isNotEmpty()) { "embedBatchOrThrow: 空输入" }
+        val input = JSONArray()
+        texts.forEach { input.put(it) }
+        val body = JSONObject()
+            .put("model", model.trim())
+            .put("input", input)
+            .toString()
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("${baseUrl.trim().trimEnd('/')}/embeddings")
+            .addHeader("Authorization", "Bearer $apiKey")
+            .post(body)
+            .build()
+        http.newBuilder().readTimeout(30, TimeUnit.SECONDS).build()
+            .newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) throw ApiException(resp.code, resp.body?.string())
+                val text = resp.body?.string().orEmpty()
+                val data = runCatching { JSONObject(text).getJSONArray("data") }
+                    .getOrElse { throw IOException("embeddings 响应没有 data 数组") }
+                // 按 index 排回来再取向量：兼容端点不保证返回顺序与输入一致
+                val items = (0 until data.length()).mapNotNull { i ->
+                    runCatching {
+                        val o = data.getJSONObject(i)
+                        val arr = o.getJSONArray("embedding")
+                        o.optInt("index", i) to FloatArray(arr.length()) { j -> arr.getDouble(j).toFloat() }
+                    }.getOrNull()
+                }
+                if (items.size != texts.size) {
+                    throw IOException("embeddings 返回 ${items.size} 条，与输入 ${texts.size} 条对不上")
+                }
+                items.sortedBy { it.first }.map { it.second }
+            }
+    }
+
+    /** 单条版（业务链路常用形状） */
+    suspend fun embedOrThrow(text: String): FloatArray = embedBatchOrThrow(listOf(text)).first()
+
+    /**
+     * 不抛版：失败返回 null —— 本轮召回退回纯词法，**开关绝不被偷偷改掉**
+     * （与 ASR 双引擎同一条纪律：没有自动回落，只有"这一次没算成"）。
+     */
+    suspend fun embed(text: String): FloatArray? =
+        runCatching { embedOrThrow(text) }.getOrNull()
 
     companion object {
         /**

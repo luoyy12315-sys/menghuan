@@ -97,6 +97,36 @@ class UsageCacheTest {
         assertTrue(label.contains("800"))
     }
 
+    // ===== 分模型行解析（v0.82.0：usage_by_model 扩成 5 列带 prompt/cached）=====
+
+    @Test
+    fun `新五行格式带 prompt 与 cached`() {
+        val row = com.menghuan.app.data.ModelUsageRow.parse("2026-10\tdeepseek-chat\t1200\t800\t600", "2026-10")!!
+        assertEquals("deepseek-chat", row.model)
+        assertEquals(1200, row.tokens)
+        assertEquals(800, row.promptTokens)
+        assertEquals(600, row.cachedTokens)
+        assertEquals(0.75, row.cacheHitRate()!!, 1e-9)
+    }
+
+    @Test
+    fun `老三列格式按缺省零兼容不丢行`() {
+        val row = com.menghuan.app.data.ModelUsageRow.parse("2026-10\tqwen\t500", "2026-10")!!
+        assertEquals("qwen", row.model)
+        assertEquals(500, row.tokens)
+        assertEquals(0, row.promptTokens)
+        assertEquals(0, row.cachedTokens)
+        // 没读数 = null，不是 0%
+        assertNull(row.cacheHitRate())
+    }
+
+    @Test
+    fun `跨月行与不合法行直接丢弃`() {
+        assertNull(com.menghuan.app.data.ModelUsageRow.parse("2026-09\tqwen\t500", "2026-10"))
+        assertNull(com.menghuan.app.data.ModelUsageRow.parse("2026-10\tqwen", "2026-10"))
+        assertNull(com.menghuan.app.data.ModelUsageRow.parse("2026-10\tqwen\tabc", "2026-10"))
+    }
+
     // ===== 易变上下文的位置（这一族的前半段：前缀到底稳不稳）=====
 
     @Test

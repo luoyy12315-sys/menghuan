@@ -111,6 +111,8 @@ import com.menghuan.app.ui.settings.CallRingtoneScreen
 import com.menghuan.app.ui.settings.ChatModelScreen
 import com.menghuan.app.ui.settings.CrashLogScreen
 import com.menghuan.app.ui.settings.DataPrivacyScreen
+import com.menghuan.app.ui.settings.EmbeddingConfigScreen
+import com.menghuan.app.ui.settings.McpServersScreen
 import com.menghuan.app.ui.settings.ImageModelScreen
 import com.menghuan.app.ui.settings.ModelConfigScreen
 import com.menghuan.app.ui.settings.PermissionScreen
@@ -758,6 +760,18 @@ private fun androidx.navigation.NavGraphBuilder.settingsComposables(navControlle
         exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
         popExitTransition = { pop + scalePop }) {
         AdaptiveScreen { WebSearchConfigScreen(onBack = back) }
+    }
+    // 记忆语义召回（v0.82.0 P1-2）：embeddings 端点配置，入口在「模型配置」下，默认关
+    composable(SettingsRoutes.EMBEDDING_CONFIG, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { EmbeddingConfigScreen(onBack = back) }
+    }
+    // MCP 服务器（P3-3）：白名单制外部工具接入，入口在「模型配置」下
+    composable(SettingsRoutes.MCP_SERVERS, enterTransition = { push + fadeIn(tween(260)) },
+        exitTransition = { fadeOut(tween(200)) }, popEnterTransition = { fadeIn(tween(260)) },
+        popExitTransition = { pop + scalePop }) {
+        AdaptiveScreen { McpServersScreen(onBack = back) }
     }
     // 模型配置（v0.54.1）：对话模型与生图模型由同一个「API 配置」页拆成两页，各自只管一类
     composable(SettingsRoutes.CHAT_MODEL, enterTransition = { push + fadeIn(tween(260)) },

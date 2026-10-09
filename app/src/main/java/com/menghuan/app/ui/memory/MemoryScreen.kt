@@ -79,7 +79,11 @@ fun MemoryScreen(personaId: Long, onBack: () -> Unit) {
 
     fun delete(row: ProfileFact) {
         scope.launch {
-            runCatching { app.db.profileFactDao().delete(row.id) }
+            runCatching {
+                app.db.profileFactDao().delete(row.id)
+                // 语义向量一并清（v0.82.0 P1-2）：记忆没了，向量留着就是指向空气的行
+                app.db.memoryEmbeddingDao().deleteForFacts(listOf(row.id))
+            }
             Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
         }
     }

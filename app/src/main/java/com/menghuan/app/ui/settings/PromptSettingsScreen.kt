@@ -54,6 +54,9 @@ private data class PromptDraft(
     val agentEnabled: Boolean = true,
     val agent: String = AGENT_CHAT_DEFAULT_STRATEGY,
     val voiceNote: String = VOICE_NOTE_DEFAULT_STRATEGY,
+    // v0.82.0 P1-1：滚动摘要（总开关默认开 + 摘要策略）
+    val summaryEnabled: Boolean = true,
+    val summary: String = com.menghuan.app.data.SummaryExtractor.DEFAULT_STRATEGY,
 )
 
 /**
@@ -109,6 +112,8 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             agentEnabled = app.settingsRepository.agentChatEnabled.first(),
             agent = app.settingsRepository.agentChatStrategy.first(),
             voiceNote = app.settingsRepository.voiceNoteStrategy.first(),
+            summaryEnabled = app.settingsRepository.rollingSummaryEnabled.first(),
+            summary = app.settingsRepository.summaryStrategy.first(),
         )
         draft = initial
         persisted = initial
@@ -146,6 +151,8 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                 app.settingsRepository.setAgentChatEnabled(current.agentEnabled)
                 app.settingsRepository.setAgentChatStrategy(current.agent)
                 app.settingsRepository.setVoiceNoteStrategy(current.voiceNote)
+                app.settingsRepository.setRollingSummaryEnabled(current.summaryEnabled)
+                app.settingsRepository.setSummaryStrategy(current.summary)
             }
             persisted = current
         }
@@ -334,6 +341,31 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                 dirty = draft.voiceNote != persisted.voiceNote,
                 onStrategyChange = { draft = draft.copy(voiceNote = it) },
                 onReset = { draft = draft.copy(voiceNote = VOICE_NOTE_DEFAULT_STRATEGY) },
+                onSave = { save() },
+            )
+        }
+
+        // v0.82.0 P1-1：滚动摘要。开关放段标题右侧（与「手机操控」同款）：
+        // 关掉 = 不压缩、不注入；摘要在「会话设置 → 对话摘要」里按会话查看/删除。
+        SettingsSectionRow(
+            title = "对话摘要策略",
+            titleSize = 17.sp,
+            customized = customized(draft.summary, com.menghuan.app.data.SummaryExtractor.DEFAULT_STRATEGY),
+            expanded = openSection == "summary",
+            trailing = {
+                NeuSwitch(
+                    checked = draft.summaryEnabled,
+                    onToggle = { draft = draft.copy(summaryEnabled = it) },
+                )
+            },
+        ) { toggle("summary") }
+        if (openSection == "summary") {
+            LayeredEditor(
+                framework = com.menghuan.app.data.SummaryExtractor.FRAMEWORK,
+                strategy = draft.summary,
+                dirty = draft.summary != persisted.summary || draft.summaryEnabled != persisted.summaryEnabled,
+                onStrategyChange = { draft = draft.copy(summary = it) },
+                onReset = { draft = draft.copy(summary = com.menghuan.app.data.SummaryExtractor.DEFAULT_STRATEGY) },
                 onSave = { save() },
             )
         }

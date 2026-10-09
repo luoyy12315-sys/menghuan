@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -70,6 +71,20 @@ data class ChatUiState(
      */
     val readingId: Long? = null,
     val agentRun: AgentRunUiState? = null, // [操作手机:…] 触发的执行卡（null = 不显示）
+    /**
+     * 待用户点头的工具调用（P3-3，null = 没有）。非只读的 MCP 工具执行前弹层确认
+     * （计划定稿：列出服务器/工具/参数，用户点头才执行）；生成协程挂起等
+     * [ChatViewModel.resolveToolConfirm] 的结果。
+     */
+    val toolConfirm: ToolConfirmRequest? = null,
+)
+
+/** 一次待确认的工具调用（P3-3 确认弹层的展示内容） */
+data class ToolConfirmRequest(
+    val openAiName: String,   // 带命名空间的全名（mcp__服务器__工具）
+    val serverName: String,   // 用户给服务器起的显示名
+    val toolName: String,     // 服务器上的原始工具名
+    val argumentsJson: String, // 模型生成的参数（原样给用户看）
 )
 
 /**
@@ -322,6 +337,20 @@ const val HISTORY_CHAR_BUDGET = 200_000
 /** 给回复输出留的余量（模型窗口是输入+输出共享的），按字数同口径扣 */
 private const val OUTPUT_RESERVE_CHARS = 8_000
 
+/** 聊天页首屏加载的消息条数（v0.82.0 分页）：滚到顶部每次再多拉 [HISTORY_PAGE_STEP] 条 */
+private const val HISTORY_PAGE_STEP = 200
+
+/** LLM 历史分段拉取的页大小：从新到旧攒到 HISTORY_CHAR_BUDGET 字就停，长会话不再整表读 */
+private const val LLM_HISTORY_PAGE = 500
+
+/**
+ * system prompt 里档案注入的条数上限（v0.82.0）：core 全带 + active 按稳定序截到这条数。
+ * 超出的不进前缀（前缀变长 = 每轮成本线性上涨 + 缓存价值稀释），靠 memoryRecallBlock
+ * 的召回把相关条目喂进易变上下文兜底。core 在 [com.menghuan.app.data.MemoryScope.visible]
+ * 里本来就排最前，所以截断一定先动 active、不动用户设为永久的条目。
+ */
+private const val MEMORY_INJECT_LIMIT = 30
+
 /**
  * 按字数预算从新到旧选取历史（纯函数，JVM 单测口径）：
  * 最新一条永远保留（哪怕自己超预算——丢谁也不能丢刚说的话），
@@ -348,6 +377,7 @@ fun selectHistoryByCharBudget(messages: List<ChatMessage>, maxChars: Int): List<
  * - 对话风格按 persona 持久化（长按头像切换，重进保留）
  * - 请求失败（含 HTTP 错误）：不落库、给错误条 + 重试；已收到部分回复则保留已收内容
  */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class ChatViewModel(
     private val personaRepository: PersonaRepository,
     private val settingsRepository: SettingsRepository,
@@ -361,6 +391,16 @@ class ChatViewModel(
     private val appScope: CoroutineScope? = null,
     /** v0.53.5：口头约定「待会打给我」要排闹钟，排钟要 Context（JVM 单测传 null = 跳过排钟） */
     private val appContext: android.content.Context? = null,
+    /**
+     * 滚动摘要引擎（v0.82.0 P1-1）。可空是迁就 JVM 单测的直接构造（与 appScope/appContext 同款）：
+     * null = 不触发压缩，注入侧的摘要从库里读、不受它影响。
+     */
+    private val summaryEngine: com.menghuan.app.data.SummaryEngine? = null,
+    /**
+     * MCP 工具聚合/路由（P3-3）。可空与 summaryEngine 同款（迁就 JVM 单测直接构造）：
+     * null = tools 回环整个关闭，请求体与旧版逐字节一致。
+     */
+    private val mcpManager: com.menghuan.app.mcp.McpManager? = null,
 ) : ViewModel() {
 
     private val _activePersona = MutableStateFlow<Persona?>(null)
@@ -370,6 +410,23 @@ class ChatViewModel(
         ChatUiState(messages = emptyList(), input = ChatDrafts.get(personaId))
     )
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+
+    // ===== 聊天页分页（v0.82.0）：首屏 HISTORY_PAGE_STEP 条，滚到顶部自动多拉 =====
+    private val _historyLimit = MutableStateFlow(HISTORY_PAGE_STEP)
+    /** 上面还有没有更早的消息可拉（拿满 limit = 可能还有；不足 limit = 到底了） */
+    private val _hasMoreHistory = MutableStateFlow(true)
+    val hasMoreHistory: StateFlow<Boolean> = _hasMoreHistory.asStateFlow()
+
+    /** 上滑滚到顶部时由页面调用：多拉一页更早的消息。 */
+    fun loadOlderMessages() {
+        if (!_hasMoreHistory.value) return
+        _historyLimit.value += HISTORY_PAGE_STEP
+    }
+
+    /** 最新 [limit] 条（DESC 取出翻成时间正序）——分页后的 UI / 回读统一入口 */
+    private fun observeRecent(limit: Int) =
+        db.messageDao().observeRecentConversation(personaId, limit)
+            .map { it.asReversed() }
 
     private var draftWriteJob: kotlinx.coroutines.Job? = null
 
@@ -410,9 +467,29 @@ class ChatViewModel(
 
     /** 回读落库消息并上屏，**不动流式标记**（重进会话接上别人的生成时用，见 init） */
     private suspend fun reloadMessages() {
-        val persisted = runCatching { db.messageDao().observeConversation(personaId).first() }
+        val persisted = runCatching { observeRecent(_historyLimit.value).first() }
             .getOrDefault(emptyList())
         if (persisted.isNotEmpty()) _uiState.update { it.copy(messages = persisted) }
+    }
+
+    /**
+     * 给 LLM 历史组装用的持久化消息（v0.82.0）：从新到旧分页拉，累计字数够
+     * [HISTORY_CHAR_BUDGET] 就停——预算截尾只吃最新一段，再往前的旧消息白拉。
+     * 之后照旧走清洗（乱码剥除 / 语音文件包装）与 [selectHistoryByCharBudget]，语义不变。
+     */
+    private suspend fun loadPersistedForLlm(): List<ChatMessage> {
+        val acc = ArrayList<ChatMessage>()
+        var offset = 0
+        var chars = 0
+        while (true) {
+            val page = db.messageDao().getRecentPaged(personaId, LLM_HISTORY_PAGE, offset)
+            if (page.isEmpty()) break
+            acc += page
+            offset += page.size
+            chars += page.sumOf { it.content.length }
+            if (page.size < LLM_HISTORY_PAGE || chars >= HISTORY_CHAR_BUDGET) break
+        }
+        return acc.asReversed()
     }
 
     init {
@@ -528,9 +605,17 @@ class ChatViewModel(
         // 持续观察持久化消息：任务页勾选生成的打卡回执、未来其他写入源都实时上屏。
         // 流式期间跳过（占位尾巴尚未落库，本地列表才是最新视图）；流结束后 DB 即为事实源。
         // 有消息即视为已读：会话列表未读点随之消除
+        // v0.82.0：改分页观察（首屏 HISTORY_PAGE_STEP 条，loadOlderMessages 拉大窗口）——
+        // 长会话不再整表读进内存；条目用 DB id 做稳定 key，窗口扩大时滚动位置跟着锚点走。
         viewModelScope.launch {
             runCatching {
-                db.messageDao().observeConversation(personaId).collect { persisted ->
+                var currentLimit = HISTORY_PAGE_STEP
+                _historyLimit.flatMapLatest { limit ->
+                    currentLimit = limit
+                    observeRecent(limit)
+                }.collect { persisted ->
+                    // 拿满窗口 = 可能还有更早的；不足 = 到底了
+                    _hasMoreHistory.value = persisted.size >= currentLimit
                     if (persisted.isNotEmpty()) {
                         _uiState.update { if (it.isStreaming) it else it.copy(messages = persisted) }
                         runCatching { settingsRepository.markChatRead(personaId) }
@@ -922,6 +1007,63 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * tools 回环的准备（P3-1/P3-3）：返回 (OpenAI tools 参数, 聚合工具清单, 路由执行器)，
+     * 任一环节不成立都返回 null —— null 时请求体与旧版逐字节一致。
+     *
+     * 关卡顺序：① 有启用的 MCP 服务器；② 端点 tools 探测通过（按 baseUrl|model 缓存，
+     * 换配置旧结论自动作废；探测失败 = **隐藏**，不自创格式硬发）；③ 聚合到工具。
+     * 探测缓存在「设置 · MCP 服务器」页可手动重探（覆盖旧结论）。
+     */
+    private suspend fun prepareToolsBundle(
+        config: com.menghuan.app.data.ApiConfig,
+    ): Triple<org.json.JSONArray, List<com.menghuan.app.mcp.McpManager.ResolvedTool>, com.menghuan.app.mcp.McpManager>? {
+        val mcp = mcpManager ?: return null
+        return try {
+            if (!mcp.hasEnabledServers()) return null
+            val endpointKey = com.menghuan.app.mcp.McpManager.toolsProbeKey(config.baseUrl, config.model)
+            when (settingsRepository.toolsProbeFor(endpointKey)) {
+                "ok" -> Unit
+                null -> {
+                    val err = OpenAiClient(config.baseUrl, config.apiKey, config.model).probeToolSupport()
+                    settingsRepository.setToolsProbe(endpointKey, err ?: "ok")
+                    if (err != null) return null
+                }
+
+                else -> return null // 探测过且不支持
+            }
+            val tools = mcp.resolveTools()
+            if (tools.isEmpty()) null else Triple(mcp.buildToolsJson(tools), tools, mcp)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null // 聚合环节任何意外 = 本轮不用工具，绝不影响正常聊天
+        }
+    }
+
+    /** 确认弹层的挂起句柄（同一时刻最多一个：回环是串行执行工具的） */
+    private var toolConfirmDeferred: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+
+    /** 挂起等用户在确认弹层点头/拒绝（P3-3） */
+    private suspend fun awaitToolConfirm(request: ToolConfirmRequest): Boolean {
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        toolConfirmDeferred = deferred
+        _uiState.update { it.copy(toolConfirm = request) }
+        return try {
+            deferred.await()
+        } finally {
+            _uiState.update { it.copy(toolConfirm = null) }
+            toolConfirmDeferred = null
+        }
+    }
+
+    /** 确认弹层的按钮回调：true = 执行一次，false = 拒绝（结果以"用户拒绝"回灌给模型） */
+    fun resolveToolConfirm(approved: Boolean) {
+        _uiState.update { it.copy(toolConfirm = null) }
+        toolConfirmDeferred?.complete(approved)
+        toolConfirmDeferred = null
+    }
+
     /** 组装 system prompt 并流式获取回复 */
     private suspend fun reply() {
         val persona = _activePersona.value
@@ -955,6 +1097,10 @@ class ChatViewModel(
         } catch (e: Exception) {
             emptyList()
         }
+        // v0.82.0：档案注入封顶 MEMORY_INJECT_LIMIT 条（visible 已按 core 置顶 + id 稳定排序，
+        // take 保持前缀稳定；超出的靠召回块兜底）。foldedFacts = 被折叠的条数，单独一行说明。
+        val injectFacts = facts.take(MEMORY_INJECT_LIMIT)
+        val foldedFacts = facts.size - injectFacts.size
         // 无人设（systemPrompt 为空）= 普通 AI：不套人设、不叠对话风格，只带用户档案；
         // 对话风格（tone）是人设之上的语气维度，没有人设就没有叠加对象
         val personaPrompt = persona.systemPrompt.trim()
@@ -962,7 +1108,7 @@ class ChatViewModel(
             if (personaPrompt.isNotEmpty()) {
                 append(personaPrompt)
             }
-            if (facts.isNotEmpty()) {
+            if (injectFacts.isNotEmpty()) {
                 if (personaPrompt.isNotEmpty()) append("\n\n")
                 // 档案 = 背景参考，包装语可在设置里改（默认明确"不要主动复述档案"）
                 val preamble = try {
@@ -973,7 +1119,11 @@ class ChatViewModel(
                     com.menghuan.app.data.AiPrompts.DEFAULT_PROFILE_PREAMBLE
                 }
                 append(preamble)
-                facts.forEach { append("\n- ").append(it.key).append("：").append(it.value) }
+                injectFacts.forEach { append("\n- ").append(it.key).append("：").append(it.value) }
+                // 封顶折叠的一行：让模型知道"还有记忆"，相关时等召回块喂，别自己编
+                if (foldedFacts > 0) {
+                    append("\n- （另有 $foldedFacts 条记忆没有列出，聊到相关话题时你会想起来）")
+                }
             }
             // 生图能力说明：只有生图模型配齐才告诉模型它能生图，否则别诱导用户白等一张图
             val imageReady = try {
@@ -1053,6 +1203,25 @@ class ChatViewModel(
             // 每轮变的「有哪些帖子可回」不在这里，走易变上下文（见 momentFeedBlock）。
             if (isNotEmpty()) append("\n\n")
             append(com.menghuan.app.data.MomentMarker.promptSection())
+            // 滚动摘要（v0.82.0 P1-1）：掉出 20 万字历史预算的旧对话压缩成的这一段，
+            // 拼在 system prompt **尾部**——它只在水位线推进（3 万字攒一次）那一刻才变，
+            // 同一水位线内逐字节稳定，前面的人设/档案/能力说明整段前缀照旧命中缓存（§零.9）。
+            val summaryText = try {
+                if (settingsRepository.rollingSummaryEnabled.first()) {
+                    db.conversationSummaryDao().get(personaId)?.summary?.takeIf { it.isNotBlank() }
+                } else {
+                    null
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (summaryText != null) {
+                if (isNotEmpty()) append("\n\n")
+                append("## 更早的对话（摘要）\n")
+                append(summaryText)
+            }
             if (isEmpty()) {
                 val base = try {
                     settingsRepository.basePrompt.first()
@@ -1067,9 +1236,15 @@ class ChatViewModel(
         // 历史取持久化消息：UI 种子对话是展示用假数据，绝不能发给 LLM 当真历史；
         // 同时剥离历史 bug 遗留的 "null" 乱码前缀，纯乱码消息整条剔除。
         // 带图的用户消息保留（没写字幕也发图，v0.38.0 vision 输入）
+        // v0.82.0：分段从新到旧拉（每页 LLM_HISTORY_PAGE 条，攒够 20 万字就停）——
+        // 超长会话不再整表读进内存；预算截尾本来就只吃最新的部分，旧页拉到够预算即可。
         val history = try {
-            db.messageDao().observeConversation(personaId).first()
+            loadPersistedForLlm()
                 .mapNotNull { m ->
+                    // v0.82.0：记忆待审系统气泡是发给用户的提示，不是对话内容——绝不进 LLM 历史
+                    if (MediaKind.fromLegacy(m.mediaKind, m.imagePath) == MediaKind.MEMORY_NOTICE) {
+                        return@mapNotNull null
+                    }
                     if (!m.isFromUser) {
                         val cleaned = m.content.replace(Regex("^(?:null)+"), "").trim()
                         if (cleaned.isEmpty() && m.imagePath.isBlank()) return@mapNotNull null
@@ -1131,32 +1306,94 @@ class ChatViewModel(
         var usagePrompt = 0
         var usageCached = 0
         var streamError: Throwable? = null
+        // P3-1/P3-3：tools 回环的准备——配了 MCP 服务器且端点支持 tools 才有这份清单；
+        // null = 请求体与旧版逐字节一致（一个字段都不多）
+        val toolsBundle = prepareToolsBundle(config)
         // v0.41.4 后台生成一次性发送：不再有打字机追赶循环——正文在后台收完为止，
         // 期间 UI 只挂三点气泡（isStreaming/generating），收到 [DONE] 后整段落库上屏。
         // 这样用户看到的是"思考 → 完整回复弹出"，而不是逐字吐字（用户明确要求）。
         // v0.57：改挂 [generationScope]（不再是 viewModelScope）——退出聊天页也会把这一轮收完
         val collectJob = generationScope.launch {
             try {
-                OpenAiClient(config.baseUrl, config.apiKey, config.model)
-                    .streamEvents(systemPrompt, history, runtimeContextNow()) { path ->
-                        // 用户发的图现场降采样转 base64（AI 生成图是 assistant 消息，不进请求）
-                        com.menghuan.app.data.VisionImage.encodeDataUrl(path)
-                    }
-                    .collect { ev ->
-                        when (ev) {
-                            is com.menghuan.app.llm.StreamEvent.Delta -> sb.append(ev.text)
-                            is com.menghuan.app.llm.StreamEvent.Reasoning -> thinking.append(ev.text)
-                            is com.menghuan.app.llm.StreamEvent.Usage -> {
-                                usageTokens = ev.tokens
-                                usagePrompt = ev.promptTokens
-                                usageCached = ev.cachedPromptTokens
+                // tools 回环（P3-1）：模型要调工具 → 执行 → 结果按 role:tool 回灌 → 继续生成，
+                // 限 MAX_TOOL_ROUNDS 防死循环。中间消息只活在 extraMessages 里，不落库。
+                val extraMessages = ArrayList<org.json.JSONObject>()
+                var toolRound = 0
+                while (true) {
+                    val roundStart = sb.length
+                    var pendingCalls: List<com.menghuan.app.llm.PendingToolCall>? = null
+                    OpenAiClient(config.baseUrl, config.apiKey, config.model)
+                        .streamEvents(
+                            systemPrompt,
+                            history,
+                            runtimeContextNow(),
+                            imageDataUrl = { path ->
+                                // 用户发的图现场降采样转 base64（AI 生成图是 assistant 消息，不进请求）
+                                com.menghuan.app.data.VisionImage.encodeDataUrl(path)
+                            },
+                            tools = toolsBundle?.first,
+                            extraMessages = extraMessages,
+                        )
+                        .collect { ev ->
+                            when (ev) {
+                                is com.menghuan.app.llm.StreamEvent.Delta -> sb.append(ev.text)
+                                is com.menghuan.app.llm.StreamEvent.Reasoning -> thinking.append(ev.text)
+                                is com.menghuan.app.llm.StreamEvent.Usage -> {
+                                    usageTokens = ev.tokens
+                                    usagePrompt = ev.promptTokens
+                                    usageCached = ev.cachedPromptTokens
+                                }
+
+                                is com.menghuan.app.llm.StreamEvent.ToolCalls -> pendingCalls = ev.calls
                             }
                         }
+                    val calls = pendingCalls.orEmpty()
+                    if (calls.isEmpty() || toolsBundle == null) break
+                    toolRound++
+                    if (toolRound > MAX_TOOL_ROUNDS) break // 防死循环：已收到的内容按正常回复落库
+                    // 先把"模型要求调用"的 assistant 消息原样回显（协议要求 id 对应），
+                    // 再逐个执行工具、把结果按 role:tool 追加
+                    extraMessages += com.menghuan.app.llm.buildAssistantToolCallsMessage(
+                        calls,
+                        sb.substring(roundStart),
+                    )
+                    for (call in calls) {
+                        val resolved = toolsBundle.second.firstOrNull { it.openAiName == call.name }
+                        val resultText = if (resolved != null && !resolved.readOnly) {
+                            // 非只读工具 = 高危：确认弹层，用户点头才执行（计划 P3-3 定稿）
+                            val approved = awaitToolConfirm(
+                                ToolConfirmRequest(
+                                    openAiName = call.name,
+                                    serverName = resolved.serverName,
+                                    toolName = resolved.originName,
+                                    argumentsJson = call.argumentsJson,
+                                )
+                            )
+                            if (approved) {
+                                toolsBundle.third.execute(call.name, call.argumentsJson)
+                            } else {
+                                com.menghuan.app.mcp.McpManager.wrapUntrusted(
+                                    call.name,
+                                    "用户拒绝了这次工具调用",
+                                )
+                            }
+                        } else {
+                            toolsBundle.third.execute(call.name, call.argumentsJson)
+                        }
+                        extraMessages += com.menghuan.app.llm.buildToolResultMessage(call.id, resultText)
                     }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 streamError = e
+            } finally {
+                // 确认弹层若还挂着（取消发生在等待点头期间）：收掉，别留在屏幕上
+                if (_uiState.value.toolConfirm != null) {
+                    _uiState.update { it.copy(toolConfirm = null) }
+                    toolConfirmDeferred?.cancel()
+                    toolConfirmDeferred = null
+                }
             }
         }
         collectJob.join()
@@ -1212,6 +1449,8 @@ class ChatViewModel(
         maybePostMoments(rawReply)
         // 提炼流水线：攒够增量消息后由引擎在应用级作用域自行决定是否调用 LLM
         extractionEngine.maybeExtract(personaId)
+        // 滚动摘要（v0.82.0 P1-1）：掉出历史预算的积压攒够 3 万字才真发请求，平时这一步零成本
+        summaryEngine?.maybeSummarize(personaId)
     }
 
     /**
@@ -1488,10 +1727,11 @@ class ChatViewModel(
                 ErrorBar.KIND_RETRY,
             )
             // 刚才那句「（正在为你生成图片）」占位别永远停在"正在生成"：改写成失败事实
+            // v0.82.0：只看最近几条（占位必是最后一条），不再整表读
             runCatching {
-                db.messageDao().observeConversation(personaId).first().lastOrNull { m ->
-                    !m.isFromUser && m.content == IMAGE_ONLY_PLACEHOLDER
-                }?.let { m -> db.messageDao().updateContent(m.id, "（图片生成失败）") }
+                db.messageDao().getRecentPaged(personaId, 5, 0).asReversed()
+                    .lastOrNull { m -> !m.isFromUser && m.content == IMAGE_ONLY_PLACEHOLDER }
+                    ?.let { m -> db.messageDao().updateContent(m.id, "（图片生成失败）") }
             }
             return
         }
@@ -1540,12 +1780,16 @@ class ChatViewModel(
         if (items.isEmpty()) return
         val existing = runCatching { db.profileFactDao().observeOwnedBy(personaId).first() }
             .getOrDefault(emptyList())
+        // v0.82.0：数一下这一轮**真正新暂存**了几条（已在待入库里的重复提及只更新内容，不算新），
+        // >0 就往聊天流里落一条系统气泡引导用户去记忆页审批——staging 积压等于"TA 根本没记住"。
+        var newlyStaged = 0
         items.forEach { item ->
             if (existing.any { it.lifecycle == "rejected" && it.value == item }) return@forEach
             val dup = existing.firstOrNull { it.value == item && it.lifecycle != "rejected" }
                 ?: existing.firstOrNull {
                     it.key == com.menghuan.app.data.MemoryMarker.keyOf(item) && it.lifecycle != "rejected"
                 }
+            if (dup == null) newlyStaged++
             val lifecycle = when (dup?.lifecycle) {
                 null -> "staging"        // 全新的：等用户在记忆页点头
                 "staging" -> "staging"   // 已在待入库里：更新内容，状态不变
@@ -1561,6 +1805,21 @@ class ChatViewModel(
                         updatedAt = System.currentTimeMillis(),
                         personaId = personaId,
                         lifecycle = lifecycle,
+                    )
+                )
+            }
+        }
+        // 待审引导（v0.82.0）：旧气泡删掉再插新的，同一时刻最多一条，不刷屏。
+        // 走 MEMORY_NOTICE 媒体类型：渲染成居中提示行、不进 LLM 历史 / 提炼 / 导出。
+        if (newlyStaged > 0) {
+            runCatching {
+                db.messageDao().deleteMemoryNotices(personaId)
+                db.messageDao().insert(
+                    ChatMessage(
+                        conversationId = personaId,
+                        isFromUser = false,
+                        content = "💭 我记住了 $newlyStaged 件新事，点我去「TA 的记忆」里看看吧",
+                        mediaKind = MediaKind.MEMORY_NOTICE.name,
                     )
                 )
             }
@@ -1914,13 +2173,55 @@ class ChatViewModel(
         val shared = runCatching { settingsRepository.profileSharedReadable.first() }.getOrDefault(true)
         // 阈值 60：与爱语「记忆库模糊搜索得分 0-100、默认 60」同口径（见 MemoryScope.search 注释）。
         // 宁缺毋滥 —— 捞进不相干的记忆会让它把别人的事安在用户头上，比想不起来更糟。
-        val hits = com.menghuan.app.data.MemoryScope.search(all, personaId, shared, query, minScore = 60, limit = 3)
-        if (hits.isEmpty()) return ""
+        // v0.82.0 P1-2：开了「记忆语义召回」就给这一路算上向量余弦（默认关，关着 = 纯词法）。
+        // 端点本轮调不通时 queryVector 为 null、自动退回词法——开关绝不被偷改（ASR 双引擎同一纪律）。
+        val embConfig = runCatching { settingsRepository.embeddingConfigOrNull() }.getOrNull()
+        var queryVector: FloatArray? = null
+        var vectors: Map<Long, FloatArray> = emptyMap()
+        if (embConfig != null) {
+            val bucket = settingsRepository.embeddingBucketOf(embConfig)
+            val visiblePool = com.menghuan.app.data.MemoryScope.visible(all, personaId, shared)
+            queryVector = OpenAiClient(embConfig.baseUrl, embConfig.apiKey, embConfig.model).embed(query)
+            if (queryVector != null) {
+                vectors = runCatching {
+                    db.memoryEmbeddingDao()
+                        .getForFacts(visiblePool.map { it.id }, bucket)
+                        .associate { it.factId to com.menghuan.app.data.EmbeddingVector.decode(it.vector) }
+                }.getOrDefault(emptyMap())
+            }
+            // 缺向量的后台补算：本轮用已有的，下轮更全（见 MemoryEmbeddingIndexer 的"懒索引"口径）
+            com.menghuan.app.data.MemoryEmbeddingIndexer.ensureIndexed(
+                generationScope, db, settingsRepository, visiblePool, embConfig,
+            )
+        }
+        val hits = com.menghuan.app.data.MemoryScope.searchHybrid(
+            all, personaId, shared, query,
+            minScore = 60, limit = 3,
+            queryVector = queryVector, vectors = vectors,
+        )
+        // v0.82.0 P1-3：归档条目被高分召回 → 想起即复活（升回 active，下轮起重新参与注入）。
+        // 门槛比常规召回更严（80）：归档多半是有原因的，模糊的"有点像"不值得把它翻回来。
+        val nowMs = System.currentTimeMillis()
+        val revived = runCatching {
+            val archivedPool = db.profileFactDao().listArchivedFor(personaId)
+                .filter { it.personaId == personaId || (it.personaId == 0L && shared) }
+            com.menghuan.app.data.MemoryScope.searchIn(archivedPool, query, minScore = 80, limit = 1)
+        }.getOrDefault(emptyList())
+        revived.forEach { hit ->
+            runCatching { db.profileFactDao().promoteToActive(hit.fact.id, nowMs) }
+        }
+        // v0.82.0 P1-3：记下"被想起的时刻"——90 天没被想起的 active 会被自动归档（MemoryLifecycle）。
+        val touched = (hits + revived).map { it.fact.id }
+        if (touched.isNotEmpty()) {
+            runCatching { db.profileFactDao().touchRecalled(touched, nowMs) }
+        }
+        val allHits = hits + revived
+        if (allHits.isEmpty()) return ""
         return buildString {
             append("## 你想起来的事\n")
             append("（以下是你自己记下的关于这个人的事，按相关度排；想用就用，")
             append("**不要一条条念出来给用户听**，它只是帮你把话接对。）\n")
-            hits.forEach { append("- ").append(it.fact.value).append("\n") }
+            allHits.forEach { append("- ").append(it.fact.value).append("\n") }
         }.trimEnd()
     }
 
@@ -1940,7 +2241,7 @@ class ChatViewModel(
      * v0.41.4 起正文不再走流式尾巴，这里就是"整段回复一次性上屏"的落点。
      */
     private suspend fun finishStream() {
-        val persisted = runCatching { db.messageDao().observeConversation(personaId).first() }
+        val persisted = runCatching { observeRecent(_historyLimit.value).first() }
             .getOrDefault(emptyList())
         _uiState.update {
             it.copy(
@@ -1963,6 +2264,13 @@ class ChatViewModel(
     }
 
     companion object {
+        /**
+         * tools 回环的最大连续轮数（P3-1，参考 AgentLoop maxSteps 的防死循环思路）：
+         * 模型每要一轮工具算一次，超限就把已收到的内容按正常回复落库——
+         * 宁可少调一次工具，也不能让聊天卡在无限调用里。
+         */
+        const val MAX_TOOL_ROUNDS = 4
+
         /** v0.53.5：口头约定打电话的能力说明（v0.53.7 起**总是注入**，不依赖开关；v0.54.5 总开关已删） */
         const val AI_CALL_HINT =
             "## 打电话\n" +
@@ -1987,6 +2295,8 @@ class ChatViewModel(
                     app.filesDir,
                     app.applicationScope,
                     app.applicationContext,
+                    app.summaryEngine,
+                    app.mcpManager,
                 )
             }
         }

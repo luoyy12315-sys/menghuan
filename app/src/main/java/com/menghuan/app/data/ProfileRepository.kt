@@ -22,5 +22,9 @@ class ProfileRepository(private val db: AppDatabase) {
 
     suspend fun save(fact: ProfileFact): Long = db.profileFactDao().upsert(fact)
 
-    suspend fun delete(id: Long) = db.profileFactDao().delete(id)
+    suspend fun delete(id: Long) {
+        db.profileFactDao().delete(id)
+        // 语义向量一并清（v0.82.0 P1-2）：记忆没了，向量留着就是指向空气的行
+        db.memoryEmbeddingDao().deleteForFacts(listOf(id))
+    }
 }

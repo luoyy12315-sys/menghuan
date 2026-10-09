@@ -44,6 +44,14 @@ class MenghuanApp : Application() {
     lateinit var extractionEngine: ExtractionEngine
         private set
 
+    /** 滚动摘要引擎（v0.82.0 P1-1）：历史预算之外的旧对话压缩成摘要，随 system prompt 注入 */
+    lateinit var summaryEngine: com.menghuan.app.data.SummaryEngine
+        private set
+
+    /** P3-3：MCP 服务器工具聚合与路由（聊天 tools 回环 + 设置页管理共用） */
+    lateinit var mcpManager: com.menghuan.app.mcp.McpManager
+        private set
+
     /** AI 周报生成器（每周日 21:30 定时 + 启动补生成） */
     lateinit var weeklyReportGenerator: com.menghuan.app.data.WeeklyReportGenerator
         private set
@@ -60,6 +68,19 @@ class MenghuanApp : Application() {
         super.onCreate()
         // 崩溃现场先落盘（「关于」页能看堆栈），再干别的——晚装就漏掉启动期的崩
         com.menghuan.app.data.CrashLog.install(this)
+        // P4 手册自检（仅 debug 包）：应用助手手册的补丁链若有没打上的（子串静默落空），
+        // 写进崩溃日志页（「我的 → 设置 → 关于」可见）。release 包不跑，零开销。
+        // 单元测试侧由 AiPromptsTest「补丁链全部命中」兜底，CI 上红的先是它。
+        if (BuildConfig.DEBUG) {
+            val manualMisses = com.menghuan.app.data.AiPrompts.assistantManualPatchMisses()
+            if (manualMisses.isNotEmpty()) {
+                com.menghuan.app.data.CrashLog.reportNonFatal(
+                    this,
+                    "应用助手手册补丁未命中 ${manualMisses.size} 条",
+                    manualMisses.joinToString("\n"),
+                )
+            }
+        }
         db = Room.databaseBuilder(this, AppDatabase::class.java, "menghuan.db")
             .addMigrations(
                 AppDatabase.MIGRATION_1_2,
@@ -85,6 +106,7 @@ class MenghuanApp : Application() {
                 AppDatabase.MIGRATION_21_22,
                 AppDatabase.MIGRATION_22_23,
                 AppDatabase.MIGRATION_23_24,
+                AppDatabase.MIGRATION_24_25,
             )
             .build()
         settingsRepository = SettingsRepository(this)
@@ -122,6 +144,16 @@ class MenghuanApp : Application() {
         }
         profileRepository = ProfileRepository(db)
         extractionEngine = ExtractionEngine(db, settingsRepository, taskSuggestionHub, applicationScope)
+        summaryEngine = com.menghuan.app.data.SummaryEngine(db, settingsRepository, applicationScope)
+        // P3-3：MCP 工具聚合/路由（应用级单例；设置页改服务器清单后调 invalidate() 重连）
+        mcpManager = com.menghuan.app.mcp.McpManager(settingsRepository)
+        // v0.82.0 P1-3：记忆自动归档——90 天没被召回命中的 active 降 archived（core 豁免）。
+        // 纯 DB 操作、一次小查询 + 少量写入，不发 LLM 请求，可以在启动期跑。
+        applicationScope.launch {
+            runCatching {
+                com.menghuan.app.data.MemoryLifecycle.sweepAutoArchive(db, System.currentTimeMillis())
+            }
+        }
         weeklyReportGenerator = com.menghuan.app.data.WeeklyReportGenerator(db, settingsRepository)
         dailySuggestionGenerator = com.menghuan.app.data.DailySuggestionGenerator(db, settingsRepository)
         unreadCenter = com.menghuan.app.data.UnreadCenter(db, personaRepository, settingsRepository, applicationScope)

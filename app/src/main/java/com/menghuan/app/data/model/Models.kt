@@ -138,7 +138,13 @@ enum class MediaKind {
      * 语音通话记录卡（v0.49.0）：通话挂断后落进聊天流（"语音通话 · X分X秒"），
      * attachmentPath 存 call_sessions.id，点气泡弹出该次通话的文字转写。
      */
-    CALL;
+    CALL,
+    /**
+     * 记忆待审系统气泡（v0.82.0）：AI 暂存了新记忆时落一条居中的提示行（"点我去记忆页"）。
+     * **不进 LLM 历史**（ChatViewModel 发送前剔除）、不进提炼（ExtractionEngine 剔除）、
+     * 不进导出（ConversationExport 调用点过滤）——它只是给用户的提示，不是对话内容。
+     */
+    MEMORY_NOTICE;
 
     companion object {
         /**
@@ -242,6 +248,15 @@ data class ProfileFact(
      * `staging` 待入库（AI 刚说 `<add:>` 还没落定）；`rejected` 用户明确拒过；`archived` 停用。
      */
     val lifecycle: String = "active",
+    /**
+     * 最近一次被召回块命中的时刻（v0.82.0 P1-3，毫秒；0 = 从没被想起过）。
+     *
+     * 自动归档的判据读它：**90 天没被想起的 active 自动降 archived**（core 豁免）。
+     * 老数据迁移落 0 —— 判定时按 `max(lastRecalledAt, updatedAt)` 算，
+     * 否则升级那一刻全部老记忆会立刻"90 天没被想起"、整批被归档（那是事故，不是功能）。
+     */
+    @ColumnInfo(defaultValue = "0")
+    val lastRecalledAt: Long = 0,
 ) {
     /** 参与注入的唯一判据：`rejected` 与 `archived` 一律不进 prompt（§零.9 的准入口径） */
     val injectable: Boolean get() = lifecycle != "rejected" && lifecycle != "archived"
@@ -529,6 +544,50 @@ data class CallTurn(
     val speaker: String,
     val text: String,
     val timestamp: Long,
+)
+
+/**
+ * 对话滚动摘要（v0.82.0 P1-1）：每个会话一行。
+ *
+ * 20 万字历史预算之外的旧对话不再蒸发，而是被 LLM 滚动压缩成一段摘要：
+ * [coveredMessageId] 是水位线——`id ≤ 它` 的消息**已经被摘要覆盖**，压缩只处理水位线之后、
+ * 且已经掉出历史预算窗口的那段。摘要作为固定段落拼在 system prompt 尾部，
+ * 同一水位线内逐字节稳定（低频推进才换，前缀缓存代价可接受，§零.9）。
+ *
+ * 用户可在「会话设置 → 对话摘要」查看并删除：删除 = 整行抹掉、水位线归零，
+ * 之后按"从来没有摘要"重新积累（不是标记隐藏）。
+ */
+@Entity(tableName = "conversation_summaries")
+data class ConversationSummary(
+    @PrimaryKey val conversationId: Long,
+    /** 水位线：id ≤ 它的消息已进摘要 */
+    @ColumnInfo(defaultValue = "0")
+    val coveredMessageId: Long = 0,
+    @ColumnInfo(defaultValue = "")
+    val summary: String = "",
+    @ColumnInfo(defaultValue = "0")
+    val updatedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * 记忆条目的语义向量（v0.82.0 P1-2，默认关）。
+ *
+ * 开了「记忆语义召回」后，记忆写入/召回时由用户自配的 OpenAI 兼容 embeddings 端点算出向量存这里，
+ * 召回 = 词法 bigram 分数与向量余弦融合（`MemoryScope.searchHybrid`）。**不开就一行都没有、纯词法**，
+ * 与 ASR 双引擎同一条纪律：不做自动回落，两条路互不兜底。
+ *
+ * [bucket] = "baseUrl|model"：各家/各模型维度不同，换配置后旧向量整体作废——
+ * 读取一律带桶过滤，桶对不上就当没有（后台重算补齐），**绝不把两个模型的向量混在一起算余弦**。
+ */
+@Entity(tableName = "memory_embeddings")
+data class MemoryEmbedding(
+    @PrimaryKey val factId: Long,
+    @ColumnInfo(defaultValue = "")
+    val bucket: String = "",
+    /** float32 小端字节序；维度由服务端决定（库里不假设维度） */
+    val vector: ByteArray = ByteArray(0),
+    @ColumnInfo(defaultValue = "0")
+    val updatedAt: Long = System.currentTimeMillis(),
 )
 
 /**

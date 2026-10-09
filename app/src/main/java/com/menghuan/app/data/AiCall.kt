@@ -181,9 +181,9 @@ object AiCall {
             .getOrDefault(emptyList())
             .filter { !it.isDone }
             .take(6)
-        val recent = runCatching { db.messageDao().observeConversation(persona.id).first() }
+        // v0.82.0：只要最近 6 条，分页查询替代整表读
+        val recent = runCatching { db.messageDao().getRecentPaged(persona.id, 6, 0).asReversed() }
             .getOrDefault(emptyList())
-            .takeLast(6)
 
         val userContext = buildString {
             if (instruction.isNotBlank()) {
@@ -210,6 +210,11 @@ object AiCall {
             persona.systemPrompt,
             listOf(ChatMessage(conversationId = 0, isFromUser = true, content = userContext)),
         )
+        // v0.82.0：AI 打电话的开场白也是一次 LLM 调用，进用量账（与主动关心同一盲区）。
+        runCatching {
+            UsageTracker.add(settings, reply.usageTokens ?: 0, api.model,
+                reply.promptTokens, reply.cachedPromptTokens)
+        }
         val text = reply.text.trim()
         return text.takeIf { it.isNotEmpty() }?.take(160)
     }

@@ -4,6 +4,7 @@ import android.util.Log
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.AiInsight
 import com.menghuan.app.data.model.ChatMessage
+import com.menghuan.app.data.model.MediaKind
 import com.menghuan.app.data.model.ProfileFact
 import com.menghuan.app.llm.OpenAiClient
 import kotlinx.coroutines.CoroutineScope
@@ -72,6 +73,9 @@ class ExtractionEngine(
 
         val watermark = settingsRepository.extractionWatermark(personaId)
         val newMessages = db.messageDao().getAfterId(personaId, watermark)
+            // v0.82.0：记忆待审系统气泡是 UI 提示不是对话，提炼时剔除（否则"💭 我记住了…"
+            // 会被当成 AI 角色的台词喂给提炼模型）
+            .filter { MediaKind.fromLegacy(it.mediaKind, it.imagePath) != MediaKind.MEMORY_NOTICE }
         if (newMessages.isEmpty()) return ExtractSummary()
 
         // 角色标注（v0.38.2）：AI 一方是虚拟角色的扮演内容，不是用户本人——
@@ -104,6 +108,9 @@ class ExtractionEngine(
         val newSuggestions = saveSuggestions(personaId, extracted.taskSuggestions)
         // 水位线推进到最后一条已处理消息；即便模型这次没产出，也不重复送同一段
         settingsRepository.setExtractionWatermark(personaId, newMessages.last().id)
+        // v0.82.0 P1-3：顺手扫一次自动归档（90 天没被召回命中的 active 降 archived；
+        // 纯 DB 操作、提炼本身就低频，顺带做不再单设闹钟）
+        runCatching { MemoryLifecycle.sweepAutoArchive(db, System.currentTimeMillis()) }
         return ExtractSummary(
             newFacts = newFacts,
             updatedFacts = updatedFacts,

@@ -3,6 +3,7 @@ package com.menghuan.app.data
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.Persona
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -70,7 +71,16 @@ class PersonaRepository(
         // v0.70.0：记忆按人设分开之后，删角色必须把它自己聊出来的那部分一起清掉，
         // 否则会留下一堆没人能读到的孤儿行（且 id 不复用，越攒越多）。
         // deleteForPersona 的 SQL 里写死了 `personaId != 0`：**用户本人的基础档案永远不跟着角色删**。
+        // v0.82.0 P1-2：这些记忆的语义向量一起清（先拿 id 再删，顺序不能反）。
+        val orphanFactIds = runCatching {
+            db.profileFactDao().observeOwnedBy(id).first().map { it.id }
+        }.getOrDefault(emptyList())
+        if (orphanFactIds.isNotEmpty()) {
+            runCatching { db.memoryEmbeddingDao().deleteForFacts(orphanFactIds) }
+        }
         db.profileFactDao().deleteForPersona(id)
+        // v0.82.0 P1-1：这个会话的滚动摘要一并删（会话没了，摘要就是孤儿行）
+        runCatching { db.conversationSummaryDao().delete(id) }
         db.personaDao().deleteById(id)
         settingsRepository?.removeReadMark(id)
         settingsRepository?.removeExtractionWatermark(id)

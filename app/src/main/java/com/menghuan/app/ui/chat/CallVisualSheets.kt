@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -45,6 +46,7 @@ import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
+import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuDanger
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
@@ -53,6 +55,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
+
+/**
+ * 模型包选择器只认压缩包（v0.82.0 P2-1）。
+ *
+ * 个别 ROM 的选择器不认 zip mime、也不支持多 mime 过滤，那种机器上会漏出别的文件 ——
+ * 这一档由 [CallVisualStore.looksLikeZip] 在做导入**之前**先按扩展名拦一道并当场说明，
+ * 不让用户白等一轮复制解压。
+ */
+private val ZIP_MIME_TYPES = arrayOf("application/zip", "application/x-zip-compressed")
 
 /**
  * 通话形象的上传弹层（v0.58.0）。
@@ -77,6 +88,7 @@ fun Live2dVisualSheet(personaId: Long, onDismiss: () -> Unit) {
 
     var asset by remember { mutableStateOf<CallVisualAsset?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf<CallVisualStore.ImportProgress?>(null) }
     var note by remember { mutableStateOf<String?>(null) }
     var refreshTick by remember { mutableStateOf(0) }
 
@@ -85,14 +97,16 @@ fun Live2dVisualSheet(personaId: Long, onDismiss: () -> Unit) {
         asset = withContext(Dispatchers.IO) { CallVisualStore.read(context, personaId) }
     }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             busy = true
+            progress = null
             val outcome = withContext(Dispatchers.IO) {
-                CallVisualStore.importLive2dPackage(context, personaId, uri)
+                CallVisualStore.importLive2dPackage(context, personaId, uri) { progress = it }
             }
             busy = false
+            progress = null
             if (outcome.ok) {
                 val now = System.currentTimeMillis()
                 val next = (asset ?: CallVisualAsset.EMPTY).copy(
@@ -120,7 +134,7 @@ fun Live2dVisualSheet(personaId: Long, onDismiss: () -> Unit) {
         Spacer(Modifier.height(6.dp))
         Text(
             when {
-                busy -> "正在解压并校验模型包…"
+                busy -> progress?.label() ?: "正在准备导入…"
                 showModel -> "已导入：" + bound.live2dModelJson.substringAfterLast('/')
                     .removeSuffix(".model3.json")
                 bound?.status == CallVisualStatus.ERROR -> bound.errorMessage
@@ -129,10 +143,18 @@ fun Live2dVisualSheet(personaId: Long, onDismiss: () -> Unit) {
             fontSize = 13.sp,
             color = if (showModel || busy) MutedText else NeuDanger,
         )
+        // 进度条只在"这一步真有分母"时才画：校验/落盘都是一瞬间，画出来只会闪一下
+        if (busy) {
+            val fraction = progress?.fraction()
+            if (fraction != null) {
+                Spacer(Modifier.height(8.dp))
+                ImportTrack(fraction)
+            }
+        }
         Spacer(Modifier.height(12.dp))
         NeuTextButton(
             text = if (showModel) "重新导入模型包（zip）" else "导入模型包（zip）",
-            onClick = { if (!busy) picker.launch("*/*") },
+            onClick = { if (!busy) picker.launch(ZIP_MIME_TYPES) },
         )
         if (showModel) {
             Spacer(Modifier.height(12.dp))
@@ -398,6 +420,30 @@ private suspend fun clearVisual(app: MenghuanApp, personaId: Long) {
     val cleared = CallVisualAsset(type = CallVisualType.NONE, status = CallVisualStatus.NONE)
     commitVisual(app, personaId, cleared)
     withContext(Dispatchers.IO) { CallVisualStore.pruneUnbound(app, personaId, cleared) }
+}
+
+/**
+ * 导入进度条：一条细灰槽 + 纯黑填充。
+ *
+ * 不用 M3 的 `LinearProgressIndicator` 是同一条老规矩：它自己的轨道高度与配色是另一套质感。
+ * 分数由 [CallVisualStore.ImportProgress.fraction] 给出，**null 时根本不画**
+ * （一闪而过的进度条比没有更糟）。
+ */
+@Composable
+private fun ImportTrack(fraction: Float) {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(4.dp)
+            .background(NeuTrack, RoundedCornerShape(2.dp)),
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                .fillMaxHeight()
+                .background(NeuAccent, RoundedCornerShape(2.dp)),
+        )
+    }
 }
 
 private fun formatSize(bytes: Long): String = when {

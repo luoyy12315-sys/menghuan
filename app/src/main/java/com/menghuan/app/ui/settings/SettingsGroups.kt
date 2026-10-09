@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -30,12 +31,14 @@ import com.menghuan.app.data.WebSearchClient
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
+import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.profile.MeViewModel
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuDanger
+import com.menghuan.app.ui.theme.TextPrimary
 import kotlinx.coroutines.launch
 
 /**
@@ -45,7 +48,7 @@ import kotlinx.coroutines.launch
  * 不是手风琴、不是分组——用户原话："折叠，是点进去。"
  */
 
-/** 模型配置（v0.54.2）：对话 / 生图 / 识别 / 语音模型 + 联网搜索，五张卡 */
+/** 模型配置（v0.54.2）：对话 / 生图 / 识别 / 语音模型 + 联网搜索 + 记忆语义召回（v0.82.0），六张卡 */
 @Composable
 fun ModelConfigScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
     val app = settingsContainer()
@@ -118,6 +121,29 @@ fun ModelConfigScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
                 activeSearchKey,
             ),
             onClick = { onOpen(SettingsRoutes.SEARCH_CONFIG) },
+        )
+        // v0.82.0 P1-2：记忆语义召回（默认关；开了之后记忆会发给用户自配的 embeddings 服务商）
+        val embeddingOn by app.settingsRepository.embeddingEnabled.collectAsState(initial = false)
+        SettingsRow(
+            show = true,
+            icon = MIcons.Code,
+            title = "记忆语义召回",
+            subtitle = if (embeddingOn) "已开启" else "未开启 · 换个说法也能想起来的增强",
+            onClick = { onOpen(SettingsRoutes.EMBEDDING_CONFIG) },
+        )
+        // P3-3：MCP 服务器（白名单制，AI 聊天可调用的外部工具）
+        val mcpServers by app.settingsRepository.mcpServersFlow.collectAsState(initial = emptyList())
+        val mcpEnabledCount = mcpServers.count { it.enabled }
+        SettingsRow(
+            show = true,
+            icon = MIcons.Code,
+            title = "MCP 服务器",
+            subtitle = if (mcpServers.isEmpty()) {
+                "未配置 · 让 AI 调用外部工具"
+            } else {
+                "${mcpServers.size} 台 · 启用 $mcpEnabledCount 台"
+            },
+            onClick = { onOpen(SettingsRoutes.MCP_SERVERS) },
         )
         Spacer(Modifier.height(10.dp))
     }
@@ -430,6 +456,142 @@ fun WebSearchConfigScreen(onBack: () -> Unit) {
 
 /** 「测试搜索」用的固定关键词：与手册里举的例子一致（问"今天有什么新闻"是最典型的联网场景） */
 private const val TEST_SEARCH_QUERY = "今天的新闻"
+
+/**
+ * 记忆语义召回（v0.82.0 P1-2，**默认关**）：用户自配的 OpenAI 兼容 `/embeddings` 端点。
+ *
+ * 隐私语义写在页面上（用户拍板接受后才做的这个功能）：开了之后，**记忆条目的内容会发给
+ * 这个服务商**去算向量——所以开关默认关、配置全部用户自己填（不猜服务商，AGENTS §零.6）。
+ * 与 ASR 双引擎同一纪律：不开 = 纯词法召回（零成本），**没有自动回落**；
+ * 端点调不通时本轮召回退回词法，但开关绝不被偷偷改掉。
+ */
+@Composable
+fun EmbeddingConfigScreen(onBack: () -> Unit) {
+    val app = settingsContainer()
+    val scope = rememberCoroutineScope()
+
+    val enabled by app.settingsRepository.embeddingEnabled.collectAsState(initial = false)
+    val storedUrl by app.settingsRepository.embeddingBaseUrl.collectAsState(initial = "")
+    val storedModel by app.settingsRepository.embeddingModel.collectAsState(initial = "")
+    val storedKey by app.settingsRepository.embeddingApiKey.collectAsState(initial = "")
+
+    // 草稿跟着已存值走（DataStore 首次读到真实值时刷新一次，之后不再覆盖用户的输入）
+    var urlDraft by remember(storedUrl) { mutableStateOf(storedUrl) }
+    var modelDraft by remember(storedModel) { mutableStateOf(storedModel) }
+    var keyDraft by remember(storedKey) { mutableStateOf(storedKey) }
+
+    var testing by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    var testOk by remember { mutableStateOf(false) }
+
+    SettingsPage(title = "记忆语义召回", onBack = onBack) {
+        Spacer(Modifier.height(14.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "换个说法也能想起来",
+                fontSize = 15.sp,
+                color = TextPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            NeuSwitch(checked = enabled, onToggle = { on ->
+                scope.launch { app.settingsRepository.setEmbeddingEnabled(on) }
+            })
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "开启后，记忆内容会发给你在下面配置的服务商去算语义向量（ OpenAI 兼容 /embeddings 接口）；" +
+                "召回时词法匹配与语义向量一起算分。不开就是现在的纯词法召回，什么都不发。",
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
+            color = MutedText,
+        )
+        Spacer(Modifier.height(14.dp))
+        NeuTextField(
+            value = urlDraft,
+            onValueChange = { urlDraft = it; testResult = null },
+            label = "接口地址",
+            placeholder = "例：https://你的服务商域名/v1",
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(10.dp))
+        NeuTextField(
+            value = modelDraft,
+            onValueChange = { modelDraft = it; testResult = null },
+            label = "模型名",
+            placeholder = "例：text-embedding-3-small",
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(10.dp))
+        NeuTextField(
+            value = keyDraft,
+            onValueChange = { keyDraft = it; testResult = null },
+            label = "API Key（自建端点不校验可留空）",
+            placeholder = "粘贴服务商给的 Key",
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        // 测试：真发一条最小请求，把维度与耗时亮出来；失败把服务端原话带出来
+        Spacer(Modifier.height(14.dp))
+        NeuButton(
+            text = if (testing) "测试中…" else "测试向量接口",
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !testing && urlDraft.isNotBlank() && modelDraft.isNotBlank(),
+            onClick = {
+                testing = true
+                testResult = null
+                val url = urlDraft.trim()
+                val model = modelDraft.trim()
+                val key = keyDraft.trim()
+                scope.launch {
+                    val started = System.currentTimeMillis()
+                    val outcome = runCatching {
+                        com.menghuan.app.llm.OpenAiClient(url, key, model).embedOrThrow("测试")
+                    }
+                    val cost = System.currentTimeMillis() - started
+                    outcome
+                        .onSuccess { vector ->
+                            testOk = true
+                            testResult = "测试成功 · ${cost}ms · 向量维度 ${vector.size}"
+                        }
+                        .onFailure {
+                            testOk = false
+                            testResult = "测试失败 · ${cost}ms · " +
+                                com.menghuan.app.llm.NetworkStack.describeNetworkFailure(it)
+                        }
+                    testing = false
+                }
+            },
+        )
+        testResult?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                it,
+                fontSize = 12.sp,
+                lineHeight = 18.sp,
+                color = if (testOk) NeuAccent else NeuDanger,
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+        NeuButton(
+            text = "保存",
+            kind = NeuButtonKind.Primary,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                // ⚠️ 写完再返回（与联网搜索页同一条教训：先 onBack 会拆掉页面、协程跟着取消）
+                scope.launch {
+                    runCatching {
+                        app.settingsRepository.setEmbeddingBaseUrl(urlDraft)
+                        app.settingsRepository.setEmbeddingModel(modelDraft)
+                        app.settingsRepository.setEmbeddingApiKey(keyDraft.trim())
+                    }
+                    onBack()
+                }
+            },
+        )
+        Spacer(Modifier.height(10.dp))
+    }
+}
 
 /** 对话模型副标题：当前生效那条的名字；一条都没有就明说聊天不可用 */
 private fun chatSubtitle(activeName: String?, profileCount: Int): String = when {
