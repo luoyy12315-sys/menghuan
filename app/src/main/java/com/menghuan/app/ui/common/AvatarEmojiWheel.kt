@@ -52,6 +52,7 @@ import com.menghuan.app.ui.theme.TextSecondary
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * 可循环滚动的 emoji 头像滚轮（v0.80.0 从「编辑人设」抽出来，两处共用一份）。
@@ -67,7 +68,7 @@ import kotlin.math.abs
  * |---|---|---|
  * | 头像框 | 56dp，**靠左** | 88dp，**居中** |
  * | emoji 排 | 只画在框**右缘以外**（圆框盖不住四角，不裁会从角上漏出来） | 铺满整行，框的**左右两侧各露一截** |
- * | 环 | personaBrush 渐变环 | 没有环 |
+ * | 环 | personaBrush 渐变环 | 同一个 personaBrush 渐变环（v0.93.0 起，取专属 id） |
  * | 落盘 | 只改草稿，由页面「保存」统一提交 | 改完即时落盘 |
  *
  * 差异全部收在参数里（`frameSize` / `cellSize` / `bothSides` / `ringBrush` / `commitInitialAnchor`），
@@ -110,20 +111,45 @@ fun AvatarEmojiWheel(
     commitInitialAnchor: Boolean = true,
 ) {
     val listState = rememberLazyListState()
+    // 头像框的中心（root 坐标）：只给每格算"离框心多远 → 放大多少"用（focus）
     var anchorX by remember { mutableFloatStateOf(Float.NaN) }
-    var rowLeftX by remember { mutableFloatStateOf(Float.NaN) }
+    // 滚轮那一排自己的宽度（px）。⚠️ 取 **未变换的布局尺寸**，不取 root 坐标：见 [anchorInRowPx]
+    var rowWidthPx by remember { mutableFloatStateOf(Float.NaN) }
     val density = LocalDensity.current
     val lensSpanPx = with(density) { lensSpan.toPx() }
+    val cellPx = with(density) { cellSize.toPx() }
+    val frameSizePx = with(density) { frameSize.toPx() }
     var anchorReady by remember { mutableStateOf(false) }
     // 滚轮棘轮震动的去重标记：上一次 tick 过的格子 raw index（null = 还没滚过，初始定位不震）
     var lastTicked by remember { mutableStateOf<Int?>(null) }
+    /**
+     * 我们**自己上报过、还没在 [emoji] 参数里回来的那些值**（滚动比落盘快时会攒下几个）。
+     *
+     * 用它把"自己滚出来的变化"与"外部换了个值"区分开：前者原样放行（否则每滚一格都被
+     * `scrollToItem` 拽回同一格，动画根本走不完），后者才值得重新定位。
+     * 改集合不触发重组 —— 只在下面的 LaunchedEffect 里读，正合适。
+     */
+    val selfReported = remember { mutableSetOf<String>() }
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
 
+    /**
+     * 框心在**滚轮自己那一排的坐标系**里距左缘多远（px）。
+     *
+     * ⚠️ 必须是"布局量"，不能写成 `框心 − 排左缘` 的 root 坐标相减：`boundsInRoot()`
+     * 报的是**含祖先变换**的坐标，而退场转场带 `scaleOut(0.96)`（MainActivity 的
+     * `pop + scalePop`）——整页一缩，框心到排左缘的距离跟着被压缩，列表却一格没滚，
+     * 于是"离框心最近的那格"凭空挪了一格：**退出页面莫名震一下**，档案页还会顺手
+     * 把头像存成旁边那个（它是即时落盘的）。v0.93.0。
+     *
+     * 框居中 = 半排宽；框靠左 = 半个框宽。两者都只跟布局有关，任何祖先变换都影响不到。
+     */
+    fun anchorInRowPx(): Float = if (bothSides) rowWidthPx / 2f else frameSizePx / 2f
+
     /** 此刻离框心最近的可见格子（选中判定与"保存兜底"用的是同一套算法） */
     fun indexAtAnchor(): Int? {
-        if (anchorX.isNaN() || rowLeftX.isNaN()) return null
-        val anchor = anchorX - rowLeftX
+        val anchor = anchorInRowPx()
+        if (anchor.isNaN()) return null
         return listState.layoutInfo.visibleItemsInfo
             .minByOrNull { abs(it.offset + it.size / 2f - anchor) }
             ?.index
@@ -132,25 +158,51 @@ fun AvatarEmojiWheel(
     fun emojiAtAnchor(): String? =
         indexAtAnchor()?.let { AvatarWheel.PRESETS.getOrNull(it % AvatarWheel.PRESETS.size) }
 
+    /**
+     * 让第 i 格的**中心正好落在框心**所需的 `scrollToItem` 偏移（px）。
+     *
+     * ⚠️ `scrollToItem(i, 0)` 落的是**视口最左边**，不是框心（v0.81.0 那行"框心上停的是第 4 个
+     * 预设、不是第 1 个"就是这么来的）。所以点选与初始定位必须走**同一个**偏移：
+     * 只有初始定位补了这个差值、点选却写死 0 —— 点某一格，滚到框心的其实是另一格，
+     * 于是"点的是这个、存下来是那个"。v0.93.0 修的就是它。
+     */
+    fun alignOffsetPx(): Int {
+        val anchor = anchorInRowPx()
+        if (anchor.isNaN()) return 0
+        return (cellPx / 2f - anchor).roundToInt()
+    }
+
     // 暴露给调用方（编辑人设保存时兜底重算一次："滚到框上就点保存"也不丢）
     SideEffect { state.anchorLookup = { emojiAtAnchor() } }
 
-    LaunchedEffect(Unit) {
+    // ⚠️ v0.93.0：key 是 [emoji] 而**不是 Unit**。个人档案的头像是从 DataStore 读的，
+    // 首帧还是空串，等真正的值到了必须**再定位一次**——不然滚轮停在第一个预设、
+    // 框里画的却是库里存的那张脸（"重进页面看到的和选的不一样"就是这么来的）。
+    // 自己滚出来的那次由 [selfReported] 认领，不会把正在进行的滚动动画拽回去。
+    LaunchedEffect(emoji) {
+        val key = emoji.trim()
+        // 我们刚上报过这个值 → 是用户滚出来的，滚轮本来就在它上面，不许再动它
+        if (selfReported.remove(key)) return@LaunchedEffect
+        selfReported.clear()
+        // 重新定位期间**不上报**：中途扫过的那些格子不是用户选的
+        anchorReady = false
+        lastTicked = null
         // 起点落在循环列表正中，并且对齐到当前正在用的那个 emoji
-        val offset = AvatarWheel.PRESETS.indexOf(emoji.trim()).takeIf { it >= 0 } ?: 0
+        val offset = AvatarWheel.PRESETS.indexOf(key).takeIf { it >= 0 } ?: 0
         val target = AvatarWheel.LOOP_START + offset
-        listState.scrollToItem(target)
+        listState.scrollToItem(target, alignOffsetPx())
         // ⚠️ v0.81.0：**初始对齐不能只靠 `scrollToItem`** —— 它的对齐基准跟视口宽度有关，
         // 框居中（bothSides）时能差出好几格（实测：框心上停的是第 4 个预设，不是第 1 个），
         // 那"框位上的 emoji"从一开始就是错的。人设那边框窄（56dp）只差 6dp，所以一直没暴露。
         // 做法：落定后实测一次这一格中心的实际位置，把差值补给 scrollOffset。
         withFrameNanos { }
         withFrameNanos { }
-        if (!anchorX.isNaN() && !rowLeftX.isNaN()) {
+        val anchor = anchorInRowPx()
+        if (!anchor.isNaN()) {
             val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == target }
             if (info != null) {
                 // 正 offset = 往前滚 = 这一格往左跑，所以"现在偏右多少"就补多少
-                val delta = (info.offset + info.size / 2f) - (anchorX - rowLeftX)
+                val delta = (info.offset + info.size / 2f) - anchor
                 if (abs(delta) > 1f) {
                     listState.scrollToItem(target, scrollOffset = delta.toInt())
                 }
@@ -166,10 +218,18 @@ fun AvatarEmojiWheel(
     }
 
     LaunchedEffect(listState) {
+        // "框上换了一格"只有在列表**真的滚过**时才算数：转场缩放、insets、键盘这类
+        // 整页位移/缩放都会把量出来的框心带偏（见 [anchorInRowPx]）——那不是用户拨的，
+        // 不震，更不能拿去落盘（档案页是即时落盘的，震一下 = 头像被改成旁边那个）。
+        var lastScroll: Pair<Int, Int>? = null
         snapshotFlow {
             if (!anchorReady) return@snapshotFlow null
             indexAtAnchor()
         }.filterNotNull().collect { index ->
+            val scroll = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+            // null = 重新定位后的第一发，照旧认；之后"滚动位置一格没变"的一律丢掉
+            if (lastScroll != null && scroll == lastScroll) return@collect
+            lastScroll = scroll
             val first = lastTicked == null
             // 每变一格轻微震一下（TextHandleMove 是最轻的一档）——像真的在拨一个滚轮。
             // 首次发射（初始定位）只记录不震；点选自动滚过去时也会逐格 tick，一样自然。
@@ -178,7 +238,13 @@ fun AvatarEmojiWheel(
             }
             lastTicked = index
             if (first && !commitInitialAnchor) return@collect
-            AvatarWheel.PRESETS.getOrNull(index % AvatarWheel.PRESETS.size)?.let(onEmojiChange)
+            AvatarWheel.PRESETS.getOrNull(index % AvatarWheel.PRESETS.size)?.let { picked ->
+                // 先记账再上报：这个值回头会在 [emoji] 参数里回来，届时 [LaunchedEffect(emoji)]
+                // 认出是自己人、直接返回 —— 否则每滚一格都被 `scrollToItem` 拽回同一起点，
+                // 点选的滚动动画根本走不完（点哪个都停在原地）。
+                selfReported.add(picked)
+                onEmojiChange(picked)
+            }
         }
     }
 
@@ -204,7 +270,8 @@ fun AvatarEmojiWheel(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .onGloballyPositioned { rowLeftX = it.boundsInRoot().left }
+                    // ⚠️ 取布局尺寸、不取 root 坐标：见 [anchorInRowPx]
+                    .onGloballyPositioned { rowWidthPx = it.size.width.toFloat() }
                     .drawWithContent {
                         if (bothSides) {
                             // 框居中：左右两侧各露一截，**整块框都不画**（只裁圆是挡不住圆外那四个角的
@@ -246,7 +313,8 @@ fun AvatarEmojiWheel(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
                             ) {
-                                scope.launch { listState.animateScrollToItem(i, 0) }
+                                // 与初始定位同一个对齐偏移：点哪个，哪个就**停在框心里**
+                                scope.launch { listState.animateScrollToItem(i, alignOffsetPx()) }
                             },
                         contentAlignment = Alignment.Center,
                     ) {

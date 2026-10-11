@@ -19,7 +19,13 @@ import com.menghuan.app.ui.call.IncomingCallActivity
 import kotlinx.coroutines.flow.first
 
 /** 这一通电话是谁引起的（只用于日志与以后统计，不影响行为） */
-enum class AiCallReason { SCHEDULED, SMART, REQUESTED }
+enum class AiCallReason {
+    SCHEDULED,
+    /** v0.94 已下线：「几天没聊」那一路；保留枚举值只是不让历史日志里的引用变孤儿 */
+    @Deprecated("主动电话已并入主动关心的随机时刻（v0.94），不再有这个原因")
+    SMART,
+    REQUESTED,
+}
 
 /**
  * AI 主动打电话（v0.53.5）。
@@ -55,23 +61,21 @@ object AiCall {
 
     private const val GREETING_INSTRUCTION =
         "现在你要给用户打电话，接通后**由你先开口**。" +
-            "结合下面给出的用户档案、最近没完成的任务和最近的聊天片段，说一句自然的开场白：" +
-            "聊得好就顺着聊，任务落下了就温和地提一句，不要指责，也不要念稿子。" +
+            "结合下面给出的用户档案和最近的聊天片段，说一句自然的开场白：" +
+            "聊得好就顺着聊。" +
             "硬性要求：不超过 50 字；只输出这句话本身，不要任何解释、列表、标题或 emoji 堆砌；" +
             "不要出现「我看到系统显示」这类出戏措辞。"
 
     /**
      * 发起一次来电（v0.53.6：**按人设**）。返回 true = 真的响了（开场白也生成好了）。
      *
-     * ⚠️ v0.54.5：**总开关已删掉** —— 设置里不再有「AI 主动打电话」这一页，改成
-     * **每个角色自己的开关**（会话设置页的卡片）。所以这里只看**该角色的 rule.enabled**，
-     * 不再有"全局关着就全体不打"这道门槛。
+     * 现在只剩两路：
+     * - **REQUESTED**：用户在聊天里点名要的那一通，不受任何预设限制；
+     * - **byExplicitSchedule**：用户自己排的**定时电话**（每条只看它自己的启用状态，
+     *   不看静默时段、不占任何名额 —— 他可能一天配两条）。
      *
-     * v0.56.6 新增两路参数，服务「**定时电话**」：
-     * - [instructionOverride]：这一通要说的内容（定时电话那一条里写的），优先于规则里的 instruction；
-     * - [byExplicitSchedule]：**用户按时间点自己配的那一通** —— 时间是他定的，
-     *   所以只受两个开关管（`允许主动打电话` + `定时电话`），
-     *   **不看静默时段、也不占"每天一次"的名额**（他可能一天配两条）。
+     * v0.94：「AI 自己决定何时打」那一路（几天没聊 + 每天一次）整条下线，
+     * 主动电话并入主动关心的随机时刻（见 [proactiveRing]）。
      */
     suspend fun ring(
         context: Context,
@@ -90,20 +94,13 @@ object AiCall {
         // 踩过的坑：以前这里查了总开关与人设规则，用户明明叫它打、它却静默不打，
         // 而且用户完全不知道为什么（界面上什么提示都没有）。
         val requested = reason == AiCallReason.REQUESTED
-        // 规则在任何一路都要读：REQUESTED（用户点名）不看它，但要拿它的 instruction（说什么）
+        // v0.94：「几天没聊就主动打」整条下线（主动电话并入主动关心的随机时刻，见 proactiveRing）。
+        // 现在只剩两路：用户点名的、用户自己排的定时电话。
+        if (!requested && !byExplicitSchedule) return false
+        // 规则只用来拿老装机写过的「说什么」（主动电话弹层 v0.56.8 起就不再编辑它，只剩存量）
         val rule = runCatching { settings.aiCallRules.first() }
             .getOrDefault(emptyList())
             .firstOrNull { it.personaId == personaId }
-        if (byExplicitSchedule) {
-            // 定时电话：两个开关都得开着（允许主动打电话 + 定时电话），其余一律放行
-            if (rule == null || !rule.enabled || !rule.scheduledEnabled) return false
-        } else if (!requested) {
-            if (rule == null || !rule.enabled) return false
-            val now = System.currentTimeMillis()
-            if (AiCallLogic.inQuietHours(AiCallLogic.minuteOfDayAt(now))) return false
-            val today = java.time.LocalDate.now().toEpochDay()
-            if (rule.lastCallDay == today) return false
-        }
 
         val api = runCatching { settings.apiConfig.first() }.getOrNull() ?: return false
         if (!api.isComplete) return false
@@ -115,10 +112,31 @@ object AiCall {
         }.getOrNull() ?: return false
         if (greeting.isBlank()) return false
 
-        // 只有"AI 自己决定打的"才占每天一次的名额；用户点名的、用户自己排的定时电话都不占
-        if (!requested && !byExplicitSchedule) {
-            runCatching { settings.markAiCallDone(personaId, java.time.LocalDate.now().toEpochDay()) }
-        }
+        postIncomingCall(context, persona.id, persona.name, greeting)
+        return true
+    }
+
+    /**
+     * 主动关心链打来的电话（v0.94）：电话**并入主动关心的随机时刻**，
+     * 不再走「几天没聊」那套独立闹钟与判定 —— 开关 / 静默时段 / 当日次数
+     * 全由调用方（ProactiveChat.maybeGreet）判过，这里只负责生成开场白 + 发来电。
+     * 老装机在「主动电话」里写过的「说什么」继续生效（rule.instruction 存量）。
+     */
+    suspend fun proactiveRing(
+        context: Context,
+        db: AppDatabase,
+        settings: SettingsRepository,
+        persona: Persona,
+    ): Boolean {
+        val api = runCatching { settings.apiConfig.first() }.getOrNull() ?: return false
+        if (!api.isComplete) return false
+        val instruction = runCatching { settings.aiCallRules.first() }
+            .getOrDefault(emptyList())
+            .firstOrNull { it.personaId == persona.id }?.instruction.orEmpty()
+        val greeting = runCatching {
+            generateGreeting(db, api, persona, instruction, settings)
+        }.getOrNull() ?: return false
+        if (greeting.isBlank()) return false
         postIncomingCall(context, persona.id, persona.name, greeting)
         return true
     }
@@ -127,31 +145,17 @@ object AiCall {
      * App 启动 / 开机 / 覆盖安装后重排闹钟。
      * **只排闹钟、不发任何请求** —— 与"进程启动不主动打 LLM"的既有约定一致。
      *
-     * v0.54.5：总开关删掉后，这里不再有"全局关着就全不排"的分支 —— 开关就在各个角色的规则里。
-     *
-     * v0.56.6：加排「**定时电话**」那一条条（每人设几条就排几个，与定时消息同一套闹钟机制）。
-     * v0.56.7：「**主动电话**」的"每天检查一次"闹钟也回来 ——
-     * 触发条件是**用户自定义的「X 天未聊天则主动拨打」**（`AiCallRule.idleDays`）。
+     * v0.94：「主动电话」的"每天检查一次"闹钟整条下线（电话并入主动关心的随机时刻，
+     * 由 ProactiveChat.scheduleNext 统一排）；这里只剩**定时电话**那一条条。
      */
     suspend fun rearm(settings: SettingsRepository, context: Context) {
-        val rules = runCatching { settings.aiCallRules.first() }.getOrDefault(emptyList())
-
-        // ① 主动电话：每天几点检查一次（到点再看 X 天未聊天这条）
-        rules.filter { it.enabled }.forEach { rule ->
-            com.menghuan.app.notify.AlarmScheduler
-                .scheduleAiCallForPersona(context, rule.personaId, rule.time)
-        }
-
-        // ② 定时电话：每条一个闹钟
+        // 定时电话：每条一个闹钟（只看条目自己的启用状态，不再有总开关）
         val scheduled = runCatching { settings.scheduledMessages.first() }.getOrDefault(emptyList())
         scheduled
             .filter { it.kind == KIND_SCHEDULED_CALL && it.enabled }
             .forEach { call ->
-                val rule = rules.firstOrNull { it.personaId == call.personaId }
-                if (rule?.enabled == true && rule.scheduledEnabled) {
-                    com.menghuan.app.notify.AlarmScheduler
-                        .scheduleScheduledMessage(context, call.id, call.time)
-                }
+                com.menghuan.app.notify.AlarmScheduler
+                    .scheduleScheduledMessage(context, call.id, call.time)
             }
     }
 
@@ -159,7 +163,7 @@ object AiCall {
     // （旧版 pickPersona 的"指定人设 → 主人设 → 第一个人设"这套兜底已经不需要了）
 
     /**
-     * 让模型写一句开场白（档案 + 未完成任务 + 最近几句对话，与"主动关心"同一套取材）。
+     * 让模型写一句开场白（档案 + 最近几句对话，v0.94 起不再带任务块）。
      *
      * [instruction] = 用户在这个角色的「电话」里填的**"说什么"**（v0.54.7）：
      * 非空时作为**硬性内容要求**排在情境材料前面 —— 用户明确要我说的，优先于模型自己发挥。
@@ -173,17 +177,16 @@ object AiCall {
     ): String? {
         // v0.70.0：记忆按人设分开 —— 这通电话是打给**这个角色**的，只该带上它自己聊出来的记忆
         val sharedReadable = runCatching { settings.profileSharedReadable.first() }.getOrDefault(true)
-        val facts = MemoryScope.visible(
+        // v0.98.0：走两条线（基础档案全带 + 她自己的记忆 ≤ PROFILE_FACTS_MAX），
+        // 不再合成一条整体截断 —— 否则用户基础档案一多，她的记忆一条都进不来。
+        val facts = MemoryScope.split(
             runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList()),
             persona.id, sharedReadable,
-        )
-        val tasks = runCatching { db.taskDao().observeAll().first() }
-            .getOrDefault(emptyList())
-            .filter { !it.isDone }
-            .take(6)
-        // v0.82.0：只要最近 6 条，分页查询替代整表读
-        val recent = runCatching { db.messageDao().getRecentPaged(persona.id, 6, 0).asReversed() }
-            .getOrDefault(emptyList())
+        ).forInject(PromptBlocks.PROFILE_FACTS_MAX)
+        // v0.94（用户拍板「砍干净、不加设置」）：任务块从开场白砍掉 —— 任务提醒归任务闹钟，
+        // 电话一接通就背待办是最出戏的开头。任务现状只留聊天链。
+        // 最近聊天片段走 PromptBlocks 共享块（三条链同一形状）。
+        val recentBlock = PromptBlocks.recentChatBlock(db, persona.id)
 
         val userContext = buildString {
             if (instruction.isNotBlank()) {
@@ -191,18 +194,17 @@ object AiCall {
                 append(instruction)
                 append("\n\n")
             }
+            // v0.98.0：套上「别把档案念出来」那段包装语（用户可在设置里改）。
+            // 开场白是被**说**出来的，最容易变成"你的职业是…作息是…"这种报户口。
             append("【用户档案】")
+            append(
+                runCatching { settings.profilePreamble.first() }
+                    .getOrDefault(AiPrompts.DEFAULT_PROFILE_PREAMBLE),
+            )
             if (facts.isEmpty()) append("暂无")
-            else facts.take(10).forEach { append("\n- ").append(it.key).append("：").append(it.value) }
-            append("\n\n【最近未完成任务】")
-            if (tasks.isEmpty()) append("暂无")
-            else tasks.forEach { append("\n- ").append(it.title) }
-            append("\n\n【最近的聊天片段】")
-            if (recent.isEmpty()) append("暂无")
-            else recent.forEach { m ->
-                append("\n- ").append(if (m.isFromUser) "用户：" else "你：")
-                    .append(m.content.take(60))
-            }
+            // 上限已在 split(...).forInject(...) 里定过，这里不再重复截
+            else facts.forEach { append("\n- ").append(it.key).append("：").append(it.value) }
+            append("\n\n").append(recentBlock)
             append("\n\n").append(GREETING_INSTRUCTION)
         }
 

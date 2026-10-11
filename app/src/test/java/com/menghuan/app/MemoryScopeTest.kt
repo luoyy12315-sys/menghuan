@@ -40,7 +40,8 @@ class MemoryScopeTest {
     fun `角色只读到自己的加允许共享的基础档案`() {
         val got = MemoryScope.visible(pool, 7, sharedReadable = true).map { it.id }
         // 7 自己的 1、被拒/停用的 4 与 5、基础档案 3 与 6；绝不包含 8 的 2
-        assertEquals("自己的按 id、core 置顶", listOf(6L, 1L, 3L), got)
+        // v0.98.0：core 置顶之后其余改**倒序**（新的在前），所以是 6, 3, 1
+        assertEquals("自己的按 id 倒序、core 置顶", listOf(6L, 3L, 1L), got)
         assertFalse("别角色的记忆绝不能进来", got.contains(2L))
     }
 
@@ -53,7 +54,7 @@ class MemoryScopeTest {
     @Test
     fun `core 置顶且顺序稳定`() {
         val got = MemoryScope.visible(pool, 8, sharedReadable = true).map { it.id }
-        assertEquals("core 在前，其余按 id", listOf(6L, 2L, 3L), got)
+        assertEquals("core 在前，其余按 id 倒序（新的在前）", listOf(6L, 3L, 2L), got)
     }
 
     @Test
@@ -108,6 +109,46 @@ class MemoryScopeTest {
     fun `每日建议这类全局链路只看基础档案`() {
         val got = MemoryScope.visibleGlobal(pool).map { it.id }
         assertEquals(listOf(6L, 3L), got)
+    }
+
+    // ===== v0.98.0：档案的两条线（基础档案 / 角色记忆分开计数） =====
+
+    @Test
+    fun `拆开后基础档案与角色记忆各走各的线`() {
+        val s = MemoryScope.split(pool, 7, sharedReadable = true)
+        assertEquals("基础档案段：core 置顶", listOf(6L, 3L), s.base.map { it.id })
+        assertEquals("角色自己的那段", listOf(1L), s.owned.map { it.id })
+        assertEquals("合并注入是 base 在前", listOf(6L, 3L, 1L), s.forInject(10).map { it.id })
+    }
+
+    @Test
+    fun `基础档案再多也挤不掉角色自己的记忆`() {
+        // 这条正是 v0.98.0 要修的 bug：合并成一条列表时，100 条基础档案会把角色记忆整个挤出前 N 个名额。
+        val many = (1..100).map { fact(100L + it, "基础$it", "值$it", personaId = 0) } +
+            fact(1, "口味", "喜欢吃火锅", personaId = 7)
+        val s = MemoryScope.split(many, 7, sharedReadable = true)
+        assertEquals("基础档案全带", 100, s.base.size)
+        assertEquals("她的记忆必须还在", listOf(1L), s.owned.map { it.id })
+        // 上限只作用于 owned，所以最终注入 = 100 + 10（不够 10 条就全给）
+        assertEquals(101, s.forInject(10).size)
+    }
+
+    @Test
+    fun `同名条目只留最后写进库的那条`() {
+        val rows = listOf(
+            fact(1, "作息", "通常 00:30 睡", personaId = 0),
+            fact(9, "作息", "最近改成 23:00 睡了", personaId = 7),
+        )
+        val s = MemoryScope.split(rows, 7, sharedReadable = true)
+        assertEquals("重复的 key 不该两条线各出一行", 0, s.base.size)
+        assertEquals(listOf(9L), s.owned.map { it.id })
+    }
+
+    @Test
+    fun `人设 id 为 0 时没有基础档案这一档`() {
+        val s = MemoryScope.split(pool, 0, sharedReadable = true)
+        assertTrue("全局链路自己看自己", s.base.isEmpty())
+        assertEquals(listOf(6L, 3L), s.owned.map { it.id })
     }
 
     // ===== v0.82.0 P1-3：自动归档判定 =====

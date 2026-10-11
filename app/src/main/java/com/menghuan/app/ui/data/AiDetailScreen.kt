@@ -3,21 +3,18 @@ package com.menghuan.app.ui.data
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -34,22 +31,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.data.model.AiInsight
-import com.menghuan.app.data.model.AiWeeklyReport
+import com.menghuan.app.data.model.InsightPeriod
 import com.menghuan.app.ui.common.AdaptiveScreen
-import com.menghuan.app.ui.common.MarkdownText
 import com.menghuan.app.ui.common.NeuCard
 import com.menghuan.app.ui.common.NeuCircleButton
 import com.menghuan.app.ui.common.NeuSectionTitle
+import com.menghuan.app.ui.common.NeuSkeleton
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuSurface
-import com.menghuan.app.ui.common.rememberNeuPressState
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
@@ -61,21 +56,22 @@ import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
 
 /**
- * AI 洞察 + AI 周报 的全屏详情页（v0.42.0）。
+ * AI 洞察的全屏详情页。
  *
- * 合并动机：数据页原本并列两大板块（洞察列表 + 周报全文），把陪伴类 App 的首页
- * 撑成了"报表页"。现在数据页只留一张入口卡，详细内容进这个全屏页按需查看。
+ * v0.42.0 起是「洞察 + 周报」合并页；v0.87.0 删掉 AI 周报后**只剩洞察**。
+ * v0.88.0 起按**周期分组**（今日 / 本周 / 本月）—— 洞察现在有日/周/月三条链，
+ * 混排在一起用户分不清哪条是哪期的。
  *
- * 结构：全部洞察（新→旧，长按删）→ 周报历史（新→旧，点击展开全文、长按分享/删）。
+ * 三态：加载中（还没查完）/ 空（查过了确实没有）/ 有数据。空态的措辞也改了：
+ * 以前是"多聊聊，AI 会从对话里看出你的模式"（旧链路），现在是"到点会自动归纳"
+ * ——不写清楚用户会以为洞察还要靠聊天触发。
  */
 @Composable
 fun AiDetailScreen(
     insights: List<AiInsight>,
-    reports: List<AiWeeklyReport>,
+    loaded: Boolean,
     onBack: () -> Unit,
     onDeleteInsight: (Long) -> Unit,
-    onDeleteReport: (Long) -> Unit,
-    onShareReport: (AiWeeklyReport) -> Unit,
 ) {
     AdaptiveScreen {
         NeuTopBar(
@@ -88,40 +84,57 @@ fun AiDetailScreen(
             actionsWidth = 56.dp,
         )
 
-        // v0.42.1：周报默认**全部折叠**（用户要求"ai周报可以折叠且默认折叠"）。
-        // 之前是进页面自动展开最新一期，十几期全文铺开会淹没上面的洞察区。
-        var expandedReportId by remember { mutableStateOf<Long?>(null) }
+        // 按周期分组，顺序固定：今日 → 本周 → 本月（用户点名过数据页顺序固定，这里同理）
+        val grouped = insights.groupBy { it.period }
+        val sections = InsightPeriod.ORDER.mapNotNull { period ->
+            grouped[period]?.takeIf { it.isNotEmpty() }?.let { period to it }
+        }
 
         LazyColumn(
             Modifier.fillMaxWidth(),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 40.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item {
-                NeuSectionTitle("AI 洞察 · ${insights.size} 条", Modifier.padding(top = 6.dp, bottom = 2.dp))
-            }
-            if (insights.isEmpty()) {
-                item { EmptyBlock("还没有洞察", "多聊聊，AI 会从对话里看出你的模式") }
-            } else {
-                items(insights, key = { "insight-${it.id}" }, contentType = { "insight" }) { insight ->
-                    InsightDetailCard(insight, onDelete = { onDeleteInsight(insight.id) })
+            when {
+                // ① 还没查完：v0.97.0（审查 U8）原来这里是 `Unit` —— 整页只剩顶栏，
+                // 空白主体。空白和"没有洞察"在视觉上没法区分，用户会当成加载失败。
+                // 给骨架占位（形状与下面的卡片一致），查完再换成真内容或空态。
+                !loaded -> {
+                    item {
+                        NeuSkeleton(count = 5, rowHeight = 88.dp, horizontalPadding = 0.dp)
+                    }
                 }
-            }
-
-            item {
-                NeuSectionTitle("AI 周报 · ${reports.size} 期", Modifier.padding(top = 14.dp, bottom = 2.dp))
-            }
-            if (reports.isEmpty()) {
-                item { EmptyBlock("还没有周报", "每周日 21:30 自动生成一期") }
-            } else {
-                items(reports, key = { "report-${it.id}" }, contentType = { "report" }) { report ->
-                    ReportDetailCard(
-                        report = report,
-                        expanded = expandedReportId == report.id,
-                        onToggle = { expandedReportId = if (expandedReportId == report.id) null else report.id },
-                        onDelete = { onDeleteReport(report.id) },
-                        onShare = { onShareReport(report) },
-                    )
+                // ② 查过、确实没有
+                insights.isEmpty() -> {
+                    item {
+                        NeuSectionTitle("AI 洞察", Modifier.padding(top = 6.dp, bottom = 2.dp))
+                    }
+                    item {
+                        EmptyBlock(
+                            "还没有洞察",
+                            "每晚 23:00 会自动整理记忆、任务与记账，有值得说的才写下来",
+                        )
+                    }
+                }
+                // ③ 有数据：按周期分段
+                else -> {
+                    item {
+                        NeuSectionTitle("AI 洞察 · ${insights.size} 条", Modifier.padding(top = 6.dp, bottom = 2.dp))
+                    }
+                    sections.forEach { (period, list) ->
+                        item(key = "header-$period") {
+                            Text(
+                                InsightPeriod.label(period),
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MutedText,
+                                modifier = Modifier.padding(top = 6.dp, bottom = 0.dp),
+                            )
+                        }
+                        items(list, key = { "insight-${it.id}" }, contentType = { "insight" }) { insight ->
+                            InsightDetailCard(insight, onDelete = { onDeleteInsight(insight.id) })
+                        }
+                    }
                 }
             }
         }
@@ -200,96 +213,6 @@ private fun InsightDetailCard(insight: AiInsight, onDelete: () -> Unit) {
             ) {
                 DropdownMenuItem(
                     text = { Text("删除这条洞察", fontSize = 14.sp, color = NeuDanger) },
-                    onClick = {
-                        onDelete()
-                        menuOpen = false
-                    },
-                )
-            }
-        }
-    }
-}
-
-/**
- * 周报详情卡：期标签 + 生成日期 + 可折叠全文。
- * 折叠是对"历史多期"的必要让步——全屏页上十几期全文摆开会淹没洞察区；
- * 周期卡本身仍然是「展开即全文直出」，不搞预览截断。
- */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun ReportDetailCard(
-    report: AiWeeklyReport,
-    expanded: Boolean,
-    onToggle: () -> Unit,
-    onDelete: () -> Unit,
-    onShare: () -> Unit,
-) {
-    var menuOpen by remember { mutableStateOf(false) }
-    val haptic = LocalHapticFeedback.current
-    val press = rememberNeuPressState(raised = 3.dp)
-
-    Box(Modifier.fillMaxWidth()) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .scale(press.scale)
-                .neuSurface(16.dp, color = NeuSurface, elevation = if (expanded) 3.dp else 1.dp)
-                .padding(16.dp),
-        ) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(weekLabelOf(report), fontSize = 14.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
-                    Spacer(Modifier.height(3.dp))
-                    Text("生成于 ${dateLabelOf(report.createdAt)}", fontSize = 11.sp, color = MutedText)
-                }
-                Icon(
-                    if (expanded) MIcons.ChevronUp else MIcons.ChevronDown,
-                    contentDescription = null,
-                    tint = MutedText,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
-            if (expanded) {
-                Spacer(Modifier.height(12.dp))
-                Box(Modifier.fillMaxWidth().height(1.dp).background(NeuHairline))
-                Spacer(Modifier.height(12.dp))
-                MarkdownText(report.content, color = TextSecondary)
-            }
-        }
-        // 交互热区：铺满卡片，**点 = 折叠/展开，长按 = 弹菜单**。
-        // v0.42.1 修：以前这里是 `onClick = {}`（只接管长按），而真正的 clickable 在外层
-        // Column 上——被这层盖住压根收不到点击，于是"点周报打不开"。现在点击统一在此处理。
-        Box(
-            Modifier
-                .matchParentSize()
-                .combinedClickable(
-                    interactionSource = press.interactionSource,
-                    indication = null,
-                    onClick = onToggle,
-                    onLongClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        menuOpen = true
-                    },
-                ),
-        )
-        Box(Modifier.align(Alignment.BottomEnd).size(1.dp)) {
-            DropdownMenu(
-                expanded = menuOpen,
-                onDismissRequest = { menuOpen = false },
-                modifier = Modifier.border(1.dp, NeuHairline, RoundedCornerShape(14.dp)),
-                containerColor = NeuSurface,
-                shape = RoundedCornerShape(14.dp),
-                shadowElevation = 0.dp, // v0.42.1 全应用去阴影
-            ) {
-                DropdownMenuItem(
-                    text = { Text("分享", fontSize = 14.sp) },
-                    onClick = {
-                        onShare()
-                        menuOpen = false
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("删除这期", fontSize = 14.sp, color = NeuDanger) },
                     onClick = {
                         onDelete()
                         menuOpen = false

@@ -26,9 +26,11 @@ import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSheetRow
 import com.menghuan.app.ui.common.NeuSheetScaffold
+import com.menghuan.app.ui.common.NeuSkeleton
 import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
+import com.menghuan.app.ui.common.ReminderPermissionHints
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
@@ -55,7 +57,11 @@ fun ScheduledMessageScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val messages by app.settingsRepository.scheduledMessages.collectAsState(initial = emptyList())
+    // 三态（v0.97.0，审查 U6）：初值 null = "还没读到"，与"读到了确实没配过"分开。
+    // 原来初值 `emptyList()`，已配好几条的用户每次进来都先看到一次「还没有配置」。
+    val messagesState by app.settingsRepository.scheduledMessages.collectAsState(initial = null)
+    val loaded = messagesState != null
+    val messages: List<ScheduledMessage> = messagesState.orEmpty()
     val personas by app.personaRepository.observePersonas().collectAsState(initial = emptyList())
 
     var editing by remember { mutableStateOf<ScheduledMessage?>(null) }
@@ -78,15 +84,27 @@ fun ScheduledMessageScreen(onBack: () -> Unit) {
         )
         Spacer(Modifier.height(14.dp))
 
+        if (!loaded) {
+            NeuSkeleton(count = 4, rowHeight = 48.dp)
+            return@SettingsPage
+        }
+
         if (messages.isEmpty()) {
             Text("还没有配置", fontSize = 13.sp, color = MutedText, modifier = Modifier.height(30.dp))
         }
         messages.forEach { m ->
-            val who = personas.firstOrNull { it.id == m.personaId }?.name ?: "主人设"
+            // v0.89.0：找不到人设时**如实说**。以前这里 `?: "主人设"` —— 角色删了却显示成
+            // 「主人设」，看着像一条正常配置，用户根本不知道它已经是个指向空气的孤儿条目。
+            // （新装机不会再有这种条目了：删角色时 PersonaRepository.delete 会把它们一并摘掉，
+            // 这里只是老装机遗留数据的兜底显示。）
+            val who = personas.firstOrNull { it.id == m.personaId }?.name
+                ?: if (m.personaId <= 0L) "主人设" else "角色已删除"
             NeuSheetRow(
                 icon = MIcons.ChatBubble,
                 title = who,
                 subtitle = buildString {
+                    // v0.94：定时电话与定时消息同一张列表（kind 区分），电话条目标出来
+                    if (m.kind == com.menghuan.app.data.KIND_SCHEDULED_CALL) append("电话 · ")
                     append("每天 ").append(m.time)
                     if (m.withSearch) append(" · 联网搜索")
                     if (!m.enabled) append(" · 已关闭")
@@ -177,6 +195,10 @@ fun ScheduledMessageScreen(onBack: () -> Unit) {
                             app.settingsRepository.upsertScheduledMessage(saved)
                             schedule(saved)
                         }
+                        // v0.97.0（审查 B36/B34）：定时消息这一路以前**完全没有**权限提示 ——
+                        // 通知没开时到点静默丢弃，用户只会以为"它没找我"。
+                        // 只在真排了闹钟（启用中）时说，避免关着开关还念一遍。
+                        if (saved.enabled) ReminderPermissionHints.warnAfterScheduling(context)
                         editing = null
                     },
                 )

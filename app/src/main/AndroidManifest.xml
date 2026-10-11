@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 重启后重排任务提醒 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Agent 保活前台服务：targetSdk 35 强制要求声明类型与权限，否则 startForeground 直接抛 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- 记账语音录入（v0.42.0）：系统 SpeechRecognizer 需要录音权限，运行时申请 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- App 内自绘拍摄界面（v0.43.0）：CameraX 预览 + 拍照，运行时申请 -->
@@ -95,14 +98,14 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
-        <!-- AI 周报：每周日 21:30 生成（数据页查看） -->
-        <receiver
-            android:name=".notify.WeeklyReportReceiver"
-            android:exported="false" />
-
         <!-- 每日建议：每天早上 07:30 生成（数据页查看，可长按转任务，v0.42.0） -->
         <receiver
             android:name=".notify.DailySuggestionReceiver"
+            android:exported="false" />
+
+        <!-- AI 洞察（v0.88.0）：日/周/月三条链 23:00 触发，落库不发通知 -->
+        <receiver
+            android:name=".notify.InsightReceiver"
             android:exported="false" />
 
         <receiver
@@ -140,6 +143,16 @@
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/agent_accessibility_config" />
+        </service>
+
+        <!-- Agent 保活：低重要度常驻通知把进程钉住，无障碍绑定才不会被系统回收（弹层里可关） -->
+        <service
+            android:name=".agent.AgentKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="keep_alive_for_accessibility" />
         </service>
     </application>
 </manifest>

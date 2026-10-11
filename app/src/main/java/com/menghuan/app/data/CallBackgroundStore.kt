@@ -45,9 +45,6 @@ object CallBackgroundStore {
     /** 这一档是不是视频（v0.74.0）—— 图片与视频都算"自定义"，但画法完全不同 */
     fun isVideo(value: String): Boolean = value.startsWith("video:")
 
-    /** 用户自己的素材（图片或视频都算） */
-    fun isOwn(value: String): Boolean = isCustom(value) || isVideo(value)
-
     /** 设置行右侧那句当前选择（`file:壁纸.jpg` → 「壁纸」，`video:猫.mp4` → 「猫」） */
     fun labelOf(value: String): String = when {
         isVideo(value) -> value.removePrefix("video:").substringBeforeLast('.').ifBlank { "自定义视频" }

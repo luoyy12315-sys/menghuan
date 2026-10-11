@@ -4,6 +4,7 @@ import org.json.JSONObject
 
 /**
  * Agent 决策 prompt（照抄 AppAgent 四段式思路：观察 → 思考 → 行动，压缩成"只回 JSON 动作"）。
+ * 观测输入 = 元素编号清单（动作地址）**并可选屏幕截图**（v1.0 M4-L 混合输入，规则 6 说明分工）。
  * 解析与 ProfileExtractor 同款宽容策略：截取首个 { 到末个 }，失败返回 null（调用方重试一次）。
  */
 object AgentPrompts {
@@ -21,7 +22,9 @@ object AgentPrompts {
             "2. 优先点击 clickable 元素；输入框用 text 填入后再点提交/发送按钮。\n" +
             "3. 找不到目标可 swipe down 翻列表，或 back 退回上一页换路径。\n" +
             "4. 连续两步执行了相同动作说明卡住了：直接 done，在 summary 里说明卡在哪里。\n" +
-            "5. 只输出 JSON，不要输出任何其他文字。"
+            "5. 只输出 JSON，不要输出任何其他文字。\n" +
+            "6. 若这轮同时给了屏幕截图：截图只用来**看懂这一屏在干什么、哪个图标是什么**；" +
+            "**动作只能按元素编号**，不要凭像素坐标猜。两者冲突时以元素清单为准。"
 
     /** LLM 决定的单步动作 */
     data class Action(
@@ -51,20 +54,40 @@ object AgentPrompts {
         }.getOrNull()
     }
 
-    /** 单步请求 prompt：目标 + 当前屏幕清单 + 最近动作历史（防重复输入） */
-    fun userPrompt(goal: String, screenText: String, history: List<String>): String = buildString {
+    /** 单步请求 prompt：目标 + 当前屏幕清单 + 最近动作历史（防重复输入）；[retryHint] 仅重试时追加 */
+    fun userPrompt(goal: String, screenText: String, history: List<String>, retryHint: String = ""): String = buildString {
         append("目标：").append(goal).append("\n\n当前屏幕元素：\n").append(screenText)
         if (history.isNotEmpty()) {
             append("\n\n已执行动作（旧→新）：\n")
             history.takeLast(8).forEach { append("- ").append(it).append('\n') }
         }
         append("\n下一步动作 JSON：")
+        if (retryHint.isNotBlank()) append("\n").append(retryHint)
     }
 
     /** 敏感动作围栏：元素命中支付/删除/发送类关键词 → 执行前需要用户确认 */
     fun isSensitive(element: UiElement): Boolean {
         val text = element.text + element.contentDesc
         return SENSITIVE_KEYWORDS.any(text::contains)
+    }
+
+    /**
+     * 敏感动作围栏（v1.0 M2-G）：`text` 动作要**输入**的内容同样过一遍。
+     * 旧实现只看元素文案 → 往标签是「备注」的框里输「转账给张三」不会被拦。
+     */
+    fun isSensitiveValue(value: String): Boolean = SENSITIVE_KEYWORDS.any(value::contains)
+
+    /**
+     * 动作签名（v1.0 M2-E）：按**动作本身**而非执行结果描述判「是不是同一个动作又来了」。
+     * 用它把**失败**动作也纳入卡住判定 —— 旧实现只在成功时比较 desc，反复失败的动作永远不触发止损。
+     * ⚠️ 签名含元素编号/方向：`tap[3]` 与 `tap[4]` 不算同一个，不会把"点两个不同按钮"误判成卡住。
+     * `text` 的输入内容**刻意不进签名** —— 反复往同一个框里灌（每次都失败）就该判卡住，
+     * 换了内容还算"同一个动作"正是想要的止损口径。
+     */
+    fun actionSignature(action: Action): String = when (action.type) {
+        "tap", "text" -> "${action.type}[${action.element ?: -1}]"
+        "swipe" -> "swipe[${action.dir}]"
+        else -> action.type
     }
 
     // ===== 对话内触发协议（v0.37.0）：与生图 [生图:…] 同构的单行标记 =====

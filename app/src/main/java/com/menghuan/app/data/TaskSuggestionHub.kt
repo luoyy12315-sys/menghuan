@@ -9,11 +9,15 @@ import kotlinx.coroutines.flow.update
 import java.time.LocalDate
 
 /**
- * AI 任务建议中心（进程内存级，不落库）：
- * 提炼引擎产出 taskSuggestions 后按 personaId 分发，聊天页在 AI 气泡下方渲染卡片，
- * 用户点「添加任务」写入 Room 后 consume 消失；进程被杀未消费的建议随之丢弃（可接受：
- * 建议是即时引导，不是持久数据）。
- * 「同 title 当日不重复建议」的状态也在这里维护（跨提炼轮次、按天滚动重置）。
+ * AI 任务建议中心（进程内存级，不落库）。
+ *
+ * ## v0.88.0 换驱动
+ * 以前是**提炼引擎批量产出** → hub 去重分发 → 聊天页出卡。现在改成 [TaskSuggestionMarker]：
+ * AI 在回复里写 `[建议任务:标题|备注]`，聊天链解析出来经这里入队、出卡。
+ * 所以 [publish] 的调用点从 [ExtractionEngine] 挪到了聊天链。
+ *
+ * 去重仍在这里维护（「同 title 当日不重复建议」，跨轮次、按天滚动重置）——
+ * 因为去重状态本来就该是"用户今天已经看过哪些建议"，与产出者是谁无关。
  */
 class TaskSuggestionHub {
 
@@ -25,7 +29,12 @@ class TaskSuggestionHub {
     fun forPersona(personaId: Long): Flow<List<TaskSuggestion>> =
         _suggestions.map { it[personaId].orEmpty() }
 
-    /** 引擎用：过滤掉当日已建议过 / 已存在同名任务的；记录本次建议（按天滚动） */
+    /**
+     * 聊天链用：过滤掉当日已建议过 / 已存在同名任务的，并记下本次建议（按天滚动）。
+     *
+     * ⚠️ 以前这里转调 `ProfileExtractor.filterSuggestions`，随记忆链收窄一起删了 ——
+     * 那个函数只是"过滤 + 截断"几行，放在这里反而让记忆提炼器背了任务建议的职责。
+     */
     fun filterAndRecord(
         incoming: List<TaskSuggestion>,
         existingTaskTitles: Set<String>,
@@ -35,12 +44,16 @@ class TaskSuggestionHub {
             recordedDay = today
             recordedTitles = emptySet()
         }
-        val fresh = ProfileExtractor.filterSuggestions(incoming, existingTaskTitles, recordedTitles)
+        val fresh = incoming
+            .filter { it.title.isNotBlank() }
+            .filter { it.title !in existingTaskTitles }
+            .filter { it.title !in recordedTitles }
+            .distinctBy { it.title }
         recordedTitles = recordedTitles + fresh.map { it.title }
         return fresh
     }
 
-    /** 提炼产出新建议：追加到对应会话（同轮同标题去重） */
+    /** 新建议入队：追加到对应会话（同轮同标题去重） */
     fun publish(personaId: Long, suggestions: List<TaskSuggestion>) {
         if (suggestions.isEmpty()) return
         _suggestions.update { current ->

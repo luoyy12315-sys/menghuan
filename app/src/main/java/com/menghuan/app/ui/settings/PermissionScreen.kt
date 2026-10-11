@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,6 +35,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.menghuan.app.agent.AgentAccessibilityService
 import com.menghuan.app.data.AiCall
 import com.menghuan.app.ui.common.NeuTextButton
+import com.menghuan.app.ui.common.ReminderPermissionHints
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuDanger
 import com.menghuan.app.ui.theme.TextPrimary
@@ -185,6 +187,18 @@ private fun buildPermissionItems(context: Context): List<PermItem> {
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
             },
+        ),
+        // v0.97.0（审查 B35）：国产 ROM 上"允许后台活动"没给的话，后台闹钟与 goAsync
+        // 网络生成会被冻结 —— 现象是"提醒偶发不响 / 主动关心偶发不发"，用户查不到原因。
+        // 跳的是系统**整个**电池优化列表（不是"一键把自己加白"那条直通车）：
+        // 直通车要在清单里声明 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS，属于应用市场敏感项，
+        // 为一个引导付出那个代价不值（理由同 ReminderPermissionHints.openBatteryOptimizationSettings）。
+        PermItem(
+            name = "电池优化白名单",
+            granted = (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+                ?.isIgnoringBatteryOptimizations(pkg) == true,
+            required = false,
+            jump = { ctx -> ReminderPermissionHints.openBatteryOptimizationSettings(ctx) },
         ),
         PermItem(
             name = "全屏通知（锁屏来电）",

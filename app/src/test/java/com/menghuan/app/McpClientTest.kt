@@ -138,7 +138,10 @@ class McpClientTest {
         val callBody = server.takeRequest().body.readUtf8()
         assertTrue(callBody.contains("tools/call"))
         assertTrue(callBody.contains("do_thing"))
-        assertTrue(callBody.contains("\\\"x\\\":1"))
+        // 参数以 **嵌套 JSON 对象** 发出（org.json 序列化时不转义内层引号）：
+        // 请求体里是 `"arguments":{"x":1}`，所以断 `"x":1` 而不是 `\"x\":1`。
+        // （v0.84.0：原断言写的是 `\\\"x\\\":1`，把参数当成了"再套一层 JSON 字符串"，恒不成立。）
+        assertTrue("参数没按嵌套对象原样发出：$callBody", callBody.contains("\"x\":1"))
     }
 
     @Test

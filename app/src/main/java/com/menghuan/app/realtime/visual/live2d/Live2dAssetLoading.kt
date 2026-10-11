@@ -66,16 +66,23 @@ internal object Live2dAssetLoading {
     private fun uploadTexture(bytes: ByteArray): Int? = runCatching {
         val opts = BitmapFactory.Options().apply { inPremultiplied = true }
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
-        val ids = IntArray(1)
-        GLES20.glGenTextures(1, ids, 0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
-        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
-        GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
-        GLES20.glTexParameteri(
-            GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR,
-        )
-        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        bitmap.recycle()
-        ids[0]
+        // v0.97.0：**上传途中任何一步抛异常都不能把解码出来的位图漏掉**。
+        // 以前 `bitmap.recycle()` 写在最后一行 —— texImage2D / glGenerateMipmap 一抛异常
+        // 就跳过回收，而贴图常见 2048²/4096²，漏一张就是几十 MB 的 native 内存；
+        // 导入的模型又没有纹理尺寸上限，多漏几张就是 OOM。
+        try {
+            val ids = IntArray(1)
+            GLES20.glGenTextures(1, ids, 0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
+            GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+            GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
+            GLES20.glTexParameteri(
+                GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR_MIPMAP_LINEAR,
+            )
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            ids[0]
+        } finally {
+            bitmap.recycle()
+        }
     }.getOrNull()
 }

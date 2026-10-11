@@ -16,6 +16,11 @@ class PersonaRepository(
     private val settingsRepository: SettingsRepository? = null,
     /** v0.58.0：删除人设时清掉他的通话视觉素材目录（仓库层没有 Context，由容器注入） */
     private val visualFilesCleaner: ((Long) -> Unit)? = null,
+    /**
+     * v0.89.0：删除人设时取消它那些定时消息/定时电话的闹钟（仓库层没有 Context，由容器注入）。
+     * 入参是刚被摘掉的那批定时项 id。
+     */
+    private val scheduledAlarmCanceller: ((List<String>) -> Unit)? = null,
 ) {
 
     fun observePersonas(): Flow<List<Persona>> =
@@ -63,7 +68,7 @@ class PersonaRepository(
 
     /**
      * 物理删除人设 = 级联清理：该会话全部消息 + 未读标记 + 提炼水位线 + 会话级接口覆盖 + 人设音色
-     * + 通话视觉素材目录。
+     * + 通话视觉素材目录 + **该角色的定时消息/定时电话**。
      * （人设无独立闹钟；任务闹钟按任务独立，不受影响。）
      */
     suspend fun delete(id: Long) {
@@ -83,14 +88,35 @@ class PersonaRepository(
         runCatching { db.conversationSummaryDao().delete(id) }
         db.personaDao().deleteById(id)
         settingsRepository?.removeReadMark(id)
+        // ⚠️ 补上这一步：`removeCompanionState` 的注释一直写着「与 [removeReadMark] 同批调用」，
+        // 但它此前**零调用点** —— 删角色时那套「心情 / 想念度」状态
+        //（`companion_state_<id>` 与 `companion_last_msg_<id>`）从来没被清过，留下两个孤儿键。
+        settingsRepository?.removeCompanionState(id)
         settingsRepository?.removeExtractionWatermark(id)
+        // v0.86.0：上下文窗口与提炼间隔也按角色存，删角色一并摘掉（不留孤儿键）
+        settingsRepository?.removeSessionTuning(id)
         settingsRepository?.removePersonaApiProfile(id)
         settingsRepository?.removeVoiceRef(id)
-        // v0.54.4：专属铃声与「主动关心」开关一并清掉（不留孤儿键）
+        // v0.54.4：专属铃声与「主动关心」一并清掉（不留孤儿键）
+        // v0.94：主动关心的三开关 / 电话次数 / 当日计数 + 老的打电话规则一起摘
         settingsRepository?.setPersonaRingtone(id, "")
-        settingsRepository?.setPersonaProactive(id, false)
+        settingsRepository?.removeProactiveTuning(id)
+        settingsRepository?.removeAiCallRule(id)
         // v0.66.0：视频通话背景的档位行一并摘掉（图片目录由 visualFilesCleaner 清）
         settingsRepository?.setCallBackground(id, "")
+        // v0.89.0：这个角色的**定时消息 / 定时电话**一起带走。
+        // 以前漏了这一步：条目留在 DataStore、闹钟照旧每天响，报时找不到人设，
+        // 被 ScheduledMessageSender 的兜底"改嫁"给了内置应用助手 ——
+        // 用户看到的现像就是「我删了人设，它还是每天从应用助手发过来」。
+        // 删的是"你写给这个角色的话"，角色没了这话也没有保留的价值。
+        val orphanScheduled = runCatching {
+            settingsRepository?.removeScheduledMessagesForPersona(id)
+        }.getOrNull().orEmpty()
+        if (orphanScheduled.isNotEmpty()) {
+            // 闹钟 key 是 id 的 hashCode，条目删了但闹钟还在会白响（到点查不到就静默 return，
+            // 然后明天又自排一次）。取消动作在应用层做（仓库层没有 Context）。
+            runCatching { scheduledAlarmCanceller?.invoke(orphanScheduled) }
+        }
         // v0.58.0：视觉素材是几百 MB 的文件，人设没了就必须跟着没
         runCatching { visualFilesCleaner?.invoke(id) }
     }

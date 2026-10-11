@@ -305,8 +305,22 @@ fun ChatScreen(
      *
      * 这份坐标只在**长按那一刻**读一次（菜单要贴着气泡弹），压根不需要可观测，
      * 用普通 HashMap 就够：滚动期间零 state 写入、零重组。
+     *
+     * ⚠️ v0.89.0：记的**必须是气泡自己的矩形**（下面各 kind 分支挂在气泡那一层），
+     * 不能挂在外层那个 `fillMaxWidth()` 的 Column 上 —— 那量到的是整行宽度，
+     * left/right 是行边缘，菜单箭头（恒在菜单底部正中）就会飘到远离气泡的地方。
      */
     val bubbleBounds = remember { HashMap<Any, Rect>() }
+
+    /**
+     * 把"气泡自己"的屏幕矩形记进 [bubbleBounds]，供长按菜单定位。
+     *
+     * 拆成独立 lambda 而不是每个分支内联 `onGloballyPositioned { ... }`：这样各气泡只需
+     * `Modifier.recordBubbleBounds(rowKey)` 一行，且 `rowKey` 在闭包里被捕获，不改动任何调用点签名。
+     */
+    val recordBubbleBounds: (Any) -> Modifier = { rowKey ->
+        Modifier.onGloballyPositioned { bubbleBounds[rowKey] = it.boundsInRoot() }
+    }
 
     /** v0.54.7：长按弹消息菜单统一补一次震动（与全局"长按补一次震动反馈"的约定一致） */
     val openMessageMenu: (ChatMessage, Any) -> Unit = { msg, rowKey ->
@@ -370,7 +384,7 @@ fun ChatScreen(
                     extractedText = "",
                 )
             } else {
-                Toast.makeText(context, "图片读取失败", Toast.LENGTH_SHORT).show()
+                com.menghuan.app.ui.common.AppToast.fail("图片读取失败")
             }
         }
     }
@@ -385,7 +399,7 @@ fun ChatScreen(
             scope.launch {
                 val path = com.menghuan.app.data.StickerStore.import(context, uri)
                 if (path == null) {
-                    Toast.makeText(context, "表情导入失败", Toast.LENGTH_SHORT).show()
+                    com.menghuan.app.ui.common.AppToast.fail("表情导入失败")
                 } else {
                     // 同一张图重复导入不再加一条（库表按 path 查重）
                     val existing = appContainer.db.stickerDao().findByPath(path)
@@ -393,7 +407,7 @@ fun ChatScreen(
                         appContainer.db.stickerDao()
                             .insert(com.menghuan.app.data.model.Sticker(path = path))
                     } else {
-                        Toast.makeText(context, "这个表情已经添加过了", Toast.LENGTH_SHORT).show()
+                        com.menghuan.app.ui.common.AppToast.show("这个表情已经添加过了")
                     }
                 }
             }
@@ -410,7 +424,7 @@ fun ChatScreen(
                 val name = queryDisplayName(context, uri) ?: "文件"
                 val saved = copyUriToFiles(context, uri, name)
                 if (saved == null) {
-                    Toast.makeText(context, "文件读取失败", Toast.LENGTH_SHORT).show()
+                    com.menghuan.app.ui.common.AppToast.fail("文件读取失败")
                 } else {
                     val text = com.menghuan.app.data.FileTextExtractor.extract(saved, name)
                     pendingAttachment = PendingAttachment(
@@ -490,7 +504,7 @@ fun ChatScreen(
     val micPermission = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (!granted) Toast.makeText(context, "需要麦克风权限才能发语音", Toast.LENGTH_SHORT).show()
+        if (!granted) com.menghuan.app.ui.common.AppToast.fail("需要麦克风权限才能发语音")
     }
 
     // 录音中：每 60ms 采一格波形 + 刷一次时长（蒙层里显示成 30" 那种）。
@@ -770,6 +784,11 @@ fun ChatScreen(
                         )
                     }
                 }
+                // 空态（v0.97.0，审查 U9）：新会话进来这里是一整片空白 —— 用户看不出
+                // "这片空白是正常的"还是"消息没加载出来"。给一句事实短语（不写说明性小字）。
+                if (chatItems.isEmpty() && !uiState.generating) {
+                    EmptyChatHint(persona?.name)
+                }
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -819,14 +838,26 @@ fun ChatScreen(
                                         // v0.56.0：换人时顶部再拉开 12dp（叠加 6dp 基础间距 ≈ 18dp），
                                         // 微信式"换说话人就空一口气"；同一人连发只吃基础间距。
                                         .padding(top = if (item.gapBefore) 12.dp else 0.dp)
-                                        // v0.55.0：写进普通容器而不是 state（见 bubbleBounds 注释）
-                                        .onGloballyPositioned { bubbleBounds[rowKey] = it.boundsInRoot() },
+                                        // ⚠️ v0.83.0：锚点**不记在这一层** —— 这一层的 top 含上面那 12dp
+                                        // 换人空档，菜单会被顶到离气泡老远（用户反馈「箭头挨不到气泡」）。
                                 ) {
                                 // 多选态：左侧留出勾选圈的空档（v0.54.3）
                                 // ⚠️ v0.54.7：这里**必须是 Column**（原来是 Box）——里面现在有两个兄弟节点
                                 // （消息本体 + 就地展开的思考过程），Box 会把它们叠在一起、思考过程直接盖住气泡
                                 // （用户反馈"把消息条都覆盖了"）；Column 才会一个排在另一个下方。
-                                Column(Modifier.fillMaxWidth().padding(start = if (multiSelect) 34.dp else 0.dp)) {
+                                // v0.83.0：锚点下沉到这一层 —— 它的 top 就是**气泡自己的顶边**。
+                                // v0.55.0：写进普通容器而不是 state（见 bubbleBounds 注释）
+                                //
+                                // ⚠️ v0.89.0：这一层**不能**再挂 onGloballyPositioned 当锚点用 ——
+                                // 它是 fillMaxWidth()，量到的是**整行宽度**，left/right 是行边缘而不是
+                                // 气泡边缘；菜单箭头恒在菜单底部正中，横向却按行边缘对齐，于是短气泡
+                                // （「好」「嗯」）的箭头能偏出气泡中心 100dp+，看着就是"箭头不贴合气泡"。
+                                // 现在锚点分别记在**气泡自己那一层**（见下面各 kind 分支的 recordBubbleBounds）。
+                                Column(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(start = if (multiSelect) 34.dp else 0.dp),
+                                ) {
                                 // v0.43.0：媒体类型优先（存量消息 mediaKind 为空，按老规则推断）
                                 val kind = MediaKind.fromLegacy(msg.mediaKind, msg.imagePath)
                                 when (kind) {
@@ -834,7 +865,12 @@ fun ChatScreen(
                                     // v0.42.4：外层 Box 必须显式指定 contentAlignment。
                                     // Box 默认 TopStart——无论 ImageBubble 内部 horizontalAlignment
                                     // 是什么，整块都会被摆在左上角，用户发的图因而"跑到 AI 那侧"。
-                                    MediaKind.IMAGE ->
+                                    MediaKind.IMAGE -> {
+                                        // v0.97.0：`failed` 以前恒传 false —— 图没了的时候
+                                        // 只能永远显示"正在生成图片…"（用户看到的是"卡住"）。
+                                        // 现在按真实读数传：这条路只渲染**已经落过盘**的图片消息，
+                                        // 读不出位图 = 文件已失效，该说"图片打不开了"，而不是继续转圈。
+                                        val imgBitmap = rememberLocalBitmap(msg.imagePath)
                                         Box(
                                             Modifier.fillMaxWidth(),
                                             contentAlignment = if (msg.isFromUser) Alignment.CenterEnd
@@ -842,13 +878,16 @@ fun ChatScreen(
                                         ) {
                                             ImageBubble(
                                                 prompt = msg.content,
-                                                bitmap = rememberLocalBitmap(msg.imagePath),
+                                                bitmap = imgBitmap,
                                                 maxWidth = bubbleMaxWidth,
-                                                failed = false,
+                                                failed = imgBitmap == null,
+                                                failedText = "图片打不开了",
                                                 onClick = { viewerPath = msg.imagePath },
                                                 fromUser = msg.isFromUser,
+                                                modifier = recordBubbleBounds(rowKey),
                                             )
                                         }
+                                    }
 
                                     // 自定义表情（v0.45.0）：小尺寸、不可点开，与图片气泡区分
                                     MediaKind.STICKER ->
@@ -860,6 +899,7 @@ fun ChatScreen(
                                             StickerBubble(
                                                 bitmap = rememberLocalBitmap(msg.imagePath),
                                                 fromUser = msg.isFromUser,
+                                                modifier = recordBubbleBounds(rowKey),
                                             )
                                         }
 
@@ -877,6 +917,7 @@ fun ChatScreen(
                                                 maxWidth = bubbleMaxWidth,
                                                 isPlaying = playingVoiceId == msg.id,
                                                 isUser = msg.isFromUser,
+                                                modifier = recordBubbleBounds(rowKey),
                                                 onToggle = {
                                                     if (playingVoiceId == msg.id) {
                                                         voicePlayer.stop()
@@ -918,6 +959,7 @@ fun ChatScreen(
                                                 size = msg.attachmentSize,
                                                 hasExtractedText = msg.content.isNotBlank(),
                                                 maxWidth = bubbleMaxWidth,
+                                                modifier = recordBubbleBounds(rowKey),
                                                 onLongPress = { openMessageMenu(msg, rowKey) },
                                             )
                                         }
@@ -945,6 +987,7 @@ fun ChatScreen(
                                                 outgoing = msg.isFromUser,
                                                 video = isVideoCall,
                                                 maxWidth = bubbleMaxWidth,
+                                                modifier = recordBubbleBounds(rowKey),
                                                 onClick = {
                                                     callLogSession = msg.attachmentPath.toLongOrNull() ?: 0L
                                                     callLogTitle = msg.content
@@ -982,6 +1025,9 @@ fun ChatScreen(
                                         persona = persona,
                                         userAvatar = userAvatar,
                                         onLongPress = { openMessageMenu(msg, rowKey) },
+                                        // v0.89.0：锚点挂在气泡本体（UserBubble/AiBubble）上，
+                                        // 不含头像与间距 —— 否则菜单箭头会按整行边缘对齐、离气泡老远
+                                        anchorModifier = recordBubbleBounds(rowKey),
                                     )
                                 }   // 关闭 when(kind)
 
@@ -1160,6 +1206,7 @@ fun ChatScreen(
                         message = message,
                         kind = kind,
                         onRetry = { vm.retry() },
+                        onResend = { vm.resendPending() },
                         onOpenApi = { onOpenSettings(SettingsRoutes.CHAT_MODEL) },
                     )
                 }
@@ -1293,7 +1340,7 @@ fun ChatScreen(
                                 if (!online && !com.menghuan.app.data.AsrModelManager.isReady(context)) {
                                     // 模型没下载就进语音态，用户按住说完只会得到一条空转写——
                                     // 与其让他录完才发现，不如这一下就把下载入口摆出来。
-                                    Toast.makeText(context, "离线识别模型未下载", Toast.LENGTH_SHORT).show()
+                                    com.menghuan.app.ui.common.AppToast.fail("离线识别模型未下载")
                                     onOpenSettings(SettingsRoutes.ASR_MODEL)
                                 } else {
                                     // 切到语音态：收键盘、收面板（三者互斥），不要键盘
@@ -1341,12 +1388,10 @@ fun ChatScreen(
                                     // 带上真实原因（v0.43.1）：静默的"启动失败"无从定位，
                                     // 真机上分不清是权限、被占用还是 ROM 不认录音参数。
                                     val why = recorder.lastError
-                                    Toast.makeText(
-                                        context,
+                                    com.menghuan.app.ui.common.AppToast.fail(
                                         if (why.isNullOrBlank()) "录音启动失败，可能被其他应用占用"
-                                        else "录音启动失败：$why",
-                                        Toast.LENGTH_LONG,
-                                    ).show()
+                                        else "录音启动失败：$why"
+                                    )
                                 }
                             },
                             onArmChange = { recordArm = it },
@@ -1372,12 +1417,10 @@ fun ChatScreen(
                                                     // 服务端原话：Key 错 / 这家没这个接口 / 超时），
                                                     // 别再用一句"没听清"把配置问题糊掉。
                                                     val why = com.menghuan.app.data.SpeechToText.lastFailure
-                                                    Toast.makeText(
-                                                        context,
+                                                    com.menghuan.app.ui.common.AppToast.fail(
                                                         if (why.isNullOrBlank()) "没听清，已发语音"
-                                                        else "识别失败：$why（已改发语音）",
-                                                        Toast.LENGTH_LONG,
-                                                    ).show()
+                                                        else "识别失败：$why（已改发语音）"
+                                                    )
                                                     vm.sendVoice(file.absolutePath, duration, "")
                                                 } else {
                                                     vm.sendVoiceAsText(text)
@@ -1402,9 +1445,7 @@ fun ChatScreen(
                                                     // 与"滑到转文字"那条同样的口径：配置问题要说得出原因
                                                     val why = com.menghuan.app.data.SpeechToText.lastFailure
                                                     if (!why.isNullOrBlank()) {
-                                                        Toast.makeText(
-                                                            context, "识别失败：$why", Toast.LENGTH_LONG,
-                                                        ).show()
+                                                        com.menghuan.app.ui.common.AppToast.fail("识别失败：$why")
                                                     }
                                                 }
                                                 vm.sendVoice(file.absolutePath, duration, text)
@@ -1612,7 +1653,7 @@ fun ChatScreen(
                     .filter { it.isNotBlank() }
                     .joinToString("\n")
                 if (text.isBlank()) {
-                    Toast.makeText(context, "没有可复制的文字", Toast.LENGTH_SHORT).show()
+                    com.menghuan.app.ui.common.AppToast.show("没有可复制的文字")
                 } else {
                     copyToClipboard(context, text)
                 }
@@ -1704,7 +1745,7 @@ fun ChatScreen(
                         subtitle = p.title,
                         onClick = {
                             vm.forwardMessages(uiState.messages.filter { it.id in selectedIds }, p.id)
-                            Toast.makeText(context, "已转发给${p.name}", Toast.LENGTH_SHORT).show()
+                            com.menghuan.app.ui.common.AppToast.ok("已转发给${p.name}")
                             showForwardSheet = false
                             multiSelect = false
                             selectedIds.clear()
@@ -1721,12 +1762,36 @@ fun ChatScreen(
 
 }
 
+/**
+ * 空会话提示（v0.97.0，审查 U9）：新会话 / 消息清空后消息区的居中占位。
+ *
+ * 只用一句**事实短语** + 一颗淡图标，不写"开始你们的对话吧"这类客套（§四 纪律），
+ * 也不加任何按钮 —— 输入栏就在下面，用户要的动作本来就在手边。
+ */
+@Composable
+private fun EmptyChatHint(name: String?) {
+    Column(
+        Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(MIcons.ChatBubble, contentDescription = null, tint = FaintText, modifier = Modifier.size(30.dp))
+        Spacer(Modifier.height(12.dp))
+        Text(
+            if (name.isNullOrBlank()) "还没有聊过" else "和 $name 还没聊过",
+            fontSize = 14.sp,
+            color = MutedText,
+        )
+    }
+}
+
 /** 错误条行（从 ChatScreen 抽出供动画包装复用）：文案 + 按错误种类给的动作按钮 */
 @Composable
 private fun ChatErrorBar(
     message: String,
     kind: String,
     onRetry: () -> Unit,
+    onResend: () -> Unit,
     onOpenApi: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -1751,6 +1816,12 @@ private fun ChatErrorBar(
             "retry" -> {
                 Spacer(Modifier.width(10.dp))
                 NeuTextButton("重试", onClick = onRetry)
+            }
+            // v0.97.0（U13）：用户消息没落上库 —— 重跑生成是错的（这轮不在历史里），
+            // 要给的是"把这条消息重新发一遍"。
+            "resend" -> {
+                Spacer(Modifier.width(10.dp))
+                NeuTextButton("重发", onClick = onResend)
             }
             "accessibility" -> {
                 Spacer(Modifier.width(10.dp))
@@ -1871,8 +1942,21 @@ private fun MessageActionMenu(
     // 位置策略（v0.56.17，用户点名）：**始终贴在气泡正上方**，不再按气泡位置翻到下方。
     // 气泡贴着屏幕顶部时靠 coerceIn 兜住（宁可压住气泡，也不翻面——翻面会让菜单位置
     // 随消息位置忽上忽下，用户要的是"固定在上方"）。
+    //
+    // v0.83.0（用户点名"箭头挨到气泡上面"）：尾巴尖与气泡顶边**零间距**。
+    // 原来这里统一隔着 6dp，加上锚点记的是整行（换人那 12dp 空档也算进去了），
+    // 实测箭头离气泡能有 6~18dp，看着像悬在半空。现在锚点下沉到气泡自己那一层，
+    // 纵向再减 0 —— 尖端正好压在气泡上沿；只有贴屏幕边缘时还按 [edge] 让开。
+    //
+    // ⚠️ v0.89.0（用户反馈"箭头不贴合气泡"）：横向**必须让箭头对准气泡中心**。
+    // [MenuTail] 恒在菜单底部正中，所以让"菜单横向中心"落在"气泡横向中心"上，
+    // 箭头就自然正对气泡。原来把菜单边缘对到行边缘（`rect.right - width` / `rect.left`），
+    // 而锚点当时记的是**整行**（含 34dp 头像 + 8dp 间距），短气泡（「好」「嗯」）的
+    // 箭头能偏出气泡中心 100dp+。现在锚点就是气泡自己的矩形，这里按中心对齐。
+    // 靠边时用 [edge] 夹住，允许箭头相对气泡略微偏移（宁可偏移也不能把菜单捅出屏幕）。
     Popup(
-        popupPositionProvider = remember(anchor, message.isFromUser) {
+        // v0.89.0：定位只依赖 anchor（气泡矩形），与"是不是自己发的"无关，key 收成 anchor
+        popupPositionProvider = remember(anchor) {
             object : PopupPositionProvider {
                 override fun calculatePosition(
                     anchorBounds: IntRect,
@@ -1880,19 +1964,22 @@ private fun MessageActionMenu(
                     layoutDirection: LayoutDirection,
                     popupContentSize: IntSize,
                 ): IntOffset {
-                    val gap = with(density) { 6.dp.roundToPx() }
-                    val maxX = (windowSize.width - popupContentSize.width - gap).coerceAtLeast(gap)
-                    val maxY = (windowSize.height - popupContentSize.height - gap).coerceAtLeast(gap)
+                    // 离屏幕边缘的最小让开量（横纵都用它夹一下，别贴死在边上）
+                    val edge = with(density) { 6.dp.roundToPx() }
+                    // 尾巴尖到气泡顶边的距离：0 = 正好挨上
+                    val tailGap = 0
+                    val maxX = (windowSize.width - popupContentSize.width - edge).coerceAtLeast(edge)
+                    val maxY = (windowSize.height - popupContentSize.height - edge).coerceAtLeast(edge)
                     val rect = anchor
-                    val x = (if (rect == null) {
-                        if (message.isFromUser) maxX else gap
-                    } else if (message.isFromUser) {
-                        rect.right.toInt() - popupContentSize.width
+                    // 让菜单横向中心 = 气泡横向中心（箭头在菜单底部正中 → 正对气泡中心）
+                    val bubbleCenterX = rect?.let { (it.left + it.right) / 2f }
+                    val x = (if (bubbleCenterX == null) {
+                        windowSize.width / 2f - popupContentSize.width / 2f
                     } else {
-                        rect.left.toInt()
-                    }).coerceIn(gap, maxX)
-                    val y = ((rect?.top?.toInt() ?: windowSize.height / 2) - popupContentSize.height - gap)
-                        .coerceIn(gap, maxY)
+                        bubbleCenterX - popupContentSize.width / 2f
+                    }).toInt().coerceIn(edge, maxX)
+                    val y = ((rect?.top?.toInt() ?: windowSize.height / 2) - popupContentSize.height - tailGap)
+                        .coerceIn(edge, maxY)
                     return IntOffset(x, y)
                 }
             }
@@ -2860,6 +2947,8 @@ private fun MessageBubble(
     persona: com.menghuan.app.data.model.Persona? = null,
     userAvatar: com.menghuan.app.data.UserAvatar = com.menghuan.app.data.UserAvatar(),
     onLongPress: () -> Unit,
+    /** v0.89.0：长按菜单锚点，必须落在**气泡本体**上（不含旁边 34dp 头像与 8dp 间距） */
+    anchorModifier: Modifier = Modifier,
 ) {
     val isUser = message.isFromUser
     val isHeart = message.content == "❤️"
@@ -2882,7 +2971,7 @@ private fun MessageBubble(
             isHeart -> Text("❤️", fontSize = 44.sp)
             isUser -> {
                 // 用户气泡：文字先、头像贴在最右（微信 / iMessage 的常见排法）
-                UserBubble(message.content, maxWidth, resolved, onLongPress)
+                UserBubble(message.content, maxWidth, resolved, onLongPress, anchorModifier)
                 if (appearance.showAvatar) {
                     Spacer(Modifier.width(8.dp))
                     ChatRowAvatar(personaId = 0L, persona = null, userAvatar = userAvatar, size = 34.dp)
@@ -2893,7 +2982,7 @@ private fun MessageBubble(
                     ChatRowAvatar(personaId = persona?.id ?: 0L, persona = persona, userAvatar = userAvatar, size = 34.dp)
                     Spacer(Modifier.width(8.dp))
                 }
-                AiBubble(message.content, maxWidth, resolved, onLongPress)
+                AiBubble(message.content, maxWidth, resolved, onLongPress, anchorModifier)
             }
         }
     }
@@ -2917,23 +3006,10 @@ private fun ChatRowAvatar(
     size: androidx.compose.ui.unit.Dp,
 ) {
     if (personaId == 0L) {
-        // 用户：设了图/emoji 就用，否则黑底白「我」
-        if (!userAvatar.isEmpty) {
-            com.menghuan.app.ui.common.NeuAvatar(
-                emoji = userAvatar.effectiveEmoji.ifBlank { "我" },
-                size = size,
-                imagePath = userAvatar.imagePath,
-            )
-        } else {
-            Box(
-                Modifier
-                    .size(size)
-                    .background(NeuAccent, androidx.compose.foundation.shape.RoundedCornerShape(999.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("我", fontSize = (size.value * 0.34f).sp, color = AccentInk, fontWeight = FontWeight.Medium)
-            }
-        }
+        // 用户：设了图/emoji 就用，否则黑底白「我」。
+        // v0.93.0：走 `MeAvatar` —— 与档案页 / 动态页是同一张脸（含那圈渐变环），
+        // 气泡里这一排头像也就和 AI 那边（personaBrush）同一套框样式。
+        com.menghuan.app.ui.profile.MeAvatar(avatar = userAvatar, size = size)
         return
     }
     com.menghuan.app.ui.common.NeuAvatar(
@@ -2953,10 +3029,12 @@ private fun AiBubble(
     /** v0.80.0：底/字/边框/圆角/字体三件套一次给齐（旧版是 bg+ink+bodySp 三个散参） */
     resolved: com.menghuan.app.ui.theme.ResolvedBubble,
     onLongPress: () -> Unit,
+    /** v0.89.0：长按菜单锚点（挂在气泡本体上，见 [MessageBubble] 说明） */
+    anchorModifier: Modifier = Modifier,
 ) {
     val radius = resolved.radiusDp.coerceAtLeast(0).dp
     Box(
-        Modifier
+        anchorModifier
             .widthIn(max = maxWidth)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -2984,6 +3062,9 @@ private fun AiBubble(
                 fontSize = resolved.fontSizeSp.sp,
                 fontFamily = resolved.fontFamily,
                 fontWeight = resolved.fontWeight,
+                // v0.97.0（审查 U19）：超长回复（AI 偶尔写一大篇）先折到 420dp，
+                // 末尾给「展开全文（共 N 字）」。只在**正文**上折，代码块与列表照旧。
+                collapseOverChars = 1200,
             )
         }
     }
@@ -2998,10 +3079,12 @@ private fun UserBubble(
     /** v0.80.0：底/字/边框/圆角/字体三件套一次给齐（旧版是 bg+ink+bodySp 三个散参） */
     resolved: com.menghuan.app.ui.theme.ResolvedBubble,
     onLongPress: () -> Unit,
+    /** v0.89.0：长按菜单锚点（挂在气泡本体上，见 [MessageBubble] 说明） */
+    anchorModifier: Modifier = Modifier,
 ) {
     val radius = resolved.radiusDp.coerceAtLeast(0).dp
     Box(
-        Modifier
+        anchorModifier
             .widthIn(max = maxWidth)
             .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
@@ -3033,7 +3116,7 @@ private fun copyToClipboard(context: android.content.Context, text: String) {
     val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
         as? android.content.ClipboardManager ?: return
     cm.setPrimaryClip(android.content.ClipData.newPlainText("menghuan", text))
-    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+    com.menghuan.app.ui.common.AppToast.ok("已复制")
 }
 
 /**

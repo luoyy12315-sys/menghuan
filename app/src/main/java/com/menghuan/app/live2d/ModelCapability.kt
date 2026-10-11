@@ -23,9 +23,6 @@ data class ModelCapability(
     fun supports(channel: GenericChannel): Boolean =
         channel.isStage || !available[channel].isNullOrEmpty()
 
-    /** 实机上要写的参数 ID（舞台通道返回空表） */
-    fun resolvedIds(channel: GenericChannel): List<String> = available[channel].orEmpty()
-
     /** 参数类通道总数（界面上说"这张模型支持 18 项动作能力"用得到） */
     val paramChannelCount: Int get() = available.count { !it.key.isStage && it.value.isNotEmpty() }
 

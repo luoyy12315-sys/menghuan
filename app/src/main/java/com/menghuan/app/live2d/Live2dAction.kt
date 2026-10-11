@@ -142,20 +142,6 @@ data class Live2dAction(
     /** 能不能被单独删除：内置与模型自带的不让删 */
     val deletable: Boolean get() = source == ActionSource.USER || source == ActionSource.AI
 
-    /** 能不能改强度 / 速度 / 名字：内置动作允许"另存为我的动作"，但不原地改 */
-    val editableInPlace: Boolean get() = deletable
-
-    fun copyAsMine(name: String, now: Long): Live2dAction = copy(
-        id = 0L,
-        name = name,
-        source = ActionSource.USER,
-        builtinKey = "",
-        favorite = true,
-        personaId = 0L,
-        createdAt = now,
-        updatedAt = now,
-    )
-
     /**
      * 按"动作幅度"档位整体缩放（v0.67.0，纯函数）。
      *

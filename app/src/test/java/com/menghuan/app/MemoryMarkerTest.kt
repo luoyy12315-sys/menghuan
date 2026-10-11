@@ -93,5 +93,30 @@ class MemoryMarkerTest {
         assertTrue("要拦住它把标记内容再念一遍", s.contains("不要把标记的内容再念一遍"))
         assertTrue("要明说琐碎的别记", s.contains("不要记"))
         assertTrue(s.contains("<add:"))
+        // v0.77.0 用户点名「不清楚 AI 记忆是否可读」；这句原本挂在动态协议段的尾巴上，
+        // 聊天链整块移除动态协议后搬到这里（别再让它跟着那段一起消失）
+        assertTrue("要说清 AI 看得到记忆", s.contains("你看得到用户的记忆"))
+    }
+
+    /**
+     * v0.98.0：说明段拆成「硬约束 + 可编策略」，且**可编的那半必须能被替换**。
+     *
+     * 拆分的意义就在于用户能改策略；如果 `promptSection(strategy)` 忽略了传进来的值
+     * （比如又硬编码回默认），那设置页那个输入框就是个摆设 —— 这条专门钉住它。
+     */
+    @Test
+    fun `策略可编_硬约束必须始终保留`() {
+        val custom = "只说重点，别的别记。"
+        val s = MemoryMarker.promptSection(custom)
+        assertTrue("用户写的策略要进去", s.contains(custom))
+        assertTrue("默认策略被替换掉，不该同时出现", !s.contains("以你自己的视角记"))
+        // 硬约束与策略无关，换掉策略后必须一条不少
+        assertTrue("格式说明不能丢", s.contains("<add:一句话>"))
+        assertTrue("剥除说明不能丢", s.contains("不要把标记的内容再念一遍"))
+        assertTrue("可读性说明不能丢", s.contains("你看得到用户的记忆"))
+        // 策略清空 = 只发硬约束（仍是一段能用的说明）
+        val blank = MemoryMarker.promptSection("   ")
+        assertTrue(blank.contains("<add:一句话>"))
+        assertTrue(!blank.contains("以你自己的视角记"))
     }
 }

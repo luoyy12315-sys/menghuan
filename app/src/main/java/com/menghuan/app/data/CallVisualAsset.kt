@@ -169,21 +169,6 @@ object CallVisualManifestCodec {
         }.getOrDefault(CallVisualAsset.EMPTY)
     }
 
-    /** 从素材包 manifest.json 里读 `states` 名单（纯函数，供 ZIP 导入用） */
-    fun stateMapFromManifestJson(text: String?): Map<String, String> {
-        if (text.isNullOrBlank()) return emptyMap()
-        return runCatching {
-            val out = LinkedHashMap<String, String>()
-            val obj = JSONObject(text).optJSONObject(KEY_STATES) ?: return@runCatching out
-            val it = obj.keys()
-            while (it.hasNext()) {
-                val k = it.next()
-                val v = obj.optString(k, "")
-                if (v.isNotBlank()) out[k] = v
-            }
-            out
-        }.getOrDefault(emptyMap())
-    }
 }
 
 /**

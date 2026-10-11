@@ -6,32 +6,52 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.menghuan.app.MenghuanApp
+import com.menghuan.app.data.CallVisualStore
+import com.menghuan.app.data.CallVisualType
 import com.menghuan.app.data.ExtractionEngine
 import com.menghuan.app.data.ProfileRepository
 import com.menghuan.app.data.SettingsRepository
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.AiInsight
+import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.ProfileFact
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
-/** 本周任务完成度（真实数据驱动完成度圆环） */
-data class WeekProgress(val done: Int, val total: Int) {
-    val fraction: Float get() = if (total == 0) 0f else done.toFloat() / total
-}
-
-/** 近 7 天每日完成任务数（习惯卡真数据：打卡热力） */
+/**
+ * 近 7 天每日完成任务数。
+ *
+ * ⚠️ v0.97.0（审查 B41）：这里原来的 `WeekProgress`（完成度圆环口径）与紧挨着的
+ * `weekProgress` / `weekDaily` 两个 StateFlow 都已**删除** —— 页面自 v0.42.0 起只用
+ * `weekReview` 统一口径，那三个留在文件里是「同页两套周口径」的隐患：
+ * 哪天有人顺手用了 `weekProgress.done`，同一张卡上就会出现两个对不上的分子。
+ *
+ * `DayCount` 与 [habitStreak] 保留：它们是 [weekReviewStreak] 之前的实现，
+ * 由 `HabitStreakTest` 逐例钉着，作为"宽恕规则"的行为参照，删了会连带删掉那批断言。
+ */
 data class DayCount(val date: LocalDate, val done: Int)
+
+/**
+ * 一个角色 + 它有没有可用的 Live2D 形象（角色空间入口卡的选人列表用）。
+ *
+ * [hasLive2d] 为 false 的项在弹层里**仍然列出来**，只是标一行"未导入模型包"且不可点 ——
+ * 用户看不到某个角色会以为 App 漏了 TA，而"为什么进不去"正是这条入口要回答的问题。
+ */
+data class PersonaSpaceEntry(val persona: Persona, val hasLive2d: Boolean)
 
 /**
  * 本周回顾（v0.42.0）：**一张卡统一口径**，合并原先分裂的「打卡热力」与「完成度环」。
@@ -107,7 +127,25 @@ fun buildWeekReview(
     )
 }
 
-/** 连续「全清」天数：今天未全清不断签（从昨天往回数），对齐原 habitStreak 的宽恕规则 */
+/**
+ * 冷启动首帧的稳定形状（v0.97.0，U3）：7 个"零值"格子（旧→新，最后一格是今天）。
+ *
+ * 只用于 StateFlow 的 `initialValue`：形状与 [buildWeekReview] 的产出完全同构，
+ * 所以数据到达时不会发生"从零格变七格"的布局跳动，只是数字从 0 变成真值。
+ */
+fun emptyWeekReview(today: LocalDate = LocalDate.now()): WeekReview = WeekReview(
+    days = (6 downTo 0).map { offset ->
+        val date = today.minusDays(offset.toLong())
+        DayReview(date = date, done = 0, total = 0, items = emptyList())
+    },
+    done = 0,
+    total = 0,
+    streak = 0,
+)
+
+/**
+ * 连续「全清」天数：今天未全清不断签（从昨天往回数），对齐原 habitStreak 的宽恕规则。
+ */
 fun weekReviewStreak(days: List<DayReview>): Int {
     var streak = 0
     val today = days.lastOrNull() ?: return 0
@@ -141,14 +179,13 @@ fun habitStreak(days: List<DayCount>): Int {
  * 我的数据页 VM：
  * - 基础档案接 ProfileFact（只读展示，编辑入口在「我的」页）
  * - 习惯卡 = 近 7 天每日完成任务数（打卡热力）+ 连续打卡天数
- * - AI 洞察 = 提炼流水线产物（ai_insights 最新两条）；手动「提炼」调引擎全量补跑
- * - AI 周报 = 每周日 21:30 定时生成（WeeklyReportGenerator），本页提供手动「生成」与历史切换
+ * - AI 洞察 = [InsightEngine] 每晚 23:00 产出（按日/周/月分组）。
+ *   记忆另由 [ExtractionEngine] 攒够轮数**自动**提炼 —— v0.99.0 起**没有**手动「提炼」入口（见类内注释）
  */
 class DataViewModel(
+    private val app: MenghuanApp,
     private val repo: ProfileRepository,
     private val db: AppDatabase,
-    private val extractionEngine: ExtractionEngine,
-    private val weeklyReportGenerator: com.menghuan.app.data.WeeklyReportGenerator,
     private val dailySuggestionGenerator: com.menghuan.app.data.DailySuggestionGenerator,
     settingsRepository: SettingsRepository,
 ) : ViewModel() {
@@ -156,60 +193,106 @@ class DataViewModel(
     val facts: StateFlow<List<ProfileFact>> = repo.observeFacts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** 本周目标完成度（圆环）：只统计基础任务（一次性、带日期），每日任务进打卡热力 */
-    val weekProgress: StateFlow<WeekProgress> = db.taskDao().observeAll()
-        .map { tasks ->
-            val zone = ZoneId.systemDefault()
-            val today = LocalDate.now(zone)
-            val monday = today.with(DayOfWeek.MONDAY)
-            val weekStart = monday.atStartOfDay(zone).toInstant().toEpochMilli()
-            val weekEnd = monday.plusDays(7).atStartOfDay(zone).toInstant().toEpochMilli()
-            val todayStart = today.atStartOfDay(zone).toInstant().toEpochMilli()
-            val basic = tasks.filter { !it.repeatDaily }
-            // dueAt = 0 视为今天
-            fun dueOf(task: com.menghuan.app.data.model.TaskItem): Long =
-                if (task.dueAt == 0L) todayStart else task.dueAt
-            val inWeek = basic.filter { val due = dueOf(it); due >= weekStart && due < weekEnd }
-            WeekProgress(inWeek.count { it.isDone }, inWeek.size)
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeekProgress(0, 0))
+    /**
+     * AI 洞察真数据源（[InsightEngine] 产出）。
+     *
+     * v0.88.0 起按**周期分组**：洞察现在有日/周/月三条链，混在一个 `List` 里显示
+     * 用户分不清"哪条是今天的、哪条是这一周的"。这里按 period 分好，UI 直接分组渲染。
+     *
+     * ⚠️ 用的是 `latest()`（suspend，非 Flow）→ 包一层手动刷新，因为 UI 要三态（见 [insightsLoaded]）。
+     */
+    private val _insights = MutableStateFlow<List<AiInsight>>(emptyList())
+    val insights: StateFlow<List<AiInsight>> = _insights.asStateFlow()
 
     /**
-     * 近 7 天（含今天）每日完成任务数，旧→新。
-     * 只统计每日任务（repeatDaily）的打卡记录（task_completions），基础任务不计入热力。
+     * 洞察是否**已经查过一次**（三态用）。
+     *
+     * `_insights` 初值空列表时 UI 分不清"还没查"和"查了确实没有"——
+     * 前者该显示加载态、后者该显示"还没有洞察"的空态文案。这个标记就是那个分界。
      */
-    val weekDaily: StateFlow<List<DayCount>> = combine(
-        db.taskCompletionDao().observeAll(),
-        db.taskDao().observeAll(),
-    ) { completions, tasks ->
-        val dailyIds = tasks.filter { it.repeatDaily }.map { it.id }.toSet()
-        val zone = ZoneId.systemDefault()
-        val today = LocalDate.now(zone)
-        (6 downTo 0).map { offset ->
-            val day = today.minusDays(offset.toLong())
-            DayCount(day, completions.count { it.day == day.toEpochDay() && it.taskId in dailyIds })
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    private val _insightsLoaded = MutableStateFlow(false)
+    val insightsLoaded: StateFlow<Boolean> = _insightsLoaded.asStateFlow()
 
-    /** AI 洞察真数据源（提炼引擎产出），最新两条 */
-    val insights: StateFlow<List<AiInsight>> = db.aiInsightDao().observeLatest()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    init {
+        refreshInsightsList()
+    }
+
+    /** 重读洞察列表（生成完毕后、以及进数据页时各调一次） */
+    fun refreshInsightsList() {
+        viewModelScope.launch {
+            runCatching { db.aiInsightDao().latest() }
+                .onSuccess { _insights.value = it }
+            _insightsLoaded.value = true
+        }
+    }
+
+    // ===== 角色空间入口（v0.92.0）=====
+
+    /**
+     * 角色空间是**按角色**的，而数据页是全局页 —— 所以这里的卡片点开先弹一层选人列表。
+     *
+     * ⚠️ **不能直接进"最近聊过的那个角色"**：用户翻到数据页想玩的是谁，只有他自己知道；
+     * 替他猜一个 = 猜错就得先回聊天页聊一句再来，那比多点一次选人更气人。
+     *
+     * 名单**读一次就缓存**，但 `hasLive2d` 要查文件系统（`CallVisualStore.read` + 模型文件是否存在），
+     * 费用在于每次进弹层都要扫一遍各角色目录，所以由 UI 在**弹层打开那一刻**调 [refreshSpaceEntries]，
+     * 而不是绑在 Flow 上每帧算。
+     */
+    private val _spaceEntries = MutableStateFlow<List<PersonaSpaceEntry>>(emptyList())
+    val spaceEntries: StateFlow<List<PersonaSpaceEntry>> = _spaceEntries.asStateFlow()
+
+    /** 进数据页 / 打开选人弹层时各调一次：重扫各角色有没有可用的 Live2D 模型 */
+    fun refreshSpaceEntries() {
+        viewModelScope.launch {
+            val personas = runCatching { app.personaRepository.observePersonas().first() }
+                .getOrDefault(emptyList())
+            val entries = withContext(Dispatchers.IO) {
+                personas.map { p ->
+                    val usable = runCatching {
+                        val asset = CallVisualStore.read(app, p.id)
+                        asset.type == CallVisualType.LIVE2D &&
+                            asset.isUsable &&
+                            CallVisualStore.live2dModelFile(app, p.id, asset) != null
+                    }.getOrDefault(false)
+                    PersonaSpaceEntry(p, usable)
+                }
+            }
+            _spaceEntries.value = entries
+        }
+    }
 
     // ===== v0.42.0 本周回顾（统一口径，置顶卡） =====
 
-    /** 本周回顾：近 7 天每日该做/已完成 + 本周合计 + 连续全清天数 */
+    /**
+     * 本周回顾：近 7 天每日该做/已完成 + 本周合计 + 连续全清天数。
+     *
+     * 初值给 **[emptyWeekReview]（7 个空格子）而不是 `WeekReview(emptyList(), 0, 0, 0)`**（v0.97.0，U3）：
+     * 旧初值的 `days` 是空表，卡片里那排 7 天格子的 `forEachIndexed` 一次都不执行 ——
+     * 冷启动进来看到的是「标题底下什么都没有 + 进度条 0」，Room 首个结果回来才"长出"七格。
+     * 用固定 7 个零值格子占位，形状从第一帧起就是对的，数据到了只是数字变化。
+     */
     val weekReview: StateFlow<WeekReview> = combine(
         db.taskDao().observeAll(),
         db.taskCompletionDao().observeAll(),
     ) { tasks, completions ->
         buildWeekReview(tasks, completions, LocalDate.now())
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), WeekReview(emptyList(), 0, 0, 0))
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyWeekReview())
 
     // ===== v0.42.0 每日建议（独立生成链路） =====
+
+    /**
+     * 今日建议是否**已经查过一次**（三态用，v0.97.0 U4）。
+     *
+     * `todaySuggestion` 初值是 `null`，而"确实没有建议"也是 `null` —— 两者同一状态时，
+     * 卡片会先把「今天还没有建议」闪一遍，数据到了再翻成建议内容。这个标记就是那个分界。
+     */
+    private val _suggestionLoaded = MutableStateFlow(false)
+    val suggestionLoaded: StateFlow<Boolean> = _suggestionLoaded.asStateFlow()
 
     /** 今日建议（无 = null，卡片显示空态） */
     val todaySuggestion: StateFlow<com.menghuan.app.data.model.DailySuggestion?> =
         db.dailySuggestionDao().observeByDay(LocalDate.now().toEpochDay())
+            .onEach { _suggestionLoaded.value = true }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** 历史建议（详情页列表用） */
@@ -227,10 +310,13 @@ class DataViewModel(
         _suggestionMessage.value = null
     }
 
-    private val _suggestionApiReady = MutableStateFlow(true)
-    val suggestionApiReady: StateFlow<Boolean> = _suggestionApiReady.asStateFlow()
-
-    /** 手动「重新生成」今天的建议（覆盖当天旧建议） */
+    /**
+     * 手动生成今天的建议。
+     *
+     * ⚠️ v0.88.0：建议的素材是**昨天的洞察**，所以"点一下就有"未必成立 ——
+     * 昨晚没跑洞察（没联网/没配 API）时这里会返回 null。文案要把这层因果说清，
+     * 不能笼统报"生成失败，稍后再试"（用户会一直点、一直失败，还以为坏了）。
+     */
     fun generateSuggestion() {
         if (_generatingSuggestion.value) return
         viewModelScope.launch {
@@ -241,10 +327,14 @@ class DataViewModel(
                 dailySuggestionGenerator.generateForDay(today)
             }.getOrNull()
             _generatingSuggestion.value = false
+            val hadInsight = runCatching {
+                db.aiInsightDao().forDay(today.minusDays(1).toEpochDay()).isNotEmpty()
+            }.getOrDefault(false)
             _suggestionMessage.value = when {
                 result != null -> "今天的建议已更新"
-                apiReady.value -> "生成失败，稍后再试"
-                else -> "未配置 API，建议不可用"
+                !apiReady.value -> "未配置 API，建议不可用"
+                !hadInsight -> "昨晚还没有洞察，今天暂时给不出建议"
+                else -> "生成失败，稍后再试"
             }
         }
     }
@@ -348,6 +438,7 @@ class DataViewModel(
         isIncome: Boolean,
         amountCents: Long,
         note: String,
+        category: String,
         source: String,
         occurredAt: Long = System.currentTimeMillis(),
     ) {
@@ -358,6 +449,7 @@ class DataViewModel(
                         isIncome = isIncome,
                         amountCents = amountCents,
                         note = note,
+                        category = category,
                         source = source,
                         occurredAt = occurredAt,
                     )
@@ -382,10 +474,18 @@ class DataViewModel(
         isIncome: Boolean,
         amountCents: Long,
         note: String,
+        category: String = "",
     ) {
         viewModelScope.launch {
             runCatching {
-                db.ledgerDao().upsert(entry.copy(isIncome = isIncome, amountCents = amountCents, note = note))
+                db.ledgerDao().upsert(
+                    entry.copy(
+                        isIncome = isIncome,
+                        amountCents = amountCents,
+                        note = note,
+                        category = category,
+                    )
+                )
             }
             _ledgerMessage.value = "这笔已更新"
         }
@@ -398,129 +498,39 @@ class DataViewModel(
         }
     }
 
-    private val _extracting = MutableStateFlow(false)
-    val extracting: StateFlow<Boolean> = _extracting.asStateFlow()
-
-    /** 手动提炼的结果反馈（展示数秒后自动清除） */
-    private val _extractMessage = MutableStateFlow<String?>(null)
-    val extractMessage: StateFlow<String?> = _extractMessage.asStateFlow()
-
-    fun clearExtractMessage() {
-        _extractMessage.value = null
-    }
+    // ⚠️ v0.99.0 删链：`_extracting`/`extracting`、`_extractMessage`/`extractMessage`、
+    // `clearExtractMessage()` 连同下面的 `refreshInsights()` 一起删了 —— 原因见下方那段注释。
 
     /** 洞察卡长按删除（v0.36.5） */
     fun deleteInsight(id: Long) = viewModelScope.launch {
         runCatching { db.aiInsightDao().deleteById(id) }
+        refreshInsightsList()
     }
 
-    /** 周报历史长按删除（v0.36.5） */
-    fun deleteWeeklyReport(id: Long) = viewModelScope.launch {
-        runCatching { db.aiWeeklyReportDao().deleteById(id) }
-    }
+    // ⚠️ v0.99.0 删掉整条「手动提炼」链（`refreshInsights()` + `_extracting`/`extracting` +
+    // `_extractMessage`/`extractMessage`/`clearExtractMessage()`）：
+    // - 起因：全工程「同款病」扫描发现 `refreshInsights()` **零调用**。
+    // - 根因：数据页那颗「提炼」按钮在 **v0.42.1 就被收敛掉了**（见 `DataScreen.AiEntryCard`
+    //   上方区块头注释），从那天起这条链没人能触发；`AiEntryCard` 收了 `extracting`/`apiReady`
+    //   却从没用过，`_extractMessage` 永远是 null，`clearExtractMessage()` 只是在清空它。
+    // - 而手册在 v0.86.0 / v0.88.0 两次改版里又把「手动点『提炼』」写了回去 → 对用户的假承诺。
+    // - 用户拍板：「本来就没有的东西不要补回」→ 删链 + 改手册，不再提这颗按钮。
+    // - 记忆提炼本身不受影响：照旧由 `ExtractionEngine` 攒够 `extract_every_<id>` 轮自动跑。
 
-    /** 手动「提炼」：所有会话立即补跑一次（仍只送增量）；期间按钮转"提炼中…"，完成后给统计反馈 */
-    fun refreshInsights() {
-        if (_extracting.value) return
-        viewModelScope.launch {
-            _extracting.value = true
-            val summary = runCatching { extractionEngine.extractAll() }.getOrNull()
-            _extracting.value = false
-            _extractMessage.value = when {
-                summary == null -> "提炼失败，稍后再试"
-                summary.skippedNoApi && !summary.hasChanges -> "未配置 API，提炼不可用"
-                !summary.hasChanges -> "提炼完成：暂无新的洞察与档案更新"
-                else -> buildString {
-                    append("提炼完成：")
-                    val parts = mutableListOf<String>()
-                    if (summary.newInsights > 0) parts.add("新洞察 ${summary.newInsights} 条")
-                    if (summary.newFacts > 0) parts.add("新档案 ${summary.newFacts} 项")
-                    if (summary.updatedFacts > 0) parts.add("更新档案 ${summary.updatedFacts} 项")
-                    if (summary.newSuggestions > 0) parts.add("新任务建议 ${summary.newSuggestions} 条")
-                    append(parts.joinToString(" · "))
-                }
-            }
-        }
-    }
-
-    /** API 未配置时隐藏提炼入口 */
+    /** 是否已配好 API（今日建议弹窗据此决定「生成」能否点） */
     val apiReady: StateFlow<Boolean> = settingsRepository.apiConfig
         .map { it.isComplete }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
-    // ===== AI 周报（每周日 21:30 自动生成；此处提供展示 / 手动生成 / 历史切换） =====
-
-    /** 全部周报（新→旧）；空表时数据页整个隐藏该板块 */
-    val weeklyReports: StateFlow<List<com.menghuan.app.data.model.AiWeeklyReport>> =
-        db.aiWeeklyReportDao().observeAll()
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
-    /** 历史切换选中的周报 id；null = 展示最新一期 */
-    private val _selectedReportId = MutableStateFlow<Long?>(null)
-    val selectedReportId: StateFlow<Long?> = _selectedReportId.asStateFlow()
-
-    fun selectReport(id: Long) {
-        _selectedReportId.value = id
-    }
-
-    private val _generatingReport = MutableStateFlow(false)
-    val generatingReport: StateFlow<Boolean> = _generatingReport.asStateFlow()
-
-    /** 周报生成结果反馈（展示数秒后自动清除） */
-    private val _reportMessage = MutableStateFlow<String?>(null)
-    val reportMessage: StateFlow<String?> = _reportMessage.asStateFlow()
-
-    fun clearReportMessage() {
-        _reportMessage.value = null
-    }
-
-    /** 手动「生成」：生成本周（周一起）周报，同周重复生成 = 覆盖旧报告；成功后自动选中新报告 */
-    fun generateWeeklyReport() {
-        if (_generatingReport.value) return
-        viewModelScope.launch {
-            _generatingReport.value = true
-            val zone = ZoneId.systemDefault()
-            val monday = LocalDate.now(zone).with(DayOfWeek.MONDAY)
-            val report = runCatching { weeklyReportGenerator.generateForWeek(monday, zone) }.getOrNull()
-            _generatingReport.value = false
-            _reportMessage.value = when {
-                report != null -> {
-                    _selectedReportId.value = report.id
-                    "周报已更新"
-                }
-                apiReady.value -> "生成失败，稍后再试"
-                else -> "未配置 API，周报不可用"
-            }
-        }
-    }
-
-    /** 周报分享（卡长按 / 历史行长按共用）：写 .md 文件经 FileProvider 分享 */
-    fun shareWeeklyReport(context: android.content.Context, report: com.menghuan.app.data.model.AiWeeklyReport) {
-        viewModelScope.launch {
-            val start = LocalDate.ofEpochDay(report.weekStart)
-            runCatching {
-                com.menghuan.app.data.ShareFiles.share(
-                    context = context,
-                    fileName = "AI周报-${start.monthValue}月${start.dayOfMonth}日.md",
-                    content = com.menghuan.app.data.WeeklyReportMath.shareText(report),
-                    mime = "text/markdown",
-                    chooserTitle = "分享周报",
-                )
-            }
-        }
-    }
-
-    
 
     companion object {
         val Factory = viewModelFactory {
             initializer {
                 val app = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as MenghuanApp
                 DataViewModel(
+                    app,
                     app.profileRepository,
                     app.db,
-                    app.extractionEngine,
-                    app.weeklyReportGenerator,
                     app.dailySuggestionGenerator,
                     app.settingsRepository,
                 )

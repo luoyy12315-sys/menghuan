@@ -1,7 +1,6 @@
 package com.menghuan.app.data
 
 import com.menghuan.app.data.model.AiInsight
-import com.menghuan.app.data.model.AiWeeklyReport
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.ProfileFact
@@ -16,7 +15,6 @@ data class ImportedData(
     val tasks: List<ImportedTask>,
     val profileFacts: List<ImportedFact>,
     val aiInsights: List<ImportedInsight>,
-    val aiWeeklyReports: List<ImportedReport>,
 )
 
 data class ImportedPersona(
@@ -48,17 +46,10 @@ data class ImportedFact(val key: String, val value: String, val source: String)
 
 data class ImportedInsight(val title: String, val detail: String, val createdAt: Long)
 
-data class ImportedReport(
-    val weekStart: Long,
-    val weekEnd: Long,
-    val content: String,
-    val createdAt: Long,
-)
-
 /**
  * 数据导出/导入编解码（纯函数，JVM 单测覆盖）：
  * - 导出 = 全量快照 JSON（不含 API 密钥，数据自主权）
- * - 导入 = 非破坏性合并：人设/档案/洞察/周报按各自键去重跳过，消息与任务追加
+ * - 导入 = 非破坏性合并：人设/档案/洞察按各自键去重跳过，消息与任务追加
  * - 任何解析失败返回 null（不抛出，由调用层给用户反馈）
  */
 object DataBackup {
@@ -70,7 +61,6 @@ object DataBackup {
         tasks: List<TaskItem>,
         facts: List<ProfileFact>,
         insights: List<AiInsight>,
-        weeklyReports: List<AiWeeklyReport>,
     ): String {
         val root = JSONObject()
         root.put("exportedAt", System.currentTimeMillis())
@@ -147,20 +137,6 @@ object DataBackup {
                 }
             },
         )
-        root.put(
-            "aiWeeklyReports",
-            JSONArray().apply {
-                weeklyReports.forEach {
-                    put(
-                        JSONObject()
-                            .put("weekStart", it.weekStart)
-                            .put("weekEnd", it.weekEnd)
-                            .put("content", it.content)
-                            .put("createdAt", it.createdAt)
-                    )
-                }
-            },
-        )
         return root.toString(2)
     }
 
@@ -217,17 +193,6 @@ object DataBackup {
                 ImportedInsight(
                     title = title,
                     detail = detail,
-                    createdAt = o.optLong("createdAt", System.currentTimeMillis()),
-                )
-            },
-            aiWeeklyReports = root.optJSONArray("aiWeeklyReports").mapNotNullIndexed { o ->
-                val content = o.optString("content").trim()
-                val weekStart = o.optLong("weekStart", 0L)
-                if (content.isEmpty() || weekStart == 0L) return@mapNotNullIndexed null
-                ImportedReport(
-                    weekStart = weekStart,
-                    weekEnd = o.optLong("weekEnd", weekStart + 6),
-                    content = content,
                     createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                 )
             },

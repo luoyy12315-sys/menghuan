@@ -81,14 +81,15 @@ abstract class HttpTtsClient(protected val config: TtsConfig) : TtsClient {
 
     override val isConfigured: Boolean get() = config.isComplete
 
-    protected val http: OkHttpClient by lazy {
-        NetworkStack.baseBuilder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            // 读超时给足：一句长文本合成 + 网关排队，官方建议 120s
-            .readTimeout(120, TimeUnit.SECONDS)
-            .writeTimeout(120, TimeUnit.SECONDS)
-            .build()
-    }
+    /**
+     * v0.97.0：**改成取全类共享的那个客户端**，不再是每个实例自己 new 一个。
+     *
+     * 以前这里是 `by lazy`（按实例持有），而调用点每念一条语音就 `TtsClients.from(...)`
+     * 新建一个客户端（`ChatViewModel.readAloud` / 语音条 / 音色试听 / 设置页测试各一处）——
+     * 每次朗读都白搭一套连接池 + 线程池，既浪费内存也拿不到连接复用。
+     * 与 [com.menghuan.app.llm.OpenAiClient] 的 `http` 同一条纪律。
+     */
+    protected val http: OkHttpClient get() = SHARED_HTTP
 
     override suspend fun synthesize(text: String, voice: VoiceRef, target: TtsTarget): TtsAudio? =
         withContext(Dispatchers.IO) {
@@ -139,6 +140,18 @@ abstract class HttpTtsClient(protected val config: TtsConfig) : TtsClient {
 
     protected companion object {
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+
+        /**
+         * 三家 TTS 共用一个 OkHttpClient（v0.97.0）：连接池与线程池全 App 一份。
+         * 超时口径：读/写给足 120s —— 一句长文本合成 + 网关排队（官方建议 120s）。
+         */
+        private val SHARED_HTTP: OkHttpClient by lazy {
+            NetworkStack.baseBuilder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
+                .writeTimeout(120, TimeUnit.SECONDS)
+                .build()
+        }
     }
 }
 

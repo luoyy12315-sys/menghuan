@@ -299,7 +299,7 @@ object MIcons {
     }.build()
 
     // ===== v0.35.0 新增 =====
-    /** 展开/收起箭头（洞察板块折叠 + 周报卡片折叠） */
+    /** 展开/收起箭头（洞察板块折叠） */
     val ChevronDown = strokes("ChevronDown", 1.8f, "M5.5 9.5L12 16L18.5 9.5")
     /** 收起箭头 */
     val ChevronUp = strokes("ChevronUp", 1.8f, "M5.5 14.5L12 8L18.5 14.5")

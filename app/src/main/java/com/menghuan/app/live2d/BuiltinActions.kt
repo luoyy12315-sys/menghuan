@@ -568,9 +568,4 @@ object BuiltinActions {
     /** 趣味动作那一档（"动作库"里按 [funKeys] 顺序排） */
     fun funActions(): List<Live2dAction> = listOf(wave(), shake(), split(), flip())
 
-    /**
-     * 点击互动用的"随机趣味动作"池：内置趣味动作。
-     * 用户自建的动作用户可在互动设置里另指（本版用默认，见 InteractionBindings）。
-     */
-    fun randomPool(): List<Live2dAction> = funActions()
 }

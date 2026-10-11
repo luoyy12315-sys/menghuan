@@ -94,16 +94,27 @@ class SummaryEngine(
         val existing = db.conversationSummaryDao().get(personaId)
         val watermark = existing?.coveredMessageId ?: 0L
 
+        // v0.86.0：历史窗口按角色可配了，所以摘要的判据必须**每轮读同一个来源**，
+        // 不能再引用编译期常量（否则用户把窗口调小后，历史按新窗口砍、摘要仍按老窗口算，
+        // 窗口边缘会有一段消息既不进历史也不进摘要 —— 静默蒸发）。
+        val budget = runCatching { settingsRepository.historyCharBudget(personaId).first() }
+            .getOrDefault(settingsRepository.DEFAULT_HISTORY_CHAR_BUDGET)
+
         // 从旧到新翻页拉积压，**攒够"判定 + 一段"所需的量就停**：
         // 判据要知道积压是否超（预算 + 阈值），分段最多再吃 SEGMENT_CAP_CHARS，
         // 再多拉一个字都是白读（超长会话不为算总数整表扫）。
-        val need = HISTORY_BUDGET_CHARS + TRIGGER_CHARS + SEGMENT_CAP_CHARS
+        val need = budget + TRIGGER_CHARS + SEGMENT_CAP_CHARS
         val backlog = ArrayList<ChatMessage>()
         var offset = 0
         var backlogChars = 0
+        // v0.97.0：是否已经把水位线之后的**全部**消息读进来了（读到短页 = 到底了）
+        var reachedEnd = false
         while (backlogChars < need) {
             val raw = db.messageDao().getAfterIdPaged(personaId, watermark, BACKLOG_PAGE, offset)
-            if (raw.isEmpty()) break
+            if (raw.isEmpty()) {
+                reachedEnd = true
+                break
+            }
             // 记忆待审系统气泡是 UI 提示不是对话（与提炼/LLM 历史同一剔除口径）。
             // ⚠️ "短页 = 到底了"的判据必须看**过滤前**的行数：过滤后不足一页≠没有更旧的消息。
             val page = raw.filter {
@@ -112,13 +123,32 @@ class SummaryEngine(
             backlog += page
             offset += BACKLOG_PAGE
             backlogChars += page.sumOf { it.content.length }
-            if (raw.size < BACKLOG_PAGE) break
+            if (raw.size < BACKLOG_PAGE) {
+                reachedEnd = true
+                break
+            }
         }
-        if (!needsSummary(backlogChars, HISTORY_BUDGET_CHARS)) return
+
+        // v0.97.0（静默空洞）：判据必须用**实际留下的字数**，而不是"预算"。
+        //
+        // 历史选取（[com.menghuan.app.ui.chat.selectHistoryByCharBudget]）是**贪心**的：
+        // 从最新往回收，遇到一条比剩余预算还长的消息就整个停住 —— 它实际留下的可能远少于预算。
+        // 以前这里按 `budget` 估算"掉出窗口的量"，两者对不上时，那段消息会
+        // **既不进 LLM 历史、也进不了摘要**（v0.82.0 注释警告过、v0.86.0 修过一次的坑）。
+        // 现在直接把同一个纯函数套在 backlog 上问"你到底留下了多少字"，口径与聊天链完全一致。
+        // 只在 `reachedEnd` 时才算（积压已全部读进来，算出来的数才准）；没到底说明积压远超阈值，
+        // 必然已经该触发，用 budget 近似即可。
+        val retainedChars = if (reachedEnd) {
+            com.menghuan.app.ui.chat.selectHistoryByCharBudget(backlog, budget)
+                .sumOf { it.content.length }
+        } else {
+            budget
+        }
+        if (!needsSummary(backlogChars, retainedChars)) return
 
         // 目标 = 把"掉出窗口"的那部分收进摘要；单次封顶 SEGMENT_CAP_CHARS（输入有界），
         // 剩下的下次触发再收——一次想把陈年旧账全压完，输入本身就先爆预算。
-        val targetChars = (backlogChars - HISTORY_BUDGET_CHARS).coerceAtMost(SEGMENT_CAP_CHARS)
+        val targetChars = (backlogChars - retainedChars).coerceAtMost(SEGMENT_CAP_CHARS)
         val segment = pickSegment(backlog, targetChars)
         if (segment.isEmpty()) return
         val newWatermark = segment.last().id
@@ -178,11 +208,11 @@ class SummaryEngine(
         private const val TAG = "SummaryEngine"
 
         /**
-         * 历史预算窗口的字数口径：唯一来源是聊天历史那边（20 万字，1 字≈1 token 保守折算）。
-         * 这里引用它而不是再写一个数——两边写成两个数，窗口边缘就会有一段消息
-         * 既不进历史也不进摘要，悄悄蒸发。
+         * 历史窗口字数在 v0.86.0 后**不再是常量** —— 按角色可配，唯一来源是
+         * `SettingsRepository.historyCharBudget(personaId)`（[run] 里每轮读）。
+         * 这里保留不了编译期引用：写成常量就有"用户改了窗口、摘要还按老窗口算"的风险，
+         * 那会导致窗口边缘的消息静默蒸发（v0.82.0 警告过的坑）。
          */
-        private const val HISTORY_BUDGET_CHARS = com.menghuan.app.ui.chat.HISTORY_CHAR_BUDGET
 
         /** 掉出窗口的积压超过这么多字就触发一次压缩（3 万字，2026-10-09 用户拍板） */
         const val TRIGGER_CHARS = 30_000

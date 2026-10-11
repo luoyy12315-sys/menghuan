@@ -10,6 +10,8 @@ import androidx.annotation.StringRes
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -85,12 +87,15 @@ import com.menghuan.app.ui.chat.ChatHistoryScreen
 import com.menghuan.app.ui.chat.ChatListScreen
 import com.menghuan.app.ui.chat.ChatScreen
 import com.menghuan.app.ui.chat.ChatSettingsScreen
+import com.menghuan.app.ui.chat.ConversationSummaryScreen
 import com.menghuan.app.ui.common.AdaptiveScreen
 import com.menghuan.app.ui.common.AdaptiveSplitScreen
+import com.menghuan.app.ui.common.AppToastHost
 import com.menghuan.app.ui.common.ContentMaxWidth
 import com.menghuan.app.ui.common.EaseOutExpo
 import com.menghuan.app.ui.common.EaseOutQuart
 import com.menghuan.app.ui.common.LocalWindowWidthClass
+import com.menghuan.app.ui.common.MhLogoSplash
 import com.menghuan.app.ui.common.WideMaxContentWidth
 import com.menghuan.app.ui.common.isExpandedWindow
 import com.menghuan.app.ui.common.neuSurface
@@ -150,6 +155,23 @@ class MainActivity : ComponentActivity() {
      */
     private val pendingCallPersona = mutableStateOf(0L)
 
+    /**
+     * 进程级标记：**进程里已经起过 Activity 了** → 这次是"从后台唤起"，不算冷启动。
+     *
+     * 判"冷启动"不能看 `savedInstanceState == null`（后台太久被系统回收 Activity 时它也是 null），
+     * 而静态字段天生就是"进程死了才清零"，正好对得上用户说的"没有后台时打开"。
+     */
+    private companion object {
+        private var processAlive = false
+
+        /** 取一次就置位：同一次进程生命周期里只有第一次调用返回 true */
+        fun consumeColdStart(): Boolean {
+            val cold = !processAlive
+            processAlive = true
+            return cold
+        }
+    }
+
     /** v0.53.7：接听 AI 来电时一并带过来的"是它打的"与开场白（用户主动打给 AI 时会被清掉） */
     private val pendingCallGreeting = mutableStateOf("")
     private val pendingCallByAi = mutableStateOf(false)
@@ -180,30 +202,42 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // 冷启动也读一次：来电页可能把整个 App 冷启起来
         readCallExtras(intent)
+        // 开屏只在这一次启动播：进程是新的（不是后台唤起）、且不是被来电直接顶起来的
+        // （来电是直达通话页的，中间插一层开屏会把接听流程拖慢）
+        val showSplash = consumeColdStart() &&
+            (application as MenghuanApp).coldStartSplashEnabled &&
+            pendingCallPersona.value <= 0L
         setContent {
+            // 记住"已经播过"：旋转/切主题重建 Activity 时不再从头画一遍
+            var splashVisible by rememberSaveable { mutableStateOf(showSplash) }
             // 主题层：跟随系统 / 强制浅色 / 强制深色（设置 · 外观）。
             // 首帧同步取值（见 settingsRepository.themeModeBlocking），避免启动时先亮后暗闪一下。
-            MenghuanThemedRoot {
+            MenghuanThemedRoot(splashShowing = splashVisible) {
                 // 窗口宽度等级：>=600dp（Medium/Expanded）切平板宽版式（双栏消息 / 两列网格）
                 val windowSizeClass = calculateWindowSizeClass(this)
-                CompositionLocalProvider(LocalWindowWidthClass provides windowSizeClass.widthSizeClass) {
-                    MenghuanAppRoot(
-                        pendingCallPersona = pendingCallPersona.value,
-                        callByAi = pendingCallByAi.value,
-                        callGreeting = pendingCallGreeting.value,
-                        onCallOpened = { pendingCallPersona.value = 0L },
-                        onCallConsumed = { clearCallExtrasForUserCall() },
-                    )
+                Box(Modifier.fillMaxSize()) {
+                    CompositionLocalProvider(LocalWindowWidthClass provides windowSizeClass.widthSizeClass) {
+                        MenghuanAppRoot(
+                            pendingCallPersona = pendingCallPersona.value,
+                            callByAi = pendingCallByAi.value,
+                            callGreeting = pendingCallGreeting.value,
+                            onCallOpened = { pendingCallPersona.value = 0L },
+                            onCallConsumed = { clearCallExtrasForUserCall() },
+                        )
+                    }
+                    // 全局轻反馈宿主（v0.97.0，审查 U15）：全项目 **只挂这一处**。
+                    // 挂在最外层 Box 里、开屏之后 —— 任何页面（含被 push 出去的全屏设置页）
+                    // 调 `AppToast.show` 都能盖在最上面显示，不再各页各写一套 Toast。
+                    AppToastHost(Modifier.align(Alignment.BottomCenter))
+                    // 开屏盖在主内容之上：底下该加载的照常加载，画完直接淡出露出首页
+                    AnimatedVisibility(
+                        visible = splashVisible,
+                        exit = fadeOut(tween(SPLASH_FADE_OUT_MS)),
+                        enter = EnterTransition.None,
+                    ) {
+                        MhLogoSplash(onFinished = { splashVisible = false })
+                    }
                 }
-            }
-        }
-        // AI 周报补生成：App 打开时检查上周是否缺报（如周末没开机则静默补生成；无 API 自动跳过）
-        val app = application as MenghuanApp
-        app.applicationScope.launch {
-            runCatching {
-                val zone = java.time.ZoneId.systemDefault()
-                val lastMonday = java.time.LocalDate.now(zone).with(java.time.DayOfWeek.MONDAY).minusDays(7)
-                app.weeklyReportGenerator.ensureReport(lastMonday, zone)
             }
         }
     }
@@ -213,9 +247,12 @@ class MainActivity : ComponentActivity() {
  * 主题根：解析「模式 + 系统深色」→ 深/浅两套色板，并同步系统栏图标颜色。
  * 系统栏必须显式指定（不用 auto）：auto 会跟随系统深色把图标翻白，
  * 与 App 自己的深浅选择脱钩（浅色界面上直接看不见图标）。
+ *
+ * @param splashShowing 开屏正在盖着屏幕。开屏是**固定浅色**的（logo 是黑气泡 + 白字，
+ *   深色纸上会糊掉），所以这期间系统栏图标必须强制走浅底那套，否则深色模式下图标看不见。
  */
 @Composable
-private fun MenghuanThemedRoot(content: @Composable () -> Unit) {
+private fun MenghuanThemedRoot(splashShowing: Boolean = false, content: @Composable () -> Unit) {
     val context = LocalContext.current
     val settings = remember(context) { (context.applicationContext as MenghuanApp).settingsRepository }
     var mode by remember { mutableStateOf(ThemeMode.fromName(settings.themeModeBlocking())) }
@@ -227,7 +264,7 @@ private fun MenghuanThemedRoot(content: @Composable () -> Unit) {
     val view = LocalView.current
     SideEffect {
         val activity = view.context.findActivity() ?: return@SideEffect
-        val style = if (dark) {
+        val style = if (dark && !splashShowing) {
             SystemBarStyle.dark(AndroidColor.TRANSPARENT)
         } else {
             SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
@@ -258,6 +295,9 @@ private data class TopLevelRoute(
  * 的前提：只要有一处时长不一致，底栏和页面就会各走各的，用户看到的就是"错位"。
  */
 private const val PUSH_TRANSITION_MS = 420
+
+/** 开屏淡出时长：logo 画完让位给首页，别硬切 */
+private const val SPLASH_FADE_OUT_MS = 220
 
 /** 顶级 tab 顺序 = Pager 页序 = 底栏序 */
 private val topLevelRoutes = listOf(
@@ -388,6 +428,8 @@ private fun MenghuanAppRoot(
                     onOpenLedger = { navController.navigate("ledger") },
                     onOpenAiDetail = { navController.navigate("ai_detail") },
                     onOpenTasks = { navController.navigate("tasks") },
+                    // v0.92.0：角色空间入口搬进数据页，点开选人后进该角色的空间
+                    onOpenRoleSpace = { id -> navController.navigate("live2d_space/$id") },
                 )
             }
             // 单聊页：标准 push 进出——从右侧滑入，返回滑出（平板双栏模式下不走此路由）。
@@ -620,6 +662,26 @@ private fun MenghuanAppRoot(
                     )
                 }
             }
+            // 「对话摘要」全屏页（v0.86.0，用户点名「对话摘要我也要全屏展示」）：
+            // 从会话设置那一行进来。原来是个底部弹层，但摘要正文是几百字的连续文本，
+            // 弹层只有半屏高、还和输入框抢位置（键盘一顶上来正文就看不见了）。
+            composable(
+                route = "conv_summary/{personaId}",
+                enterTransition = {
+                    slideInHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutExpo)) { it } + fadeIn(tween(260))
+                },
+                exitTransition = { fadeOut(tween(200)) },
+                popEnterTransition = { fadeIn(tween(260)) },
+                popExitTransition = {
+                    slideOutHorizontally(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart)) { it } +
+                        scaleOut(tween(PUSH_TRANSITION_MS, easing = EaseOutQuart), targetScale = 0.96f)
+                },
+            ) { entry ->
+                val pid = entry.arguments?.getString("personaId")?.toLongOrNull() ?: 0L
+                AdaptiveScreen {
+                    ConversationSummaryScreen(personaId = pid, onBack = { navController.popBackStack() })
+                }
+            }
             // 「TA 的记忆」全屏页（v0.71.0）：入口在会话设置。按 personaId 分 ——
             // 与"记忆按人设彻底分开"（v0.70.0）是同一条边界，这一页只看当前这个角色。
             composable(
@@ -696,7 +758,7 @@ private fun MenghuanAppRoot(
                     )
                 }
             }
-            // AI 洞察 + 周报 详情（v0.42.0）：数据页合并入口进入的全屏页
+            // AI 洞察 详情（v0.42.0）：数据页入口卡进入的全屏页（v0.87.0 起只留洞察）
             composable(
                 route = "ai_detail",
                 enterTransition = {
@@ -877,6 +939,7 @@ private fun HomePages(
     onOpenLedger: () -> Unit,
     onOpenAiDetail: () -> Unit,
     onOpenTasks: () -> Unit,
+    onOpenRoleSpace: (Long) -> Unit,
 ) {
     val wide = isExpandedWindow()
     HorizontalPager(
@@ -928,6 +991,7 @@ private fun HomePages(
                     onOpenLedger = onOpenLedger,
                     onOpenAiDetail = onOpenAiDetail,
                     onOpenTasks = onOpenTasks,
+                    onOpenRoleSpace = onOpenRoleSpace,
                     visible = pagerState.settledPage == 1,
                 )
             }

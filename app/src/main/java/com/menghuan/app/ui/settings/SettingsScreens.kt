@@ -65,7 +65,6 @@ data class DataStats(
     val tasks: Long = 0,
     val personas: Long = 0,
     val facts: Long = 0,
-    val reports: Long = 0,
 )
 
 /** 设置 · 数据与隐私：本机数据统计 + 导出/导入/清除全部数据/一键重置（二次确认） */
@@ -90,7 +89,6 @@ fun DataPrivacyScreen(
         StatRow("任务", "${stats.tasks} 条")
         StatRow("人设", "${stats.personas} 个")
         StatRow("档案条目", "${stats.facts} 项")
-        if (stats.reports > 0) StatRow("AI 周报", "${stats.reports} 期")
         Spacer(Modifier.height(16.dp))
         SectionLabel("备份与恢复")
         NeuButton(
@@ -133,7 +131,7 @@ fun DataPrivacyScreen(
         // v0.54.6：确认框也从底部弹（用户点名"所有弹窗改为从底下弹"）
         NeuSheetScaffold(title = "清除全部数据", onDismiss = { confirmClear = false }) {
             Text(
-                "将删除：全部聊天消息、AI 洞察、AI 周报、用户档案、任务与打卡记录，且不可恢复。\n" +
+                "将删除：全部聊天消息、AI 洞察、用户档案、任务与打卡记录，且不可恢复。\n" +
                     "保留：人设、API 接口配置、提示词、主题与通知开关。确定继续吗？",
                 fontSize = 13.sp,
                 lineHeight = 21.sp,
@@ -155,7 +153,7 @@ fun DataPrivacyScreen(
     if (confirmResetAll) {
         NeuSheetScaffold(title = "一键重置", onDismiss = { confirmResetAll = false }) {
             Text(
-                "将清空本机的全部数据与设置：人设、聊天、任务、打卡、档案、洞察、周报、API 配置与各项开关，" +
+                "将清空本机的全部数据与设置：人设、聊天、任务、打卡、档案、洞察、API 配置与各项开关，" +
                     "仅保留内置应用助手。此操作不可恢复，建议先导出备份。确定继续吗？",
                 fontSize = 13.sp,
                 lineHeight = 21.sp,

@@ -8,8 +8,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * v0.39.0：(0, 200000) 计费档的历史字数预算选取（服务商超过 20 万 token 档位翻倍计费，
- * 按 1 字 ≈ 1 token 保守折算，历史字数封顶 20 万字）。
+ * 上下文窗口字数预算的选取（`selectHistoryByCharBudget` 纯函数口径）。
+ *
+ * v0.39.0 原为 (0, 200000) 计费档写死 20 万；v0.86.0 改为**每个角色的设置项**
+ * （`SettingsRepository.historyCharBudget`），[HISTORY_CHAR_BUDGET] 降为默认值 1.2 万字。
+ * 纯函数本身没变，这里只钉住默认值与选取行为。
  */
 class HistoryBudgetTest {
 
@@ -44,7 +47,7 @@ class HistoryBudgetTest {
     }
 
     @Test
-    fun `默认预算常量是 20 万字`() {
-        assertEquals(200_000, HISTORY_CHAR_BUDGET)
+    fun `默认窗口是 1_2 万字`() {
+        assertEquals(12_000, HISTORY_CHAR_BUDGET)
     }
 }

@@ -248,36 +248,6 @@ fun SettingsSearchField(
 }
 
 /**
- * 顶部搜索**行**（点一下才进入搜索态）：与「消息」页会话列表顶部那条同款——
- * 凹陷灰槽 + 放大镜 + 「搜索」，不是可编辑输入框（v0.54.4）。
- *
- * 为什么不用 [SettingsSearchField] 常驻：设置主页是"上滑看卡片"的页面，
- * 一个真实输入框常驻会抢焦点、弹键盘，把卡片顶下去。改成"点一下才搜"，
- * 与消息页行为一致，用户不用学两套。
- */
-@Composable
-fun SettingsSearchRow(placeholder: String = "搜索", onClick: () -> Unit) {
-    val track = NeuTrack
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .neuSurface(16.dp, color = track, inset = true)
-            .neuRowPress(onClick)
-            .padding(horizontal = 14.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            MIcons.Search,
-            contentDescription = null,
-            tint = MutedText,
-            modifier = Modifier.size(15.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(placeholder, fontSize = 14.sp, color = MutedText)
-    }
-}
-
-/**
  * 灰线分隔的一行（v0.54.6）。
  *
  * 用户点名"取消卡片，直接用灰线分隔开"：会话设置页整页都不再用 `NeuSheetRow` 那种

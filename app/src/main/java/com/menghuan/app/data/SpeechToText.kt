@@ -1,6 +1,7 @@
 package com.menghuan.app.data
 
 import android.content.Context
+import android.util.Log
 import com.menghuan.app.MenghuanApp
 import kotlinx.coroutines.flow.first
 import java.io.File
@@ -26,6 +27,8 @@ import java.io.File
  * 模型看到的是"用户发了段语音但没转成文字"，不会瞎猜内容。
  */
 object SpeechToText {
+
+    private const val TAG = "SpeechToText"
 
     /**
      * 最近一次识别失败的原因，给聊天页那句提示用（在线那一路最有价值：
@@ -53,9 +56,17 @@ object SpeechToText {
             val url = runCatching { settings?.asrOnlineUrl?.first() }.getOrNull().orEmpty()
             val key = runCatching { settings?.asrOnlineApiKey?.first() }.getOrNull().orEmpty()
             val model = runCatching { settings?.asrOnlineModel?.first() }.getOrNull().orEmpty()
-            val text = runCatching { OnlineAsr.transcribe(url, key, model, file) }.getOrNull()
+            val attempt = runCatching { OnlineAsr.transcribe(url, key, model, file) }
+            // v0.97.0：异常不能被 runCatching 无声吞掉 —— 以前这里只读 OnlineAsr.lastFailure，
+            // 若异常发生在它写 lastFailure **之前**（如参数构造、线程中断），
+            // 界面上就是"识别为空"且没有任何原因，正是本项目最忌讳的"失败不声不响"。
             lastFailure = OnlineAsr.lastFailure
-            return text?.takeIf { it.isNotBlank() }
+                ?: attempt.exceptionOrNull()?.let {
+                    Log.w(TAG, "online asr threw", it)
+                    "在线识别异常：${it.javaClass.simpleName}" +
+                        (it.message?.takeIf { m -> m.isNotBlank() }?.let { m -> "：$m" } ?: "")
+                }
+            return attempt.getOrNull()?.takeIf { it.isNotBlank() }
         }
         // 离线路：失败原因只有"模型没下载"这一种是用户能自己解决的，其余是识别本身没出字
         val text = runCatching { SherpaAsr.transcribeWav(context, audioPath) }

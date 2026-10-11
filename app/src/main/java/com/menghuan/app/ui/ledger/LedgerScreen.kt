@@ -16,8 +16,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDefaults
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +52,7 @@ import com.menghuan.app.ui.common.AdaptiveScreen
 import com.menghuan.app.ui.common.NeuCard
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.NeuCircleButton
+import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuMenu
 import com.menghuan.app.ui.common.NeuMenuItem
 import com.menghuan.app.ui.common.NeuSectionTitle
@@ -56,6 +64,7 @@ import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.NeuHairline
+import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
@@ -69,9 +78,13 @@ import java.time.YearMonth
  * 2. 统计卡：**点左上角「月度统计 / 周度统计」标题切换档位**，左右箭头按当前档位翻页；
  *    收入/支出/结余三栏 + 每期净额走势柱
  * 3. 当期流水（按档位过滤；长按出菜单才能删）
+ *    · 顶部「日期栏」（v0.93.0）：左侧日期点开可以切到具体某一天，右侧是该天的净额；
+ *      选了某天就只看那一天的流水，旁边的「全部」回到按天分组浏览整期；
+ *      换档位 / 翻期也回到整期（上回选的那天多半已经不在新的一期里）
  *
  * 无分类/无分组（用户明确不要）：只有「钱、方向、时间、备注」四个信息。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LedgerScreen(
     entries: List<LedgerEntry>,
@@ -92,6 +105,12 @@ fun LedgerScreen(
     AdaptiveScreen {
         var menuFor by remember { mutableStateOf<LedgerEntry?>(null) }
         val haptic = LocalHapticFeedback.current
+        // v0.93.0：顶部日期栏选中的那一天；null = 看整期（按天分组浏览）
+        var selectedDay by remember { mutableStateOf<java.time.LocalDate?>(null) }
+        var pickingDay by remember { mutableStateOf(false) }
+        // 换档位 / 翻上一期下一期时回到"全部"：留着上回选的那天，多半已经不在新的一期里，
+        // 一翻页就只剩一句"这一天没有记录"，看着像坏了
+        LaunchedEffect(scope, month, weekStart) { selectedDay = null }
 
         NeuTopBar(
             title = "记账本",
@@ -124,9 +143,30 @@ fun LedgerScreen(
             }
         }
 
+        // v0.93.0：选中某天后，在**当期**里再按天筛一次。仍然套着当期这一层：
+        // 统计卡与流水列表永远同一期，不会出现"列表是 9 月某天、上面统计卡还是 10 月"。
+        val visibleEntries = remember(periodEntries, selectedDay) {
+            val day = selectedDay ?: return@remember periodEntries
+            val zone = java.time.ZoneId.systemDefault()
+            periodEntries.filter {
+                java.time.Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate() == day
+            }
+        }
+        // 顶部栏右侧那个数：**与列表同一批数据**算出来的净额（收入 − 支出）。
+        // 同批数据是硬要求——列表 3 笔、旁边却写着整月的总额，等于在骗人。
+        val visibleNetCents = remember(visibleEntries) { LedgerMath.balanceCents(visibleEntries) }
+
         val periodLabel: String = when (scope) {
-            DataViewModel.LedgerStatsScope.MONTH -> "${month.monthValue} 月流水 · ${periodEntries.size} 笔"
-            DataViewModel.LedgerStatsScope.WEEK -> "本周流水 · ${periodEntries.size} 笔"
+            DataViewModel.LedgerStatsScope.MONTH -> "${month.monthValue} 月流水 · ${visibleEntries.size} 笔"
+            DataViewModel.LedgerStatsScope.WEEK -> "本周流水 · ${visibleEntries.size} 笔"
+        }
+
+        // v0.91.0：按天分组（用户点名）。DAO 已按 occurredAt DESC 返回，groupBy 保持插入顺序
+        // → 日期段天然从新到旧，每天内部也是从晚到早。别在 LazyListScope 里算：
+        // 那不是 @Composable 作用域，里面调 remember 编译不过。
+        val dayGroups = remember(visibleEntries) {
+            val zone = java.time.ZoneId.systemDefault()
+            visibleEntries.groupBy { java.time.Instant.ofEpochMilli(it.occurredAt).atZone(zone).toLocalDate() }
         }
 
         LazyColumn(
@@ -149,14 +189,18 @@ fun LedgerScreen(
                 )
             }
             item(contentType = "section") {
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    NeuSectionTitle(periodLabel, Modifier.weight(1f))
+                Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
+                    NeuSectionTitle(periodLabel)
+                    Spacer(Modifier.height(10.dp))
+                    LedgerDayBar(
+                        day = selectedDay,
+                        netCents = visibleNetCents,
+                        onPickDay = { pickingDay = true },
+                        onShowAll = { selectedDay = null },
+                    )
                 }
             }
-            if (periodEntries.isEmpty()) {
+            if (visibleEntries.isEmpty()) {
                 item(contentType = "empty") {
                     Box(
                         Modifier
@@ -165,44 +209,190 @@ fun LedgerScreen(
                             .padding(vertical = 30.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text("还没有记录", fontSize = 13.5.sp, color = TextSecondary)
+                        Text(
+                            // 筛到某一天筛空了，要说清是"这一天没有"，不是"一笔都没记过"
+                            if (selectedDay != null) "这一天没有记录" else "还没有记录",
+                            fontSize = 13.5.sp,
+                            color = TextSecondary,
+                        )
                     }
                 }
             } else {
-                items(periodEntries, key = { it.id }, contentType = { "entry" }) { entry ->
-                    // 长按菜单锚点：菜单包在条目右下角的小 Box 里（Popup 锚定直接父节点）
-                    Box(Modifier.fillMaxWidth()) {
-                        LedgerRow(
-                            entry = entry,
-                            onLongClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                menuFor = entry
-                            },
-                        )
-                        Box(Modifier.align(Alignment.BottomEnd).size(1.dp)) {
-                            // v0.63.0：紧凑菜单（和任务页同一份），并补上「编辑这笔」
-                            NeuMenu(expanded = menuFor?.id == entry.id, onDismissRequest = { menuFor = null }) {
-                                NeuMenuItem(
-                                    "编辑这笔",
-                                    onClick = {
-                                        menuFor = null
-                                        onEdit(entry)
-                                    },
-                                )
-                                NeuMenuItem(
-                                    "删除这笔",
-                                    danger = true,
-                                    onClick = {
-                                        menuFor = null
-                                        onDelete(entry.id)
-                                    },
-                                )
+                dayGroups.forEach { (day, dayEntries) ->
+                    // 单日视图里日期已经写在顶部栏，分组头不再重复画一遍
+                    if (selectedDay == null) {
+                        item(key = "day-$day", contentType = "dayHeader") {
+                            LedgerDayHeader(ledgerDayLabel(day))
+                        }
+                    }
+                    items(dayEntries, key = { it.id }, contentType = { "entry" }) { entry ->
+                        // 长按菜单锚点：菜单包在条目右下角的小 Box 里（Popup 锚定直接父节点）
+                        Box(Modifier.fillMaxWidth()) {
+                            LedgerRow(
+                                entry = entry,
+                                // 日期已在分组标题上，行内只留时分
+                                showDate = false,
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    menuFor = entry
+                                },
+                            )
+                            Box(Modifier.align(Alignment.BottomEnd).size(1.dp)) {
+                                // v0.63.0：紧凑菜单（和任务页同一份），并补上「编辑这笔」
+                                NeuMenu(expanded = menuFor?.id == entry.id, onDismissRequest = { menuFor = null }) {
+                                    NeuMenuItem(
+                                        "编辑这笔",
+                                        onClick = {
+                                            menuFor = null
+                                            onEdit(entry)
+                                        },
+                                    )
+                                    NeuMenuItem(
+                                        "删除这笔",
+                                        danger = true,
+                                        onClick = {
+                                            menuFor = null
+                                            onDelete(entry.id)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
         }
+
+        if (pickingDay) {
+            // ⚠️ DatePicker 收发的毫秒是 **UTC 当日 0 点**，所以生成与解析都按 UTC：
+            // 用本地时区生成会整整差一天（东八区 10 月 10 日 0 点 = UTC 10 月 9 日 16 点）。
+            val pickerState = rememberDatePickerState(
+                initialSelectedDateMillis = (selectedDay ?: java.time.LocalDate.now()).toEpochDay() * 86_400_000L,
+            )
+            DatePickerDialog(
+                onDismissRequest = { pickingDay = false },
+                // Figma 风：白底直角面板 + 黑色选中/边框，去 Material 默认紫蓝（与任务页同一份）
+                shape = RoundedCornerShape(22.dp),
+                tonalElevation = 0.dp,
+                colors = DatePickerDefaults.colors(containerColor = NeuSurface),
+                confirmButton = {
+                    TextButton(onClick = {
+                        pickerState.selectedDateMillis?.let { ms ->
+                            selectedDay = java.time.Instant.ofEpochMilli(ms)
+                                .atZone(java.time.ZoneId.of("UTC"))
+                                .toLocalDate()
+                        }
+                        pickingDay = false
+                    }) { Text("确定", color = NeuAccent, fontWeight = FontWeight.SemiBold) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pickingDay = false }) { Text("取消", color = MutedText) }
+                },
+            ) {
+                DatePicker(
+                    state = pickerState,
+                    title = null,
+                    headline = null,
+                    showModeToggle = false,
+                    colors = DatePickerDefaults.colors(
+                        containerColor = NeuSurface,
+                        headlineContentColor = TextPrimary,
+                        selectedDayContainerColor = NeuAccent,
+                        todayContentColor = NeuAccent,
+                        todayDateBorderColor = NeuAccent,
+                        dayContentColor = TextPrimary,
+                        weekdayContentColor = MutedText,
+                        subheadContentColor = TextPrimary,
+                        navigationContentColor = TextPrimary,
+                        yearContentColor = TextPrimary,
+                        selectedYearContainerColor = NeuAccent,
+                        currentYearContentColor = NeuAccent,
+                        dividerColor = NeuHairline,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 流水顶部的日期栏（v0.93.0）：左边是当前日期，点它弹日期选择器切到具体某一天；
+ * 右边是**这一天的净额**（收入 − 支出，正数带 +、负数自带 −）。
+ *
+ * 选了某天后列表只显示那一天的流水，右侧金额由同一批数据算出来 —— 两个数字永远对得上。
+ * 旁边的「全部」回到按天分组浏览整期（默认就停在这里，一进页面不会先被筛成一天）。
+ */
+@Composable
+private fun LedgerDayBar(
+    /** null = 看整期 */
+    day: java.time.LocalDate?,
+    netCents: Long,
+    onPickDay: () -> Unit,
+    onShowAll: () -> Unit,
+) {
+    val press = rememberNeuPressState(raised = 2.dp)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier
+                .scale(press.scale)
+                .clickable(
+                    interactionSource = press.interactionSource,
+                    indication = null,
+                    onClick = onPickDay,
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (day == null) "全部" else ledgerDayLabel(day),
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
+                letterSpacing = (-0.1).sp,
+            )
+            Spacer(Modifier.width(3.dp))
+            Icon(
+                MIcons.ChevronDown,
+                contentDescription = null,
+                tint = TextSecondary,
+                modifier = Modifier.size(15.dp),
+            )
+        }
+        if (day != null) {
+            Spacer(Modifier.width(10.dp))
+            NeuChip(text = "全部", selected = false, onClick = onShowAll)
+        }
+        Spacer(Modifier.weight(1f))
+        Text(
+            (if (netCents >= 0) "+" else "") + LedgerMath.formatCents(netCents),
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = (-0.2).sp,
+            color = if (netCents >= 0) IncomeInkText else ExpenseInkText,
+        )
+    }
+}
+
+/**
+ * 流水按天分组的日期小标题（v0.91.0）。
+ *
+ * 用户点名"日期做得更显眼"——所以它**不比照** `NeuSectionTitle` 那套淡灰小字，
+ * 而是用正文尺度的深色字 + 下面一根发丝线：翻列表时一眼就能定位到"哪一天"。
+ * 与上面「10 月流水 · N 笔」那个计数标题也就自然区分开了（那个才是 section 级的小字）。
+ */
+@Composable
+private fun LedgerDayHeader(label: String) {
+    Column(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = TextPrimary,
+                letterSpacing = (-0.1).sp,
+            )
+        }
+        Spacer(Modifier.height(7.dp))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(NeuHairline))
     }
 }
 

@@ -265,10 +265,6 @@ class ChatListViewModel(
                 ChatListState(emptyList(), loaded = false),
             )
 
-    fun savePersona(persona: Persona) = viewModelScope.launch {
-        personaRepository.save(persona)
-    }
-
     /** 长按会话 → 删除会话：清空全部消息 + 从列表隐藏（微信式），重新打开或新消息即恢复 */
     fun clearConversation(personaId: Long) = viewModelScope.launch {
         db.messageDao().clearConversation(personaId)
@@ -328,8 +324,14 @@ class ChatListViewModel(
             MediaKind.AUDIO -> "[语音]"
             MediaKind.FILE -> "[文件]"
             MediaKind.CALL -> {
-                // 通话记录卡（v0.49.0；v0.60 起按类型换图标）：内容里已经写明是哪种通话
-                if (msg.content.trimStart().startsWith("视频通话")) "📹 ${msg.content}" else "📞 ${msg.content}"
+                // 通话记录卡（v0.49.0；v0.60 起按类型换图标）。
+                // ⚠️ v0.89.0（用户点名）：去掉 📹/📞 emoji，改用与 [图片]/[语音]/[文件] 同一套
+                // 方括号标签 —— 视频通话走 [视频]、语音通话走 [通话]，后面接时长。
+                // content 形如「视频通话 · 3分20秒」，这里剥掉重复的类型前缀，只留「 · 3分20秒」。
+                val isVideo = msg.content.trimStart().startsWith("视频通话")
+                val rest = msg.content.substringAfter("·", "").trim()
+                val label = if (isVideo) "[视频]" else "[通话]"
+                if (rest.isEmpty()) label else "$label $rest"
             }
             else -> msg.content.replace('\n', ' ')
         }

@@ -15,10 +15,11 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * 动态动作落库（v0.79.0 从 ChatViewModel 抽出的共享实现）。
+ * 动态动作落库（v0.79.0 从 ChatViewModel 抽出的实现）。
  *
- * 动态有两条链路（聊天顺手做 / 主动关心时顺便看），**校验口径只有这一份** ——
- * 所以这里测的就是两条链路共同的行为：先验 id、点赞幂等、按各自上限截断。
+ * ⚠️ 用户后来拍板「动态只存于主动关心那条链」——聊天链已整块退出动态（协议段、每轮名单、
+ * 落库调用点全删），所以这份实现现在只有**一个调用方**，`Limits.CHAT` 也一起删了。
+ * 这里测的就是这条链要守的几条：先验 id、点赞幂等、按上限截断。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(application = MenghuanApp::class, sdk = [34])
@@ -77,23 +78,6 @@ class MomentActionsTest {
         val all = a.db.momentDao().observeAll().first()
         assertEquals("库里也只有 1 条回复（parentId != 0）", 1, all.count { it.parentId != 0L })
         assertEquals("库里只有 1 条新帖（parentId == 0 且作者是角色）", 1, all.count { it.parentId == 0L && it.personaId == 7L })
-    }
-
-    @Test
-    fun `聊天链的上限仍是原值_发2回2赞3`() = runBlocking {
-        val a = app()
-        val ids = (1..3).map { a.db.momentDao().upsert(MomentEntry(personaId = 0L, text = "帖子$it")) }
-        val applied = MomentActions.apply(
-            a.db,
-            personaId = 7L,
-            raw = "[动态:帖一]\n[动态:帖二]\n[动态:帖三]\n" +
-                ids.joinToString("\n") { "[动态#$it:回一句]" } + "\n" +
-                ids.joinToString("\n") { "[点赞:$it]" },
-            limits = MomentActions.Limits.CHAT,
-        )
-        assertEquals("发帖仍是 2 条", 2, applied.posts)
-        assertEquals("回帖仍是 2 条", 2, applied.replies)
-        assertEquals("点赞仍是 3 条", 3, applied.likes)
     }
 
     @Test

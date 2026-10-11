@@ -79,11 +79,14 @@ import com.menghuan.app.ui.common.NeuMenu
 import com.menghuan.app.ui.common.NeuMenuItem
 import com.menghuan.app.ui.common.NeuSectionTitle
 import com.menghuan.app.ui.common.NeuSheetScaffold
+import com.menghuan.app.ui.common.NeuSkeleton
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.NeuPressSpec
+import com.menghuan.app.ui.common.ReminderPermissionHints
+import com.menghuan.app.ui.common.rememberClickGate
 import com.menghuan.app.ui.theme.FaintText
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
@@ -131,6 +134,7 @@ fun TasksScreen(
     vm: TasksViewModel = viewModel(factory = TasksViewModel.Factory),
 ) {
     val tasks by vm.tasks.collectAsState()
+    val loaded by vm.loaded.collectAsState()
     val hideDone by vm.hideDone.collectAsState()
     var showTaskSheet by remember { mutableStateOf(false) }
     var showAgentSheet by remember { mutableStateOf(false) }
@@ -214,6 +218,14 @@ fun TasksScreen(
                 }
             },
         )
+
+        // ⚠️ 三态（v0.97.0，审查 U1）：先判"数据到没到"，再判"空不空"。
+        // 以前只有 ②③，冷启动进来 `tasks` 还是初值 `emptyList()`，虚线框的
+        // 「暂无任务」会先闪一下，随后被真实列表替换 —— 与会话列表 v0.43.1 修的是同一个 bug。
+        if (!loaded) {
+            NeuSkeleton(count = 5, rowHeight = 76.dp, gap = 12.dp)
+            return@Column
+        }
 
         if (tasks.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -484,9 +496,16 @@ private fun TaskSheet(
                 createdAt = task?.createdAt ?: System.currentTimeMillis(),
             )
         )
+        // 设了提醒才提示（没设提醒的人不需要被打扰）；缺什么提示什么 ——
+        // 通知权限在上一段已单独走过系统弹窗，这里主要兜住"精确闹钟没开"（B34）。
+        if (remindAt != null) ReminderPermissionHints.warnAfterScheduling(context)
     }
 
     // Android 13+ 需要运行时通知权限：授权回调里再真正保存
+    //
+    // v0.97.0（审查 B36）：**被拒也照样保存**（不能因为权限没给就把用户填的东西丢掉），
+    // 而"提醒不会响"由 `commit()` 里的统一提示说出来 —— 以前这里是 `{ commit() }`，
+    // 用户点了"不允许"之后任务安静地存下、提醒安静地永不触发，谁都不知道发生了什么。
     val notifPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { commit() }
@@ -692,7 +711,7 @@ private fun TaskSheet(
 /**
  * 任务行：**整行点一下 = 打卡**，**长按 = 震一下并弹出菜单**（编辑 / 删除）。
  *
- * 菜单形状与会话列表 / 洞察 / 周报 / 记账本流水完全一致：锚在行的右下角。
+ * 菜单形状与会话列表 / 洞察 / 记账本流水完全一致：锚在行的右下角。
  * ⚠️ 点「删除」就**直接删**，不再叠一层确认框——长按呼出菜单那一下本身就是确认
  * （2026-10-02 定下的规矩；原来是长按直接开编辑弹层、删除藏在弹层里还要再确认一次，
  * 两处口径和别的地方都不一样）。
@@ -710,10 +729,17 @@ private fun TaskRow(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    // 防重复点击（v0.97.0，审查 U20）：整行与勾选圈都能触发打卡，手指抖一下就是两次
+    // `TaskActions.toggleTask`，每日任务会写两条 task_completions、基础任务会来回翻两次。
+    val gateToggle = rememberClickGate()
     val toggleWithHaptic = {
-        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-        onToggle()
+        if (gateToggle()) {
+            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+            onToggle()
+        }
     }
+    // 长按菜单不设闸门：它只是弹一层菜单（幂等），而长按本身要按住 500ms，
+    // 设窗口反而可能把"点完立刻长按"的合法操作吞掉。
     val callMenu = {
         haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
         menuOpen = true
@@ -760,10 +786,22 @@ private fun TaskRow(
                         indication = null, // 无涟漪：长按/点击反馈靠卡片按压与勾选动画
                         onClick = toggleWithHaptic,
                         onLongClick = callMenu,
+                        // 无障碍（v0.97.0，审查 U18）：只读标题/备注时，TalkBack 说不出
+                        // "双击能干什么"。补上动作名后，读屏会念
+                        // "任务标题，双击打卡/取消打卡"。
+                        onClickLabel = if (done) "取消打卡" else "打卡",
+                        onLongClickLabel = "更多操作",
                     ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                NeuCheckCircle(checked = done, onToggle = toggleWithHaptic)
+                // label 给读屏用；勾选圈与整行都可点，读屏焦点落在圈上时也能说出这是哪条任务
+                NeuCheckCircle(
+                    checked = done,
+                    onToggle = toggleWithHaptic,
+                    label = task.title,
+                    checkedDescription = "已完成",
+                    uncheckedDescription = "未完成",
+                )
                 Spacer(Modifier.width(13.dp))
                 Column(Modifier.weight(1f)) {
                     Text(

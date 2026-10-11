@@ -155,10 +155,10 @@ fun LedgerRoute(onBack: () -> Unit) {
                 editingEntry = null
                 voice.stop()
             },
-            onSave = { isIncome, cents, note, source ->
+            onSave = { isIncome, cents, note, category, source ->
                 val target = editingEntry
-                if (target != null) vm.editLedgerEntry(target, isIncome, cents, note)
-                else vm.addLedgerEntry(isIncome, cents, note, source)
+                if (target != null) vm.editLedgerEntry(target, isIncome, cents, note, category)
+                else vm.addLedgerEntry(isIncome, cents, note, category, source)
             },
             voice = voice,
             // 录音权限未授权时先申请（点语音才弹权限框，不在进页面时突袭用户）
@@ -184,23 +184,19 @@ fun LedgerRoute(onBack: () -> Unit) {
     }
 }
 
-/** AI 洞察 + 周报 全屏详情路由 */
+/** AI 洞察 全屏详情路由（v0.87.0 起只留洞察，周报已删；v0.88.0 起按周期分组 + 三态） */
 @Composable
 fun AiDetailRoute(onBack: () -> Unit) {
-    val context = LocalContext.current
     val vm: DataViewModel = viewModel(factory = DataViewModel.Factory)
     val insights by vm.insights.collectAsState()
-    val reports by vm.weeklyReports.collectAsState()
+    val loaded by vm.insightsLoaded.collectAsState()
+    // 每次进页面重读一次：洞察是 23:00 由闹钟写的，进程可能一直开着、列表是旧的
+    LaunchedEffect(Unit) { vm.refreshInsightsList() }
 
     AiDetailScreen(
         insights = insights,
-        reports = reports,
+        loaded = loaded,
         onBack = onBack,
         onDeleteInsight = { vm.deleteInsight(it) },
-        onDeleteReport = { vm.deleteWeeklyReport(it) },
-        onShareReport = { vm.shareWeeklyReport(context, it) },
     )
 }
-
-/** 金额格式化转发（LedgerRoute 之外也需要） */
-internal fun formatYuan(cents: Long): String = LedgerMath.formatCents(cents)

@@ -164,6 +164,9 @@ class PipelineVoiceCallEngine(
         return out
     }
     private var startedAt = 0L
+    // v0.97.0：写入点在 mainLoop / respond / ttsPlayer / fail 四处（IO 线程），
+    // 读取点在 hangUp（主线程也会调）。没有它，可能把出错的一通记成 completed。
+    @Volatile
     private var hadError = false
 
     override fun start(config: RealtimeCallConfig) {
@@ -359,23 +362,29 @@ class PipelineVoiceCallEngine(
 
         val cfg = config ?: return
         llmJob = scope.launch {
+            if (!isCallActive()) return@launch
             _state.value = RealtimeCallState.AI_THINKING
             emitState()
-            val history = synchronized(turns) {
-                // 上一轮被打断：只在**发出去的请求**里补一句说明，`turns` 本体不动 ——
-                // turns 会整批存进通话记录（下面 snapshot 那条路），把提示写进去等于伪造一句用户话。
-                // 不补的代价是真实的：模型看到的自己上一轮是一句戛然而止的话，它会以为自己说完了，
-                // 于是下一轮接着讲那段没人听见的内容（Open-LLM-VTuber 的 handle_interrupt 治的就是这个）。
-                val lastAiIndex = if (lastTurnInterrupted) turns.indexOfLast { it.speaker == "ai" } else -1
-                if (lastTurnInterrupted) lastTurnInterrupted = false
-                turns.mapIndexed { index, t ->
-                    ChatMessage(
-                        conversationId = 0L,
-                        content = if (index == lastAiIndex) t.text + INTERRUPT_NOTE else t.text,
-                        isFromUser = t.speaker == "user",
-                        timestamp = t.timestamp,
-                    )
-                }
+            // v0.97.0：通话历史**加预算**（以前每轮把全部 turns 原样重发）。
+            // 长通话里上下文与费用随轮数线性增长，最终撞模型窗口上限报 400，
+            // 而且通话链没有任何摘要兜底 —— 与文字聊天同一条纪律：只带最近这些字。
+            val wasInterrupted = lastTurnInterrupted
+            lastTurnInterrupted = false
+            val recentTurns = synchronized(turns) {
+                selectTurnsByCharBudget(turns.toList(), TURNS_CHAR_BUDGET)
+            }
+            // 上一轮被打断：只在**发出去的请求**里补一句说明，`turns` 本体不动 ——
+            // turns 会整批存进通话记录（下面 snapshot 那条路），把提示写进去等于伪造一句用户话。
+            // 不补的代价是真实的：模型看到的自己上一轮是一句戛然而止的话，它会以为自己说完了，
+            // 于是下一轮接着讲那段没人听见的内容（Open-LLM-VTuber 的 handle_interrupt 治的就是这个）。
+            val lastAiIndex = if (wasInterrupted) recentTurns.indexOfLast { it.speaker == "ai" } else -1
+            val history = recentTurns.mapIndexed { index, t ->
+                ChatMessage(
+                    conversationId = 0L,
+                    content = if (index == lastAiIndex) t.text + INTERRUPT_NOTE else t.text,
+                    isFromUser = t.speaker == "user",
+                    timestamp = t.timestamp,
+                )
             } + ChatMessage(conversationId = 0L, content = text, isFromUser = true, timestamp = System.currentTimeMillis())
 
             spoken.setLength(0)
@@ -469,8 +478,11 @@ class PipelineVoiceCallEngine(
                 Log.e(TAG, "respond failed", e)
                 hadError = true
                 _events.tryEmit(RealtimeCallEvent.Error("回复失败：${e.message ?: "网络异常"}"))
-                _state.value = RealtimeCallState.LISTENING
-                emitState()
+                // v0.97.0：挂断后晚到的异常不许把状态推回 LISTENING（否则界面"通话已结束却仍在通话"）
+                if (isCallActive()) {
+                    _state.value = RealtimeCallState.LISTENING
+                    emitState()
+                }
             }
         }
     }
@@ -500,8 +512,11 @@ class PipelineVoiceCallEngine(
                             break
                         }
                         spoke = true
-                        _state.value = RealtimeCallState.AI_SPEAKING
-                        emitState()
+                        // v0.97.0：晚到的 TTS 协程不许在挂断后把状态推回 AI_SPEAKING
+                        if (isCallActive()) {
+                            _state.value = RealtimeCallState.AI_SPEAKING
+                            emitState()
+                        }
                     }
                     audio?.playPcm(pcm) { scope.isActive && ttsJob?.isActive != false }
                 } else if (!spoke) {
@@ -558,6 +573,19 @@ class PipelineVoiceCallEngine(
         _events.tryEmit(RealtimeCallEvent.State(_state.value))
     }
 
+    /**
+     * 通话是否仍在进行中（v0.97.0）。
+     *
+     * 类头注释写着"状态机唯一写手"，但实际写入点分布在 mainLoop / llmJob / ttsPlayer / UI 线程
+     * 四处。`cancel()` 是协作式的：挂断把状态推到 `DISCONNECTING/ENDED` 之后，
+     * 某个晚到的协程仍可能执行到 `_state.value = LISTENING`，界面就变成
+     * **"通话已结束却仍在通话"**。所有"晚到的异常/恢复分支"写状态前必须先问这一句。
+     */
+    private fun isCallActive(): Boolean {
+        val s = _state.value
+        return s != RealtimeCallState.ENDED && s != RealtimeCallState.DISCONNECTING
+    }
+
     private companion object {
         const val TAG = "VoiceCallEngine"
         const val BARGE_IN_MS = 300L
@@ -573,5 +601,30 @@ class PipelineVoiceCallEngine(
          * 语义上 OLVT 那句 `heard_response + "..."` 与本条等价。
          */
         const val INTERRUPT_NOTE = "……（这里被用户打断了，后面的话我没能说出口）"
+
+        /**
+         * 通话历史的字数预算（v0.97.0）：与文字聊天默认窗口同一量级。
+         * 以前通话**完全没有预算**，长通话每轮把全部 `turns` 原样重发。
+         */
+        const val TURNS_CHAR_BUDGET = 12_000
     }
+}
+
+/**
+ * 通话历史裁剪（v0.97.0，纯函数，JVM 可测）：
+ * 从最新往回收，累计字数够 [maxChars] 就停，**至少保留最后一条**
+ * （单条就超长的也必须能过去，否则模型会收到空历史 —— 与聊天链同一纪律）。
+ */
+internal fun selectTurnsByCharBudget(turns: List<CallTurnData>, maxChars: Int): List<CallTurnData> {
+    if (turns.isEmpty()) return emptyList()
+    if (maxChars <= 0) return turns.takeLast(1)
+    var budget = maxChars
+    val picked = ArrayList<CallTurnData>(turns.size)
+    for (t in turns.asReversed()) {
+        val cost = t.text.length
+        if (picked.isNotEmpty() && cost > budget) break
+        picked += t
+        budget -= cost
+    }
+    return picked.asReversed()
 }

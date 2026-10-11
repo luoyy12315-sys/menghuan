@@ -53,6 +53,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
@@ -75,6 +80,7 @@ import com.menghuan.app.data.MomentMath
 import com.menghuan.app.data.model.MomentEntry
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.ui.common.NeuAvatar
+import com.menghuan.app.ui.common.NeuCardSkeleton
 import com.menghuan.app.ui.common.NeuCircleButton
 import com.menghuan.app.ui.common.NeuMenu
 import com.menghuan.app.ui.common.NeuMenuItem
@@ -150,7 +156,6 @@ fun MomentsScreen(
     val refreshing by vm.refreshing.collectAsState()
     val round by vm.round.collectAsState()
     val places by vm.placeSuggestions.collectAsState()
-    val message by vm.message.collectAsState()
     var composing by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().background(CanvasGray)) {
@@ -158,7 +163,9 @@ fun MomentsScreen(
 
         Box(Modifier.weight(1f)) {
             when {
-                !page.loaded -> Box(Modifier.fillMaxSize())
+                // v0.97.0（审查 U2）：原来是 `Box(Modifier.fillMaxSize())` —— 纯白一片，
+                // 冷启动进来用户会以为这一页坏了或者是空的。给骨架块，形状和真实时间线一致。
+                !page.loaded -> NeuCardSkeleton(count = 3)
                 page.threads.isEmpty() -> EmptyFeedHint { composing = true }
                 else -> MomentsTimeline(
                     page = page,
@@ -192,7 +199,8 @@ fun MomentsScreen(
         )
     }
 
-    FeedToast(message, vm::clearMessage)
+    // 反馈统一走全局 [AppToast]（v0.97.0，审查 U15）：原来这里自绘一颗 FeedToast 胶囊，
+    // 与记忆页 / 聊天页的系统 Toast 并存 —— 同一句「已删除」两种皮肤。
 }
 
 /**
@@ -449,6 +457,13 @@ private fun LikeButton(
                 },
                 onLongClick = {},
             )
+            // 无障碍（v0.97.0，审查 U17）：图标本来 `contentDescription = null`、外层只有
+            // `combinedClickable` —— 读屏只念得出"1"（数字），念不出这是赞、也念不出赞没赞过。
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = if (liked) "取消点赞" else "点赞"
+                stateDescription = if (count > 0) "已有 $count 个赞" else "还没有人赞"
+            }
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -499,6 +514,8 @@ private fun FeedAction(
     label: Int,
     tint: Color,
     onClick: () -> Unit,
+    /** 读屏用的动作名（v0.97.0，审查 U17） */
+    actionName: String = "回复",
 ) {
     val src = remember { MutableInteractionSource() }
     val pressed by src.collectIsPressedAsState()
@@ -517,8 +534,16 @@ private fun FeedAction(
                 interactionSource = src,
                 indication = null,
                 onClick = onClick,
-                onLongClick = onClick,
+                // v0.97.0：原来长按也执行 onClick —— 长按是"我想干点别的"的通用手势，
+                // 让它等价于点一下，等于给了一个随时误触发的重复入口（进详情 / 展开回复）。
+                onLongClick = null,
             )
+            // 无障碍（U17）：同 LikeButton，补动作名 + 数量，读屏才说得清这一颗图标是什么。
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = actionName
+                stateDescription = if (label > 0) "已有 $label 条" else "还没有"
+            }
             .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -600,23 +625,8 @@ private fun MomentAuthorAvatar(
         val userAvatar by remember {
             (ctx.applicationContext as com.menghuan.app.MenghuanApp).settingsRepository.userAvatar
         }.collectAsState(initial = com.menghuan.app.data.UserAvatar())
-        if (!userAvatar.isEmpty) {
-            NeuAvatar(
-                emoji = userAvatar.effectiveEmoji.ifBlank { "我" },
-                size = size,
-                imagePath = userAvatar.imagePath,
-                modifier = shared,
-            )
-            return
-        }
-        Box(
-            shared
-                .size(size)
-                .background(NeuAccent, RoundedCornerShape(999.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("我", fontSize = (size.value * 0.34f).sp, color = AccentInk, fontWeight = FontWeight.Medium)
-        }
+        // v0.93.0：同一张脸只留一份实现（含那圈渐变环），档案页 / 我的页 / 这里长得必须一样
+        com.menghuan.app.ui.profile.MeAvatar(avatar = userAvatar, size = size, modifier = shared)
         return
     }
     NeuAvatar(
@@ -726,7 +736,6 @@ fun MomentThreadScreen(
     vm: MomentsViewModel = viewModel(factory = MomentsViewModel.Factory),
 ) {
     val feed by vm.feed.collectAsState()
-    val message by vm.message.collectAsState()
     var replying by remember { mutableStateOf(false) }
 
     val thread = remember(feed.threads, momentId) {
@@ -795,7 +804,8 @@ fun MomentThreadScreen(
         )
     }
 
-    FeedToast(message, vm::clearMessage)
+    // 反馈统一走全局 [AppToast]（v0.97.0，审查 U15）：原来这里自绘一颗 FeedToast 胶囊，
+    // 与记忆页 / 聊天页的系统 Toast 并存 —— 同一句「已删除」两种皮肤。
 }
 
 /** 详情页的原帖：一张白卡，比时间线那张更松一点（+2dp），正文也更大 */
@@ -998,27 +1008,7 @@ private fun ReplyBar(onSend: (String) -> Unit) {
     }
 }
 
-/** 一次性反馈小胶囊（"已发布"/"已删除"）：两秒自己走 */
-@Composable
-private fun FeedToast(message: String?, onExpire: () -> Unit) {
-    if (message == null) return
-    LaunchedEffect(message) {
-        kotlinx.coroutines.delay(2000)
-        onExpire()
-    }
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .padding(bottom = 96.dp),
-        contentAlignment = Alignment.BottomCenter,
-    ) {
-        Text(
-            message,
-            fontSize = 13.sp,
-            color = AccentInk,
-            modifier = Modifier
-                .background(NeuAccent, RoundedCornerShape(999.dp))
-                .padding(horizontal = 14.dp, vertical = 7.dp),
-        )
-    }
-}
+/**
+ * 一次性反馈小胶囊已于 v0.97.0 删除（审查 U15）——现在统一由全局 [com.menghuan.app.ui.common.AppToast]
+ * 承担（挂载在 `MainActivity` 根 Box）。留在这里的第二套皮肤会与它并存，反而更乱。
+ */

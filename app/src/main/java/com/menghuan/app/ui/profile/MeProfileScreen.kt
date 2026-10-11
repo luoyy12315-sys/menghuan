@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -42,6 +43,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.NeuTextButton
+import com.menghuan.app.ui.common.drawRing
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberAvatarWheelState
 import com.menghuan.app.ui.settings.SettingsPage
@@ -50,6 +52,7 @@ import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.theme.MutedText
 import com.menghuan.app.ui.theme.NeuAccent
 import com.menghuan.app.ui.theme.TextPrimary
+import com.menghuan.app.ui.theme.personaBrush
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -63,26 +66,53 @@ data class DraftFact(val id: Long?, val key: String, val value: String)
 /**
  * 我的头像（三态统一渲染）：有图用图 → 有 emoji 用 emoji → 都没设就是黑底白「我」圆。
  * 与动态页「我」那条、聊天页用户气泡旁的头像是同一张脸（同名同口径）。
+ *
+ * [ringBrush]（v0.93.0）：套一圈渐变环，**画法与人设头像那圈完全同一份**（`drawRing`），
+ * 让人设头像与"我"的头像是同一套框样式。默认就带 —— "我"这张脸在档案页、我的页、
+ * 动态页、聊天气泡旁都得长一样，靠调用点各传一次迟早漏掉一处。
+ *
+ * ⚠️ 这一张脸以前在动态页与聊天页各画了一份（同样的黑底「我」+ 同样的 NeuAvatar），
+ * v0.93.0 一并收回这里：**同一张脸只有一份实现**。
  */
 @Composable
-fun MeAvatar(avatar: UserAvatar, size: androidx.compose.ui.unit.Dp) {
+fun MeAvatar(
+    avatar: UserAvatar,
+    size: androidx.compose.ui.unit.Dp,
+    ringBrush: androidx.compose.ui.graphics.Brush? = meAvatarRingBrush(),
+    modifier: Modifier = Modifier,
+) {
     if (!avatar.isEmpty) {
         NeuAvatar(
             emoji = avatar.effectiveEmoji.ifBlank { "我" },
             size = size,
+            ringBrush = ringBrush,
             imagePath = avatar.imagePath,
+            modifier = modifier,
         )
     } else {
         Box(
-            Modifier
+            modifier
                 .size(size)
                 .background(NeuAccent, CircleShape),
             contentAlignment = Alignment.Center,
         ) {
+            if (ringBrush != null) {
+                Box(Modifier.fillMaxSize().drawRing(ringBrush))
+            }
             Text("我", fontSize = (size.value * 0.34f).sp, color = AccentInk, fontWeight = FontWeight.Medium)
         }
     }
 }
+
+/**
+ * 「我」的渐变环（v0.93.0）：与人设头像同一套 `personaBrush` 画法，配色按 id 稳定散列。
+ *
+ * 取一个**负数 id**：人设的 id 是 Room 自增的正数，不可能撞上，
+ * 于是"我"的环色永远固定、也不会和某个角色重色。
+ */
+private const val ME_AVATAR_RING_ID = -1L
+
+private fun meAvatarRingBrush(): androidx.compose.ui.graphics.Brush = personaBrush(ME_AVATAR_RING_ID)
 
 /**
  * 个人档案页（v0.80.0）：头像 + 昵称 + 简介，三项都能改。
@@ -139,6 +169,8 @@ fun MeProfileScreen(onBack: () -> Unit) {
         // ⚠️ commitInitialAnchor = false：没选过头像的人，框里该一直是「我」，
         // 不能一进页面就被悄悄落成某个 emoji（那是实打实的 bug 观感）。
         val wheelState = rememberAvatarWheelState()
+        // v0.93.0：「我」的头像框套上与人设头像**同一款**渐变环（配色固定，不跟角色走）
+        val meRing = personaBrush(ME_AVATAR_RING_ID)
         AvatarEmojiWheel(
             emoji = avatar?.emoji ?: "",
             imagePath = avatar?.imagePath ?: "",
@@ -148,6 +180,7 @@ fun MeProfileScreen(onBack: () -> Unit) {
             },
             onFrameClick = { picker.launch("image/*") },
             state = wheelState,
+            ringBrush = meRing,
             frameSize = 88.dp,
             cellSize = 56.dp,
             lensSpan = 66.dp,
@@ -156,7 +189,7 @@ fun MeProfileScreen(onBack: () -> Unit) {
             placeholder = "我",
             // 一样都没设过时，还是那张**黑底白「我」**的脸 —— 与聊天页 / 动态页里"我"同一张，
             // 也是手册里写明的样子（换成白面「我」会把它写错，两处也长得不一样）
-            emptyFrame = { MeAvatar(avatar = UserAvatar(), size = 88.dp) },
+            emptyFrame = { MeAvatar(avatar = UserAvatar(), size = 88.dp, ringBrush = meRing) },
             commitInitialAnchor = false,
         )
         Spacer(Modifier.height(4.dp))

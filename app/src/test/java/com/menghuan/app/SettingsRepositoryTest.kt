@@ -79,20 +79,6 @@ class SettingsRepositoryTest {
         assertTrue(after.isComplete)
     }
 
-    @Test
-    fun weeklyReportNotifyDefaultOffAndToggle() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<MenghuanApp>()
-        val repo = SettingsRepository(context)
-        context.settingsStore.edit { it.clear() }
-
-        // 默认关：周报不时效敏感，静默生成
-        assertEquals(false, repo.weeklyReportNotifyEnabled.first())
-        repo.setWeeklyReportNotifyEnabled(true)
-        assertEquals(true, repo.weeklyReportNotifyEnabled.first())
-        repo.setWeeklyReportNotifyEnabled(false)
-        assertEquals(false, repo.weeklyReportNotifyEnabled.first())
-    }
-
     /**
      * 「清除全部数据」（v0.36.5）的边界：只清会话级派生键（未读标记 / 提炼水位线 / 草稿），
      * 配置类键——接口、主题、会话级接口覆盖——必须原样活着，否则"保留人设与接口"就是空话。

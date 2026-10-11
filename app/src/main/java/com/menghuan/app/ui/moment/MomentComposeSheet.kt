@@ -56,6 +56,7 @@ import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.figmaSelection
+import com.menghuan.app.ui.common.rememberClickGate
 import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.theme.MIcons
 import com.menghuan.app.ui.theme.MutedText
@@ -105,6 +106,9 @@ fun MomentComposeSheet(
     var text by remember { mutableStateOf("") }
     var images by remember { mutableStateOf(listOf<String>()) }
     var location by remember { mutableStateOf("") }
+    // 防重复发布（v0.97.0，审查 U20）：弹层的关闭由**调用方**在 onSubmit 里做
+    // （`composing = false`），所以按下到收起之间有一段窗口 —— 双击就是两条动态。
+    val gateSubmit = rememberClickGate()
 
     /** 丢弃这条草稿：把临时图删掉再收弹层（上面注释里的"只有一条离开路径"） */
     fun abort() {
@@ -170,6 +174,7 @@ fun MomentComposeSheet(
             NeuButton(
                 text = submitLabel,
                 onClick = {
+                    if (!gateSubmit()) return@NeuButton
                     if (text.isBlank() && images.isEmpty()) return@NeuButton
                     onSubmit(text, images, location)
                 },

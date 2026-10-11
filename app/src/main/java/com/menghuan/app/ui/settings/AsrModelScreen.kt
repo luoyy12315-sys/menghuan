@@ -193,78 +193,83 @@ fun AsrModelScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(16.dp))
         }
 
-        NeuSectionTitle(if (ready) "已就绪" else "未就绪")
-        Spacer(Modifier.height(8.dp))
-        AsrModelFile.entries.forEach { file ->
-            ModelFileRow(
-                name = file.fileName,
-                size = AsrModelRules.humanSize(file.sizeBytes),
-                present = AsrModelManager.fileOf(context, file)
-                    .let { it.isFile && it.length() == file.sizeBytes },
-            )
-            Spacer(Modifier.height(6.dp))
-        }
-
-        val runningPhase = phase as? AsrDownloadPhase.Running
-        if (runningPhase != null) {
+        // v0.93.0：**选了在线接口就整块不显示离线那一套**（文件列表 / 下载源 / 下载按钮 /
+        // 释放空间）。它们只服务于端侧 SenseVoice，在线模式下摆着只会让人以为"还得再下个
+        // 228MB 的模型"——切回离线（本机）时原样回来。
+        if (engine != ASR_ONLINE) {
+            NeuSectionTitle(if (ready) "已就绪" else "未就绪")
             Spacer(Modifier.height(8.dp))
-            DownloadProgress(runningPhase)
-        }
-
-        Spacer(Modifier.height(14.dp))
-        NeuSectionTitle("下载源")
-        Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth()) {
-            AsrModelSource.entries.forEach { s ->
-                NeuChip(text = s.label, selected = source == s, onClick = { source = s })
-                Spacer(Modifier.width(8.dp))
+            AsrModelFile.entries.forEach { file ->
+                ModelFileRow(
+                    name = file.fileName,
+                    size = AsrModelRules.humanSize(file.sizeBytes),
+                    present = AsrModelManager.fileOf(context, file)
+                        .let { it.isFile && it.length() == file.sizeBytes },
+                )
+                Spacer(Modifier.height(6.dp))
             }
-        }
 
-        Spacer(Modifier.height(14.dp))
-        if (ready) {
-            NeuButton(text = "已就绪", kind = NeuButtonKind.Secondary, enabled = false, onClick = {})
-        } else if (running) {
-            NeuButton(text = "暂停下载", kind = NeuButtonKind.Secondary, onClick = { AsrDownloadSession.pause() })
-        } else {
-            NeuButton(
-                // 按钮上直接写还差多少字节：这既是"要下多大"也是"要走多少流量"，
-                // 不用再另加一行说明性小字
-                text = (if (pending < AsrModelFile.entries.sumOf { it.sizeBytes }) "继续下载 · " else "下载模型 · ") +
-                    AsrModelRules.humanSize(pending),
-                kind = NeuButtonKind.Primary,
-                onClick = {
-                    notice = null
-                    AsrDownloadSession.clearFailure()
-                    AsrDownloadSession.start(context, app.applicationScope, source)
-                },
-            )
-        }
-
-        (phase as? AsrDownloadPhase.Failed)?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it.reason, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
-            // 两个源都连不上时用户没有别的出路（手动导入已删——普通人不知道该下哪个文件），
-            // 至少把官方仓库主页给出来：长按选中即可复制，去浏览器里自己试
-            Spacer(Modifier.height(6.dp))
-            SelectionContainer {
-                Text(source.webPage, fontSize = 11.sp, lineHeight = 16.sp, color = TextSecondary)
+            val runningPhase = phase as? AsrDownloadPhase.Running
+            if (runningPhase != null) {
+                Spacer(Modifier.height(8.dp))
+                DownloadProgress(runningPhase)
             }
-        }
-        notice?.let {
-            Spacer(Modifier.height(8.dp))
-            Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = MutedText)
-        }
 
-        if (ready || pending < AsrModelFile.entries.sumOf { it.sizeBytes }) {
+            Spacer(Modifier.height(14.dp))
+            NeuSectionTitle("下载源")
             Spacer(Modifier.height(8.dp))
-            NeuSectionTitle("释放空间")
-            Spacer(Modifier.height(8.dp))
-            NeuButton(
-                text = "删除模型文件",
-                kind = NeuButtonKind.Danger,
-                onClick = { confirmDelete = true },
-            )
+            Row(Modifier.fillMaxWidth()) {
+                AsrModelSource.entries.forEach { s ->
+                    NeuChip(text = s.label, selected = source == s, onClick = { source = s })
+                    Spacer(Modifier.width(8.dp))
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            if (ready) {
+                NeuButton(text = "已就绪", kind = NeuButtonKind.Secondary, enabled = false, onClick = {})
+            } else if (running) {
+                NeuButton(text = "暂停下载", kind = NeuButtonKind.Secondary, onClick = { AsrDownloadSession.pause() })
+            } else {
+                NeuButton(
+                    // 按钮上直接写还差多少字节：这既是"要下多大"也是"要走多少流量"，
+                    // 不用再另加一行说明性小字
+                    text = (if (pending < AsrModelFile.entries.sumOf { it.sizeBytes }) "继续下载 · " else "下载模型 · ") +
+                        AsrModelRules.humanSize(pending),
+                    kind = NeuButtonKind.Primary,
+                    onClick = {
+                        notice = null
+                        AsrDownloadSession.clearFailure()
+                        AsrDownloadSession.start(context, app.applicationScope, source)
+                    },
+                )
+            }
+
+            (phase as? AsrDownloadPhase.Failed)?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it.reason, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
+                // 两个源都连不上时用户没有别的出路（手动导入已删——普通人不知道该下哪个文件），
+                // 至少把官方仓库主页给出来：长按选中即可复制，去浏览器里自己试
+                Spacer(Modifier.height(6.dp))
+                SelectionContainer {
+                    Text(source.webPage, fontSize = 11.sp, lineHeight = 16.sp, color = TextSecondary)
+                }
+            }
+            notice?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = MutedText)
+            }
+
+            if (ready || pending < AsrModelFile.entries.sumOf { it.sizeBytes }) {
+                Spacer(Modifier.height(8.dp))
+                NeuSectionTitle("释放空间")
+                Spacer(Modifier.height(8.dp))
+                NeuButton(
+                    text = "删除模型文件",
+                    kind = NeuButtonKind.Danger,
+                    onClick = { confirmDelete = true },
+                )
+            }
         }
         Spacer(Modifier.height(6.dp))
     }

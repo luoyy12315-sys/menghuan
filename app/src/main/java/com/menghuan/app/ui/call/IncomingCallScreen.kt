@@ -137,12 +137,16 @@ class IncomingCallActivity : ComponentActivity() {
 
     /** 没接 / 挂断：开场白改成一条留言消息落进会话 */
     private fun decline(personaId: Long, greeting: String) {
-        if (greeting.isNotBlank()) {
+        // v0.88.0：通话链路不出任务建议卡（只在聊天页出），但标记要剥干净再落
+        val text = com.menghuan.app.data.CompanionMarker.strip(
+            com.menghuan.app.data.TaskSuggestionMarker.strip(greeting)
+        )
+        if (text.isNotBlank()) {
             val app = application as MenghuanApp
             lifecycleScope.launch {
                 runCatching {
                     app.db.messageDao().insert(
-                        ChatMessage(conversationId = personaId, isFromUser = false, content = greeting),
+                        ChatMessage(conversationId = personaId, isFromUser = false, content = text),
                     )
                 }
             }

@@ -22,6 +22,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.model.ProfileFact
+import com.menghuan.app.ui.common.AppToast
+import com.menghuan.app.ui.common.NeuSkeleton
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.settings.SettingsPage
 import com.menghuan.app.ui.theme.FaintText
@@ -56,7 +58,13 @@ fun MemoryScreen(personaId: Long, onBack: () -> Unit) {
     val app = LocalContext.current.applicationContext as MenghuanApp
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val rows by app.db.profileFactDao().observeOwnedBy(personaId).collectAsState(initial = emptyList())
+    // 三态（v0.97.0，审查 U5）：初值用 **null** 而不是 `emptyList()`。
+    //
+    // 这一页的四个段都是"空段整段不渲染"，所以 `emptyList()` 的初值会让整页只剩一个标题 ——
+    // 用户看到的是"我记的东西全没了"。null 表示"还没读到"，与"读到了确实是空的"分开。
+    val rowsState by app.db.profileFactDao().observeOwnedBy(personaId).collectAsState(initial = null)
+    val loaded = rowsState != null
+    val rows: List<ProfileFact> = rowsState.orEmpty()
 
     val staging = rows.filter { it.lifecycle == "staging" }
     val active = rows.filter { it.lifecycle == "active" }
@@ -69,27 +77,34 @@ fun MemoryScreen(personaId: Long, onBack: () -> Unit) {
             val ok = runCatching {
                 app.db.profileFactDao().upsert(row.copy(lifecycle = next, updatedAt = System.currentTimeMillis()))
             }.isSuccess
-            Toast.makeText(
-                context,
-                if (!ok) "操作失败，请重试" else (toast ?: ""),
-                Toast.LENGTH_SHORT,
-            ).show()
+            // v0.97.0（审查 U15）：改用全局轻反馈（原来这里 1 处 Toast、下面 delete 1 处，
+            // 而同项目的动态页另有一套自绘胶囊 —— 三套皮肤说同一件事）。
+            if (!ok) AppToast.fail("操作失败，请重试")
+            else if (!toast.isNullOrBlank()) AppToast.ok(toast)
         }
     }
 
     fun delete(row: ProfileFact) {
         scope.launch {
-            runCatching {
+            // v0.97.0：与上面的 setLifecycle 同一口径 —— 失败必须说失败。
+            // 以前这里不看结果、恒报"已删除"，而同一文件里的 setLifecycle 却是对的，
+            // 同一屏两套行为，用户没法判断到底哪一次成功。
+            val ok = runCatching {
                 app.db.profileFactDao().delete(row.id)
                 // 语义向量一并清（v0.82.0 P1-2）：记忆没了，向量留着就是指向空气的行
                 app.db.memoryEmbeddingDao().deleteForFacts(listOf(row.id))
-            }
-            Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
+            }.isSuccess
+            if (ok) AppToast.ok("已删除") else AppToast.fail("删除失败，请重试")
         }
     }
 
     SettingsPage(title = "TA 的记忆", onBack = onBack) {
         Spacer(Modifier.height(10.dp))
+
+        if (!loaded) {
+            NeuSkeleton(count = 6, rowHeight = 40.dp)
+            return@SettingsPage
+        }
 
         Section("待入库", staging) { row ->
             MemoryRow(row.value, trailing = {

@@ -49,15 +49,20 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.menghuan.app.data.model.AiWeeklyReport
+import com.menghuan.app.data.model.AiInsight
 import com.menghuan.app.data.model.DailySuggestion
+import com.menghuan.app.data.model.InsightPeriod
+import com.menghuan.app.ui.common.NeuAvatar
 import com.menghuan.app.ui.common.NeuButton
 import com.menghuan.app.ui.common.NeuButtonKind
 import com.menghuan.app.ui.common.NeuCard
+import com.menghuan.app.ui.common.NeuSheetScaffold
+import com.menghuan.app.ui.common.NeuSkeleton
 import com.menghuan.app.ui.common.NeuTopBar
 import com.menghuan.app.ui.common.neuSurface
 import com.menghuan.app.ui.common.rememberNeuPressState
@@ -74,6 +79,7 @@ import com.menghuan.app.ui.theme.NeuSurface
 import com.menghuan.app.ui.theme.NeuTrack
 import com.menghuan.app.ui.theme.TextPrimary
 import com.menghuan.app.ui.theme.TextSecondary
+import com.menghuan.app.ui.theme.personaBrush
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -90,19 +96,6 @@ internal fun AiInsightDateLabel(createdAt: Long): String {
     }
 }
 
-/** 周报期标签：「9月28日 – 10月4日」 */
-internal fun weekLabelOf(report: AiWeeklyReport): String {
-    val start = LocalDate.ofEpochDay(report.weekStart)
-    val end = LocalDate.ofEpochDay(report.weekEnd)
-    return "${start.monthValue}月${start.dayOfMonth}日 – ${end.monthValue}月${end.dayOfMonth}日"
-}
-
-/** 生成日期标签 */
-internal fun dateLabelOf(epochMillis: Long): String {
-    val d = Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).toLocalDate()
-    return "${d.monthValue}月${d.dayOfMonth}日"
-}
-
 /**
  * 我的数据页（v0.42.0 大改版）。
  *
@@ -111,7 +104,8 @@ internal fun dateLabelOf(epochMillis: Long): String {
  * 2. **今日建议**：独立生成链路产出的一条建议，长按转任务
  * 3. **最近流水**：记账本摘要 + 现金余额，点击进记账本全屏页（入口在页面底部区域）
  * 4. **备忘本**（v0.65.0 起）：与记账本同尺寸的入口卡，表面不显示任何内容，点进去才是卡片式列表
- * 5. **AI 洞察 / 周报**：合并成一张入口卡 → 全屏详情页
+ * 5. **角色空间**（v0.92.0）：从会话设置页搬到这里的入口卡，点开先选角色
+ * 6. **AI 洞察 / 周报**：合并成一张入口卡 → 全屏详情页
  *
  * 页面底部 = 记账本入口行（用户要求"入口放在数据页底部"）。
  * 布局用 LazyColumn 之外的普通 Column + verticalScroll：本周回顾的展开明细是局部状态，
@@ -132,37 +126,44 @@ fun DataScreen(
     visible: Boolean = true,
     /** 进备忘本全屏页（v0.62.0；v0.65.0 起本页只剩入口卡） */
             onOpenTasks: () -> Unit = {},
+    /** 进某个角色的角色空间（v0.92.0；角色由选人弹层决定，见 [RoleSpaceEntryCard]） */
+    onOpenRoleSpace: (Long) -> Unit = {},
 ) {
     val weekReview by vm.weekReview.collectAsState()
     val todaySuggestion by vm.todaySuggestion.collectAsState()
+    // 三态（v0.97.0，U4）：`todaySuggestion` 的 "未加载" 与 "确实没有" 都是 null，
+    // 不分家就会先闪一遍「今天还没有建议」，数据到了再翻成建议内容。
+    val suggestionLoaded by vm.suggestionLoaded.collectAsState()
     val generatingSuggestion by vm.generatingSuggestion.collectAsState()
     val suggestionMessage by vm.suggestionMessage.collectAsState()
     val insights by vm.insights.collectAsState()
-    val weeklyReports by vm.weeklyReports.collectAsState()
     val apiReady by vm.apiReady.collectAsState()
-    val extracting by vm.extracting.collectAsState()
-    val extractMessage by vm.extractMessage.collectAsState()
     val ledgerEntries by vm.ledgerEntries.collectAsState()
     val cashCents by vm.cashCents.collectAsState()
+    // 角色空间入口的选人名单（v0.92.0）
+    val spaceEntries by vm.spaceEntries.collectAsState()
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
     // 今日建议弹窗开关（v0.42.3）：提升到这里，让弹窗渲染在滚动内容之外
     var suggestionSheetOpen by remember { mutableStateOf(false) }
+    // 角色空间选人弹层开关（v0.92.0）
+    var spaceSheetOpen by remember { mutableStateOf(false) }
 
     // 反馈条自动清除（4 秒）
-    LaunchedEffect(extractMessage) {
-        if (extractMessage != null) {
-            kotlinx.coroutines.delay(4000)
-            vm.clearExtractMessage()
-        }
-    }
     LaunchedEffect(suggestionMessage) {
         if (suggestionMessage != null) {
             kotlinx.coroutines.delay(4000)
             vm.clearSuggestionMessage()
         }
     }
+    // v0.88.0：洞察改成"手动刷新 + 三态"（因为要区分未加载/空/有数据）。
+    // ⚠️ 必须由 **visible 信号**驱动刷新，不能用 `LaunchedEffect(Unit)` ——
+    // 四个 tab 同在 Pager 里被**预组合**，Unit 型的 effect 在屏外就跑了，
+    // 那时数据库还没数据、刷出来的是空表，等真正翻到这一页时卡上是过期的空快照。
+    LaunchedEffect(visible) { if (visible) vm.refreshInsightsList() }
+    // v0.92.0：角色空间选人名单也由 visible 驱动重扫（同上，屏外页不该提前算）
+    LaunchedEffect(visible) { if (visible) vm.refreshSpaceEntries() }
 
     Column(
         Modifier
@@ -191,6 +192,7 @@ fun DataScreen(
             // ② 今日建议
             DailySuggestionSection(
                 suggestion = todaySuggestion,
+                loaded = suggestionLoaded,
                 generating = generatingSuggestion,
                 message = suggestionMessage,
                 onOpenSheet = { suggestionSheetOpen = true },
@@ -209,13 +211,21 @@ fun DataScreen(
             // 与记账本同款大小、表面不显示条目——条目只在任务页看。
             TasksEntryCard(onClick = onOpenTasks)
 
-            // ⑤ AI 洞察 / 周报合并入口
+            // ⑤ 角色空间入口（v0.92.0 用户点名「把角色空间卡片入口移到数据页」）
+            // 原来在「会话设置 → 角色空间」那一行（**那一行已同步删除**，同一功能不摆两个入口）。
+            // 角色空间是按角色的，而数据页是全局页 → 点开先弹选人层（见 RoleSpaceEntryCard）。
+            RoleSpaceEntryCard(onClick = {
+                vm.refreshSpaceEntries()
+                spaceSheetOpen = true
+            })
+
+            // ⑥ AI 洞察入口
+            //
+            // v0.99.0：删掉了 `apiReady` / `extracting` / `message` 三个参数 —— 它们是给那颗
+            // **v0.42.1 就被收敛掉的「提炼」按钮**留的位（传进来后 `AiEntryCard` 里从没用过）。
+            // 那条「手动提炼」链这版整条删除，详见 DataViewModel 里的同类注释。
             AiEntryCard(
-                insightCount = insights.size,
-                reportCount = weeklyReports.size,
-                apiReady = apiReady,
-                extracting = extracting,
-                message = extractMessage,
+                insights = insights,
                 onOpen = onOpenAiDetail,
             )
         }
@@ -233,6 +243,18 @@ fun DataScreen(
             onGenerate = {
                 suggestionSheetOpen = false
                 vm.generateSuggestion()
+            },
+        )
+    }
+
+    // 角色空间选人弹层（v0.92.0）：**底部弹层**，形状与设置链其它弹层一致（NeuSheetScaffold）
+    if (spaceSheetOpen) {
+        RoleSpacePickerSheet(
+            entries = spaceEntries,
+            onDismiss = { spaceSheetOpen = false },
+            onPick = { id ->
+                spaceSheetOpen = false
+                onOpenRoleSpace(id)
             },
         )
     }
@@ -509,6 +531,8 @@ private fun WeekProgressBar(fraction: Float, enabled: Boolean) {
 @Composable
 private fun DailySuggestionSection(
     suggestion: DailySuggestion?,
+    /** 今日建议是否已经读到过一次（v0.97.0，U4 三态） */
+    loaded: Boolean,
     generating: Boolean,
     message: String?,
     onOpenSheet: () -> Unit,
@@ -527,7 +551,16 @@ private fun DailySuggestionSection(
         )
     }
 
-    if (suggestion == null) {
+    if (!loaded) {
+        // 还没读到：给骨架，别先说"今天还没有建议"（U4）
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
+        ) {
+            NeuSkeleton(count = 2, rowHeight = 18.dp, gap = 10.dp, horizontalPadding = 0.dp)
+        }
+    } else if (suggestion == null) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -548,7 +581,9 @@ private fun DailySuggestionSection(
                 }
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    if (generating) "正在想今天该给你什么建议…" else "今天还没有建议",
+                    // v0.88.0：建议改由「昨天的洞察」驱动，所以没建议时的措辞要说清来路 ——
+                    // 以前写"今天还没有建议"，用户会以为是生成失败，其实多半是昨晚没有洞察可依据。
+                    if (generating) "正在想今天该给你什么建议…" else "今天还没有建议（依据昨晚的洞察）",
                     fontSize = 13.5.sp,
                     color = TextSecondary,
                 )
@@ -826,31 +861,165 @@ private fun TasksEntryCard(onClick: () -> Unit) {
 }
 
 // ============================================================
-// ④ AI 洞察 / 周报合并入口
+// ⑤ 角色空间入口（v0.92.0）
 // ============================================================
 
 /**
- * AI 洞察 + 周报 合并成一张入口卡（用户要求"合并成一个入口，点击进去才是详细信息"）。
- * 卡上只给数量与最近一条摘要，详细内容进全屏页。
+ * 角色空间入口卡（v0.92.0）。
+ *
+ * **形状照 [LedgerEntryCard] / [TasksEntryCard]**：同大小、同细线描边、整卡可点、卡面不显示条目。
+ *
+ * 入口从「会话设置 → 角色空间」那一行**搬过来**（用户点名"移到数据页"）。
+ * 之所以要搬：它是「跟角色玩」的地方，跟"这个角色怎么说话、用什么声音"那些
+ * 会话级设置不是一回事；摆在设置页里，用户得先想起"进某个会话 → 右上角 ⋯ → 会话设置"
+ * 才找得到。数据页是它真正的去处。
+ */
+@Composable
+private fun RoleSpaceEntryCard(onClick: () -> Unit) {
+    val press = rememberNeuPressState(raised = 4.dp)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .testTag("role_space_entry_row")
+            .scale(press.scale)
+            .neuSurface(16.dp, color = NeuSurface)
+            .clickable(interactionSource = press.interactionSource, indication = null, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(38.dp).neuSurface(999.dp, color = NeuTrack, inset = true),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(MIcons.Person, contentDescription = null, tint = TextPrimary, modifier = Modifier.size(19.dp))
+        }
+        Spacer(Modifier.width(13.dp))
+        Text("角色空间", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+        Spacer(Modifier.weight(1f))
+        Icon(MIcons.ChevronRight, contentDescription = null, tint = MutedText, modifier = Modifier.size(18.dp))
+    }
+}
+
+/**
+ * 角色空间选人弹层（v0.92.0）。
+ *
+ * 数据页是全局页、角色空间是按角色的，所以中间必须有这一步选人。
+ * **选了没导入模型包的角色会当场告诉用户去导入**（而不是进去了才发现空白）——
+ * 这也是为什么不可用的项仍然列出来：用户看不到某个角色会以为 App 漏了 TA。
+ */
+@Composable
+private fun RoleSpacePickerSheet(
+    entries: List<PersonaSpaceEntry>,
+    onDismiss: () -> Unit,
+    onPick: (Long) -> Unit,
+) {
+    NeuSheetScaffold(title = "角色空间", onDismiss = onDismiss) {
+        Spacer(Modifier.height(6.dp))
+        if (entries.isEmpty()) {
+            // 一个角色都没有：给一句话，不摆空列表
+            Spacer(Modifier.height(20.dp))
+            Text(
+                "还没有角色",
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                fontSize = 13.5.sp,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(24.dp))
+            return@NeuSheetScaffold
+        }
+        entries.forEachIndexed { index, entry ->
+            PersonaSpaceRow(
+                entry = entry,
+                divider = index != entries.lastIndex,
+                onClick = { onPick(entry.persona.id) },
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+    }
+}
+
+/**
+ * 选人弹层里的一行：头像 + 名字 + 一句现状（已导入 / 未导入模型包）。
+ *
+ * 不可用（没导入 Live2D 模型包）时整行不可点、右侧不画箭头 ——
+ * 只在按钮上标一句"点了没用"却不拦，用户会以为是自己点错了位置。
+ */
+@Composable
+private fun PersonaSpaceRow(
+    entry: PersonaSpaceEntry,
+    divider: Boolean,
+    onClick: () -> Unit,
+) {
+    val enabled = entry.hasLive2d
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .then(
+                    if (enabled) {
+                        Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onClick,
+                        )
+                    } else {
+                        Modifier
+                    },
+                )
+                .padding(vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            NeuAvatar(
+                emoji = entry.persona.avatarEmoji,
+                size = 40.dp,
+                ringBrush = personaBrush(entry.persona.id),
+                imagePath = entry.persona.avatarImagePath,
+                // 不可用的头像压暗：一眼分得清哪几个能进
+                modifier = if (enabled) Modifier else Modifier.graphicsLayer { alpha = 0.4f },
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    entry.persona.name,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (enabled) TextPrimary else MutedText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    if (enabled) "已配好形象" else "还没导入 Live2D 模型包",
+                    fontSize = 11.5.sp,
+                    color = MutedText,
+                )
+            }
+            if (enabled) {
+                Icon(MIcons.ChevronRight, contentDescription = null, tint = MutedText, modifier = Modifier.size(18.dp))
+            }
+        }
+        if (divider) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(NeuHairline))
+        }
+    }
+}
+
+// ============================================================
+// ④ AI 洞察入口
+// ============================================================
+
+/**
+ * AI 洞察入口卡。
+ *
+ * v0.42.0 起是「洞察 + 周报」合并入口；v0.87.0 删掉 AI 周报后卡片只留洞察（用户点名「AI 洞察单卡保留」）。
+ * 卡上只给数量，详细内容进全屏页。
  */
 @Composable
 private fun AiEntryCard(
-    insightCount: Int,
-    reportCount: Int,
-    apiReady: Boolean,
-    extracting: Boolean,
-    message: String?,
+    insights: List<AiInsight>,
     onOpen: () -> Unit,
 ) {
-    SectionHeader(title = "AI 洞察 / 周报")
-    if (message != null) {
-        Text(
-            message,
-            Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-            fontSize = 11.sp,
-            color = NeuAccent,
-        )
-    }
+    SectionHeader(title = "AI 洞察")
     val press = rememberNeuPressState(raised = 4.dp)
     Row(
         Modifier
@@ -870,16 +1039,20 @@ private fun AiEntryCard(
         }
         Spacer(Modifier.width(13.dp))
         Column(Modifier.weight(1f)) {
-            Text("AI 洞察与周报", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
-            // v0.42.1：空态不再挂「还没有产出，聊聊就有」这句说明（纯废话），没数据就不显示副标题
-            val summary = when {
-                insightCount == 0 && reportCount == 0 -> null
-                reportCount == 0 -> "$insightCount 条洞察"
-                insightCount == 0 -> "$reportCount 期周报"
-                else -> "$insightCount 条洞察 · $reportCount 期周报"
+            Text("AI 洞察", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+            // v0.42.1：空态不再挂「还没有产出，聊聊就有」这句说明（纯废话），没数据就不显示副标题。
+            // v0.88.0：洞察有日/周/月三期了，副标题按「今日 x · 本周 y · 本月 z」给，
+            // 只报一个总数用户点进去会看到分组、和卡上的数对不上（v0.87.0 修过一次同类口径分裂）。
+            val parts = buildList {
+                val daily = insights.count { it.period == InsightPeriod.DAILY }
+                val weekly = insights.count { it.period == InsightPeriod.WEEKLY }
+                val monthly = insights.count { it.period == InsightPeriod.MONTHLY }
+                if (daily > 0) add("今日 $daily")
+                if (weekly > 0) add("本周 $weekly")
+                if (monthly > 0) add("本月 $monthly")
             }
-            if (summary != null) {
-                Text(summary, fontSize = 12.sp, color = MutedText)
+            if (parts.isNotEmpty()) {
+                Text(parts.joinToString(" · "), fontSize = 12.sp, color = MutedText)
             }
         }
         Icon(MIcons.ChevronRight, contentDescription = null, tint = MutedText, modifier = Modifier.size(18.dp))

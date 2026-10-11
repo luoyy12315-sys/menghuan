@@ -61,8 +61,23 @@ object VisionImage {
         "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
     }.getOrNull()
 
-    private fun scaleDown(bitmap: Bitmap, maxDim: Int): Bitmap {
-        val w = bitmap.width
+    /**
+     * 内存位图 → 降采样 JPEG **写进指定文件**（Agent 屏幕截图用：图本来就在内存里，
+     * 但多模态通道是按"消息带 imagePath"走的，所以落一次文件复用同一条链）。
+     * ⚠️ 只回收自己缩出来的那张，**不动调用方的位图**。
+     */
+    fun encodeToFile(bitmap: Bitmap, target: File, maxDim: Int = MAX_DIM, quality: Int = JPEG_QUALITY): Boolean =
+        runCatching {
+            val scaled = scaleDown(bitmap, maxDim)
+            target.parentFile?.mkdirs()
+            val ok = target.outputStream().use { out ->
+                scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            }
+            if (scaled !== bitmap) scaled.recycle()
+            ok && target.length() > 0
+        }.getOrDefault(false)
+
+    private fun scaleDown(bitmap: Bitmap, maxDim: Int): Bitmap {        val w = bitmap.width
         val h = bitmap.height
         if (w <= maxDim && h <= maxDim) return bitmap
         val ratio = maxDim.toFloat() / maxOf(w, h)

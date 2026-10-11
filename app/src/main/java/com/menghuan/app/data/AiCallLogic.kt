@@ -4,20 +4,21 @@ import java.time.Instant
 import java.time.ZoneId
 
 /**
- * 「AI 主动打电话」的纯逻辑（v0.53.5）。
+ * 「AI 打电话」的纯逻辑（v0.53.5）。
  *
  * 这里只做**不需要 Context、不需要数据库**的判断与解析，所以能整块丢进 JVM 单测：
  * 时间是参数不是系统时钟，区间比较也全是纯算术。
  *
- * 三路触发（用户拍板"两个都要"+ 口头约定）：
- * ① 定时：[canCallBySchedule]；
- * ② 智能：[canCallBySmart]（在①的基础上再加"好久没聊"）；
+ * 现存的触发路：
+ * ① 定时电话：用户自己排的「几点打」（闹钟到点直接打，判定只有条目自己的启用状态）；
+ * ② 主动电话：并入主动关心的随机时刻（v0.94，判定在 ProactiveChat.decideAction）；
  * ③ 口头约定：用户在聊天里说"待会打给我" → AI 输出 `[打电话:30]` → [parseWantedCallAt]。
+ *
+ * v0.94 删掉的：`canCallBySchedule` / `canCallBySmart`（"每天检查一次 + 几天没聊"那套），
+ * 与它一起下线的还有 MAX_PER_DAY（每日次数改成按角色的「每天最多几次」，
+ * 见 SettingsRepository.proactiveCallLimit）。
  */
 object AiCallLogic {
-
-    /** 每天最多打几次（定时 1 次 + 智能 1 次） */
-    const val MAX_PER_DAY = 2
 
     /** 静默时段：22:30 – 08:00 一律不打 */
     private const val QUIET_START_MIN = 22 * 60 + 30
@@ -36,31 +37,6 @@ object AiCallLogic {
         } else {
             minuteOfDay >= QUIET_START_MIN || minuteOfDay < QUIET_END_MIN
         }
-
-    /**
-     * 定时那一路能不能打：开关开着、不在静默时段、今天还没打满。
-     * [callsToday] 由调用方按 epochDay 归零后给出（见 SettingsRepository.aiCallCount）。
-     */
-    fun canCallBySchedule(enabled: Boolean, minuteOfDay: Int, callsToday: Int): Boolean {
-        if (!enabled) return false
-        if (inQuietHours(minuteOfDay)) return false
-        if (callsToday >= MAX_PER_DAY) return false
-        return true
-    }
-
-    /** 智能那一路：在 [canCallBySchedule] 之上再加一条"好久没聊"（[idleDays] 天） */
-    fun canCallBySmart(
-        enabled: Boolean,
-        minuteOfDay: Int,
-        callsToday: Int,
-        lastChatAt: Long,
-        now: Long,
-        idleDays: Int,
-    ): Boolean {
-        if (!canCallBySchedule(enabled, minuteOfDay, callsToday)) return false
-        if (lastChatAt <= 0L) return true // 从没聊过也算"好久没聊"
-        return now - lastChatAt >= idleDays.toLong() * DAY_MS
-    }
 
     /**
      * 解析 AI 回复里的口头约定标记，返回**该打电话的时刻**（毫秒）；无标记/解析失败返回 null。

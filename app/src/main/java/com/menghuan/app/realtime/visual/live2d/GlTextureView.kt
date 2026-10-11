@@ -63,10 +63,27 @@ class GlTextureView(
         thread?.resize(width, height)
     }
 
-    /** 返回 true = 交给系统释放 SurfaceTexture；线程必须先停干净，否则 EGL 还绑着一块死 surface */
+    /**
+     * 返回 true = 交给系统释放 SurfaceTexture；返回 false = 由我们自己稍后释放。
+     *
+     * v0.97.0 修：以前**无论线程有没有停干净都返回 true**，把 `shutdown()` 的读数丢掉了。
+     * 线程若还卡在一帧里，系统随即销毁 SurfaceTexture，而 GL 线程仍在 `eglSwapBuffers`
+     * 或不定期 `eglMakeCurrent` 引用它 —— 切页/转屏时偶发 native 崩溃。
+     * 现在：停干净了才交还（true）；没停干净就返回 false，并交给一条守护线程
+     * **等它退出后再 release**（既不让系统在用时销毁它，也不靠 GC 兜底）。
+     */
     override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-        shutdown()
-        return true
+        val t = thread
+        val stopped = shutdown()
+        if (stopped) return true
+        Thread {
+            runCatching { t?.join() }   // 守护线程，等多久都无所谓
+            runCatching { st.release() }
+        }.apply {
+            isDaemon = true
+            name = "GlSurfaceTextureReaper"
+        }.start()
+        return false
     }
 
     override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit

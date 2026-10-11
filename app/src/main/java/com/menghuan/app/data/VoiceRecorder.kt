@@ -165,6 +165,10 @@ class VoiceRecorder(private val context: Context) {
                 }
                 // 头在收尾处回填：只有这里才知道真实数据长度
                 runCatching { writeWavHeader(file, written, sampleRate) }
+                // v0.97.0：抽水线程退出时兜底释放 AudioRecord ——
+                // 正常路径由 finishRecorder/stopInternal 释放；它们**没等到**这条线程退出时
+                // （join 超时，线程还阻塞在 read()）会把释放责任留在这里，避免"一边 read 一边 release"。
+                runCatching { r.release() }
             }, "voice-pump")
             thread.start()
 
@@ -208,9 +212,20 @@ class VoiceRecorder(private val context: Context) {
             Log.e(TAG, "stop failed", e)
         }
         // 等抽水线程写完并回填 WAV 头，否则拿到的是没头的裸 PCM
-        runCatching { pumpThread?.join(PUMP_JOIN_MS) }
+        // v0.97.0：**只有真的等到线程退出才 release**。以前无论 join 成不成功都 release，
+        // 而抽水线程此时可能正阻塞在 r.read() 上 —— 一边 release 一边 read 是 native 崩溃
+        // （以及写坏文件）的来源。没等到就把释放留给线程自己收尾（见抽水线程尾部）。
+        val t = pumpThread
         pumpThread = null
-        runCatching { r.release() }
+        val exited = runCatching {
+            if (t != null) {
+                t.join(PUMP_JOIN_MS)
+                !t.isAlive
+            } else {
+                true
+            }
+        }.getOrDefault(false)
+        if (exited) runCatching { r.release() }
         return f?.takeIf { it.exists() && it.length() > WAV_HEADER_BYTES }
     }
 
@@ -219,9 +234,18 @@ class VoiceRecorder(private val context: Context) {
         recorder = null
         pumping = false
         runCatching { if (r.recordingState == AudioRecord.RECORDSTATE_RECORDING) r.stop() }
-        runCatching { pumpThread?.join(PUMP_JOIN_MS) }
+        // v0.97.0：同 finishRecorder —— 没等到线程退出就不抢着 release
+        val t = pumpThread
         pumpThread = null
-        runCatching { r.release() }
+        val exited = runCatching {
+            if (t != null) {
+                t.join(PUMP_JOIN_MS)
+                !t.isAlive
+            } else {
+                true
+            }
+        }.getOrDefault(false)
+        if (exited) runCatching { r.release() }
         if (discard) outputFile?.delete()
         outputFile = null
     }

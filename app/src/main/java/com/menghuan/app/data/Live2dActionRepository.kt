@@ -294,13 +294,6 @@ class Live2dActionRepository(private val db: AppDatabase) {
         }
     }
 
-    fun observeInteractionBindings(personaId: Long): Flow<Map<InteractionRegion, Long>> =
-        interactionBindingDao.observeFor(personaId).map { rows ->
-            val out = LinkedHashMap<InteractionRegion, Long>()
-            rows.forEach { row -> InteractionRegion.fromKey(row.region).let { out[it] = row.actionId } }
-            out
-        }
-
     /**
      * 点到了某个区域该播哪条动作。
      *

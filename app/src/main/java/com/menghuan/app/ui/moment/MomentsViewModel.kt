@@ -14,6 +14,7 @@ import com.menghuan.app.data.SettingsRepository
 import com.menghuan.app.data.db.AppDatabase
 import com.menghuan.app.data.model.MomentEntry
 import com.menghuan.app.data.model.Persona
+import com.menghuan.app.ui.common.AppToast
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -166,9 +167,6 @@ class MomentsViewModel(
 
     // ===== 写 =====
 
-    /** 从相册导入一张图到 App 私有目录，返回可落库的绝对路径（失败返回 null） */
-    fun importImage(uri: Uri): String? = MomentImageStore.import(appContext, uri)
-
     fun post(text: String, images: List<String> = emptyList(), location: String = "") =
         publish(text, parentId = 0L, images = images, location = location)
 
@@ -182,7 +180,9 @@ class MomentsViewModel(
         val place = if (parentId == 0L) MomentMath.sanitizeLocation(location) else ""
         if (text.isEmpty() && packedImages.isEmpty()) return
         viewModelScope.launch {
-            runCatching {
+            // v0.97.0：**失败一定要出声**（项目自己的铁律）。以前这里不看 runCatching 的结果，
+            // 无论落库成没成都报"已发布" —— 用户以为发出去了，实际什么都没存下。
+            val ok = runCatching {
                 db.momentDao().upsert(
                     MomentEntry(
                         personaId = 0L,
@@ -192,11 +192,15 @@ class MomentsViewModel(
                         location = place,
                     ),
                 )
+            }.isSuccess
+            if (!ok) {
+                AppToast.fail(if (parentId == 0L) "发布失败，请重试" else "回复失败，请重试")
+                return@launch
             }
             if (parentId == 0L && place.isNotBlank()) {
                 runCatching { settings.rememberMomentPlace(place) }
             }
-            _message.value = if (parentId == 0L) "已发布" else "已回复"
+            AppToast.ok(if (parentId == 0L) "已发布" else "已回复")
         }
     }
 
@@ -205,8 +209,8 @@ class MomentsViewModel(
      *
      * AI 侧的赞（v0.77.0）由 [MomentMath.USER_ID] 之外的 id 表示 —— 每个角色点赞时，
      * `likedBy` 里存它自己的 **personaId 字符串**，与用户的 `"u"` 分开，
-     * 所以这条帖子在数据上分得清"谁赞过"。AI 的赞由 [ChatViewModel.maybePostMoments]
-     * 在回复链路里落库；这里只动用户本人那一个 id（用户点不了别人的赞）。
+     * 所以这条帖子在数据上分得清"谁赞过"。AI 的赞由**主动关心链**落库
+     * （走 [com.menghuan.app.data.MomentActions]，聊天链已不碰动态）；这里只动用户本人那一个 id（用户点不了别人的赞）。
      */
     fun toggleLike(id: Long) {
         viewModelScope.launch {
@@ -224,19 +228,21 @@ class MomentsViewModel(
     fun delete(id: Long) {
         viewModelScope.launch {
             val m = runCatching { db.momentDao().getById(id) }.getOrNull()
-            runCatching { db.momentDao().deleteThread(id) }
+            // v0.97.0：同 publish —— 删除失败不能再报"已删除"（假成功比失败更糟：
+            // 用户以为删掉了、其实还在，之后翻到会以为是灵异事件）
+            val ok = runCatching { db.momentDao().deleteThread(id) }.isSuccess
+            if (!ok) {
+                AppToast.fail("删除失败，请重试")
+                return@launch
+            }
             if (m != null) MomentImageStore.deleteAll(appContext, MomentMath.decodeImages(m.images))
-            _message.value = "已删除"
+            AppToast.ok("已删除")
         }
     }
 
-    /** 一次性提示（"已发布"/"已删除"），页面显示两秒后调 [clearMessage] */
-    private val _message = MutableStateFlow<String?>(null)
-    val message: StateFlow<String?> = _message.asStateFlow()
-
-    fun clearMessage() {
-        _message.value = null
-    }
+    // v0.97.0（审查 U15）：本 VM 原来自己维护一个 `_message` + 页面自绘胶囊（FeedToast），
+    // 于是「已删除」在记忆页走系统 Toast、在动态页走自绘胶囊 —— 同一句话两套皮肤。
+    // 现在统一走全局 [AppToast]，`message` / `clearMessage` 连同页面的 FeedToast 一起删掉。
 
     companion object {
         /** 一页几条：不用滑第一下就到头，又不会让一屏里出现几十次解码 */

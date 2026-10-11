@@ -2,6 +2,7 @@ package com.menghuan.app
 
 import androidx.datastore.preferences.core.edit
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.test.core.app.ApplicationProvider
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
@@ -47,7 +48,10 @@ class UiRenderTest {
      */
     @Before
     fun seedFixtures() {
-        val app = compose.activity.application as MenghuanApp
+        // 关掉冷启动开屏再起 Activity：截图要的是页面本身，糊一层开屏就没意义了
+        // （必须在碰 compose.activity 之前关——访问它就等于把 Activity 起来了）
+        val app = ApplicationProvider.getApplicationContext<MenghuanApp>()
+        app.coldStartSplashEnabled = false
         kotlinx.coroutines.runBlocking {
             app.db.personaDao().upsert(
                 com.menghuan.app.data.model.Persona(
@@ -206,7 +210,7 @@ class UiRenderTest {
 
     /**
      * 滚到指定 tag 的节点再点击。
-     * 数据页底部入口（记账本 / AI 洞察与周报）在首屏之外，直接 performClick 会被
+     * 数据页底部入口（记账本 / AI 洞察）在首屏之外，直接 performClick 会被
      * 测试框架裁到可视区外而不生效——且页面自身的文案会"骗过"后续断言。
      */
     private fun scrollToTagAndClick(tag: String) {
@@ -250,7 +254,7 @@ class UiRenderTest {
         awaitText("本周回顾") // 置顶条（合并原打卡与完成度）
         awaitText("今日建议") // 独立生成链路
         awaitText("记账本") // 页面底部入口
-        awaitText("AI 洞察与周报") // 合并入口卡
+        awaitText("AI 洞察") // 入口卡（v0.87.0 起只留洞察）
         // v0.42.1：区块头的「重新生成」「提炼」动作文字已删（生成动作收敛进弹窗）
         compose.onNodeWithText("重新生成").assertDoesNotExist()
         compose.onNodeWithText("提炼").assertDoesNotExist()
@@ -266,9 +270,11 @@ class UiRenderTest {
     fun render22SuggestionSheet() {
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_1").performClick()
+        // v0.88.0：空态文案补了来路说明（"今天还没有建议（依据昨晚的洞察）"），
+        // 所以点击要用子串匹配，不能再按整串精确匹配。
         awaitText("今天还没有建议")
         // 点空态卡片 → 弹层
-        compose.onNodeWithText("今天还没有建议").performClick()
+        compose.onNodeWithText("今天还没有建议", substring = true).performClick()
         awaitText("生成今日建议")
         snap("43-suggestion-sheet")
     }
@@ -801,8 +807,9 @@ class UiRenderTest {
         }
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_1").performClick() // 底栏 tab
-        // v0.42.0：洞察详情移入全屏页，数据页只显示合并入口卡上的数量摘要
-        awaitText("2 条洞察")
+        // v0.42.0：洞察详情移入全屏页，数据页只显示入口卡上的数量摘要。
+        // v0.88.0：摘要改成按周期分「今日 x · 本周 y · 本月 z」（默认 period = DAILY，所以是今日）。
+        awaitText("今日 2")
         // 本周回顾：v0.42.1 起百分比文案与连续天数徽标都已删（用户要求），
         // 卡片只剩 x/y 主指标 + 格子条 + 进度条，所以只断言卡片标题在
         awaitText("本周回顾")
@@ -966,40 +973,27 @@ class UiRenderTest {
     }
 
     /**
-     * AI 周报（v0.42.0 移入全屏页 / v0.42.1 默认折叠）：
-     * 数据页只留合并入口卡；进全屏页后周报**默认折叠**（用户要求），
-     * 点一下标题行才展开全文。
+     * AI 洞察入口卡与全屏页（v0.42.0 建入口卡 / v0.87.0 删掉周报、只留洞察）：
+     * 数据页入口卡显示洞察条数，点进全屏页后列出洞察全文。
      */
     @Test
-    fun render16WeeklyReportCardCollapse() {
+    fun render16InsightCardAndDetail() {
         val app = compose.activity.application as MenghuanApp
-        val today = java.time.LocalDate.now()
-        val monday = today.with(java.time.DayOfWeek.MONDAY)
         kotlinx.coroutines.runBlocking {
-            app.db.aiWeeklyReportDao().upsert(
-                com.menghuan.app.data.model.AiWeeklyReport(
-                    weekStart = monday.toEpochDay(),
-                    weekEnd = monday.plusDays(6).toEpochDay(),
-                    content = (1..8).joinToString("") { "第${it}段周报正文，讲的是这周真实发生过的任务与打卡情况，以及值得注意的规律。" },
+            app.db.aiInsightDao().insert(
+                com.menghuan.app.data.model.AiInsight(
+                    title = "晚间效率更高",
+                    detail = "近两周有 9 天在 21 点后完成主要任务，白天推进较慢。",
                 )
             )
         }
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_1").performClick()
-        awaitText("1 期周报") // 合并入口卡上的数量摘要
+        awaitText("今日 1") // 入口卡上的数量摘要（v0.88.0 起按周期给，默认 DAILY）
         scrollToTagAndClick("ai_entry_card")
-        awaitText("AI 洞察 · 0 条") // 只存在于全屏详情页的区块标题（本用例没插洞察）
-        awaitText("1 期") // 周报历史区块标题（v0.42.1 默认折叠）
-        // v0.42.1：默认折叠 —— 正文不该出现
-        compose.onNodeWithText("第8段周报正文，讲的是这周真实发生过的任务与打卡情况，以及值得注意的规律。").assertDoesNotExist()
-        snap("29-weekly-collapsed")
-        // 点标题行进卡片展开 → 全文直出（clickable 挂在外层卡片上，点期标签即可）
-        val weekLabel = "${monday.monthValue}月${monday.dayOfMonth}日 – " +
-            "${monday.plusDays(6).monthValue}月${monday.plusDays(6).dayOfMonth}日"
-        awaitText(weekLabel)
-        compose.onNodeWithText(weekLabel).performClick()
-        awaitText("第8段周报正文")
-        snap("29-weekly-fulltext")
+        awaitText("AI 洞察 · 1 条") // 只存在于全屏详情页的区块标题
+        awaitText("晚间效率更高") // 洞察标题
+        snap("29-insight-detail")
     }
 
     /**
@@ -1042,7 +1036,6 @@ class UiRenderTest {
                     app.db.taskDao().observeAll().first().isEmpty() &&
                     app.db.profileFactDao().observeAll().first().isEmpty() &&
                     app.db.aiInsightDao().observeLatest().first().isEmpty() &&
-                    app.db.aiWeeklyReportDao().observeAll().first().isEmpty() &&
                     app.db.personaDao().count() > 0 &&
                     app.settingsRepository.apiConfig.first().isComplete
             }
@@ -1052,30 +1045,18 @@ class UiRenderTest {
         kotlinx.coroutines.runBlocking { app.settingsStore.edit { it.clear() } }
     }
 
-    /**
-     * 单条清理（v0.36.5）：洞察卡长按 → 弹「删除」菜单 → 点菜单项删除；
-     * 周报历史列表里长按某一期走同一套菜单流程。
-     */
+    /** 单条清理（v0.36.5）：洞察卡长按 → 弹「删除」菜单 → 点菜单项删除。 */
     @Test
-    fun render18LongPressDeleteInsightAndReport() {
+    fun render18LongPressDeleteInsight() {
         val app = compose.activity.application as MenghuanApp
-        val monday = java.time.LocalDate.now().with(java.time.DayOfWeek.MONDAY)
-        val content = "这周的周报正文比较长，专门用来验证在历史列表里长按删除单期周报的交互。"
         kotlinx.coroutines.runBlocking {
             app.db.aiInsightDao().insert(
                 com.menghuan.app.data.model.AiInsight(title = "入睡时间偏晚", detail = "近 7 天有 5 天超过 1 点"),
             )
-            app.db.aiWeeklyReportDao().upsert(
-                com.menghuan.app.data.model.AiWeeklyReport(
-                    weekStart = monday.toEpochDay(),
-                    weekEnd = monday.plusDays(6).toEpochDay(),
-                    content = content,
-                ),
-            )
         }
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_1").performClick() // 数据
-        awaitText("1 条洞察") // 合并入口卡的数量摘要
+        awaitText("今日 1") // 入口卡的数量摘要（v0.88.0 起按周期给，默认 DAILY）
         scrollToTagAndClick("ai_entry_card") // 进全屏详情页
         awaitText("AI 洞察 · 1 条") // 只存在于全屏详情页的区块标题
         awaitText("入睡时间偏晚") // 洞察详情直接可见
@@ -1089,28 +1070,11 @@ class UiRenderTest {
         }
         compose.waitForIdle()
         snap("36-insight-deleted")
-
-        // 周报：全屏页里默认折叠（v0.42.1），长按标题行 → 菜单 → 删除
-        val mondayWeekStart = monday
-        val sunday = monday.plusDays(6)
-        val weekLabel = "${mondayWeekStart.monthValue}月${mondayWeekStart.dayOfMonth}日 – " +
-            "${sunday.monthValue}月${sunday.dayOfMonth}日"
-        awaitText(weekLabel) // 周报期标签（默认折叠态，标题行可见）
-        snap("37-report-detail")
-        compose.onNodeWithText(weekLabel).performTouchInput { longClick() }
-        awaitText("删除这期")
-        snap("38-report-menu")
-        clickText("删除这期")
-        awaitState("点了菜单里的「删除」后该期周报应被删除") {
-            kotlinx.coroutines.runBlocking { app.db.aiWeeklyReportDao().observeAll().first().isEmpty() }
-        }
-        compose.waitForIdle()
-        snap("39-report-deleted")
     }
 
-    /** 周报空态：API 已配置但还没有周报 → 板块显示「暂无周报」+ 生成入口（第一份周报的入口保障） */
+    /** 洞察空态：API 已配置但还没有产出 → 入口卡照常显示（apiReady 即显示），不挂说明性小字。 */
     @Test
-    fun render12WeeklyPlaceholder() {
+    fun render12InsightPlaceholder() {
         val app = compose.activity.application as MenghuanApp
         kotlinx.coroutines.runBlocking {
             app.settingsRepository.saveApiConfig(
@@ -1119,11 +1083,10 @@ class UiRenderTest {
         }
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_1").performClick()
-        awaitText("AI 洞察与周报") // 合并入口卡上屏（apiReady 即显示）
-        // v0.42.1 去说明性小字：洞察与周报皆空时不再挂「还没有产出，聊聊就有」副标题，
-        // 卡片只剩标题 + 右箭头
+        awaitText("AI 洞察") // 入口卡上屏（apiReady 即显示）
+        // 去说明性小字：洞察为空时不再挂「还没有产出，聊聊就有」副标题，卡片只剩标题 + 右箭头
         compose.onNodeWithText("还没有产出，聊聊就有").assertDoesNotExist()
-        snap("13-data-weekly-empty")
+        snap("13-data-insight-empty")
         // settingsStore 是进程级单例：清掉 API 配置，避免泄漏到同类后续测试
         kotlinx.coroutines.runBlocking { app.settingsStore.edit { it.clear() } }
     }

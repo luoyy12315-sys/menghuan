@@ -9,6 +9,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.menghuan.app.MenghuanApp
 import com.menghuan.app.data.AiPrompts
 import com.menghuan.app.data.MemoryScope
+import com.menghuan.app.data.PromptBlocks
 import com.menghuan.app.data.AsrModelManager
 import com.menghuan.app.data.TtsClients
 import com.menghuan.app.data.TtsConfig
@@ -166,10 +167,13 @@ class RealtimeCallViewModel(
             // 人设设定词（空则基础提示词）+ 档案注入说明 + 用户档案；不注入生图/手机操控能力
             // v0.70.0：与文字聊天同一口径 —— 这通电话只带得上**这个角色自己的记忆**（基础档案按开关）
             val sharedReadable = runCatching { settings.profileSharedReadable.first() }.getOrDefault(true)
-            val facts = MemoryScope.visible(
+            // v0.98.0：走两条线（基础档案全带 + 她自己的记忆 ≤ PROFILE_FACTS_MAX）。
+            // 原来这里是**没有上限**的 visible(...)：聊天链封顶 30、三条后台链封顶 10，
+            // 只有通话链无限，记忆攒多了会整段塞进 system prompt。
+            val facts = MemoryScope.split(
                 runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList()),
                 personaId, sharedReadable,
-            )
+            ).forInject(PromptBlocks.PROFILE_FACTS_MAX)
             val preamble = runCatching { settings.profilePreamble.first() }
                 .getOrDefault(AiPrompts.DEFAULT_PROFILE_PREAMBLE)
             val basePrompt = runCatching { settings.basePrompt.first() }
@@ -179,6 +183,7 @@ class RealtimeCallViewModel(
                 if (personaPrompt.isNotEmpty()) append(personaPrompt) else append(basePrompt)
                 if (facts.isNotEmpty()) {
                     append("\n\n").append(preamble)
+                    // 上限已在 split(...).forInject(...) 里定过，这里不再重复截
                     facts.forEach { append("\n- ").append(it.key).append("：").append(it.value) }
                 }
                 // 通话措辞：回复会被朗读，Markdown/列表/长篇都会变成糟糕的听觉体验

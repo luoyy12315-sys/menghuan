@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -29,7 +30,19 @@ class TasksViewModel(
     private val appContext: Context,
 ) : ViewModel() {
 
+    /**
+     * Room 的第一个结果有没有到（v0.97.0，U1，三态用）。
+     *
+     * `tasks` 的初值只能是 `emptyList()`，而"确实一条任务都没有"也是空表 ——
+     * 冷启动进任务页会先把虚线框的「暂无任务」闪一下，数据到了才被真实列表替换。
+     * 这个标记就是"未加载 = 骨架"与"确实为空 = 空态"之间的那道分界
+     * （与 `ChatListScreen` 的 `loaded` 同一套做法）。
+     */
+    private val _loaded = MutableStateFlow(false)
+    val loaded: StateFlow<Boolean> = _loaded.asStateFlow()
+
     val tasks: StateFlow<List<TaskItem>> = db.taskDao().observeAll()
+        .onEach { _loaded.value = true }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun addTask(

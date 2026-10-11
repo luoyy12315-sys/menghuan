@@ -97,6 +97,10 @@ data class ErrorBar(val message: String, val kind: String) {
         const val KIND_ACCESSIBILITY = "accessibility" // 无障碍未开：去开启（跳系统设置）
         const val KIND_API = "api"                  // API 未配置/Key 失效：去配置
         const val KIND_INFO = "info"                // 纯提示：无按钮
+        // v0.97.0（审查 U13）：用户消息**没落上库**时给"重发"。
+        // 不能复用 KIND_RETRY —— 那个动作是 `retry()`（"用户消息已在历史中，重跑生成"），
+        // 而这条消息恰恰不在库里，重跑生成只会得到一段缺了这轮的回复。
+        const val KIND_RESEND = "resend"
     }
 }
 
@@ -211,31 +215,10 @@ const val VOICE_ONLY_PLACEHOLDER = "（这条没说出内容）"
 const val MEMORY_ONLY_PLACEHOLDER = "💭 记下了"
 
 /**
- * 整条回复只有 `[动态:…]` / `[动态#id:…]` 时的占位（v0.73.0）。
- * 与 [MEMORY_ONLY_PLACEHOLDER] 同一条理由：帖子已经落进时间线了，
- * 聊天里留一条空白消息 = 用户以为 TA 没反应。
+ * 整条回复只有 `[建议任务:…]` 时的占位（v0.88.0）。
+ * 同上：卡片已经挂在气泡下面了，正文留空用户会以为这条消息没内容。
  */
-const val MOMENT_ONLY_PLACEHOLDER = "🌙 去发了条动态"
-
-/**
- * 设置 · AI 提示词面板里的「生成逻辑说明」文案。
- * 与实现同源：提炼走 ExtractionEngine（攒够 8 条增量消息自动跑，
- * 数据页可手动「提炼」），周报走 WeeklyReportGenerator（每周日 21:30，
- * 启动/重启/到点都会补上周缺报）。
- */
-const val insightLogicText =
-    "【AI 洞察 · 怎么来的】\n" +
-        "· 触发：某个会话累计新增 8 条消息后自动提炼一次；也可在数据页点「提炼」手动跑。\n" +
-        "· 取数：该会话水位线之后的对话 + 近 7 天任务完成情况，「怎么用 App」的助手会话不计。\n" +
-        "· 产出：长期画像（写入基础档案）、洞察（最多 1 条，宁缺毋滥）、可执行任务建议（最多 1 条，聊天页卡片确认后才落库）。\n" +
-        "· 原则：只收有明确依据的信息，普通闲聊与猜测一律不记；同一标题的洞察会被新的一条替换，最多留 20 条。"
-
-const val reportLogicText =
-    "【AI 周报 · 怎么来的】\n" +
-        "· 触发：每周日 21:30 自动生成上一周；App 启动、手机重启也会补上周缺报（无 API 时自动跳过）。\n" +
-        "· 取数：上一周的基础任务完成情况、每日任务打卡记录、档案变更、AI 洞察、对话节选（同样排除助手会话）。\n" +
-        "· 产出：200–400 字中性周报，同一周重复生成会覆盖，不会堆多期。\n" +
-        "· 口径：完成度只算基础任务，打卡只算每日任务，两者分开统计。"
+const val TASK_SUGGESTION_ONLY_PLACEHOLDER = "📌 顺手帮你记了件事"
 
 /**
  * 生图能力提示（只在生图模型配齐时注入 system prompt）。
@@ -327,27 +310,61 @@ fun voiceNoteHint(strategy: String = VOICE_NOTE_DEFAULT_STRATEGY): String =
     if (strategy.isBlank()) VOICE_NOTE_FRAMEWORK else "$VOICE_NOTE_FRAMEWORK\n$strategy"
 
 /**
- * 历史字数预算（v0.39.0，对齐 (0, 200000) 计费档）：
- * 服务商按单次请求长度分档计费——20 万 token 以内是半价档，超过翻倍。
- * App 拿不到精确 token 数，按 **1 字 ≈ 1 token 保守折算**：历史字数封顶 20 万字，
- * 中文在现代分词器下通常不到 1 token/字，实际只会更低，保证永远落在便宜档。
+ * 上下文窗口的**默认值**（v0.86.0：20 万 → 1.2 万，并从"全局硬编码"改为"每个角色的设置项"）。
+ *
+ * ## 为什么原来写 20 万（v0.39.0）—— 以及为什么它错了
+ * 原注释写的理由是「对齐 (0, 200000) 计费档，超过翻倍」。那是**某一个服务商某一个模型**的价目表，
+ * 被硬编码成了全局常量，等于假设所有角色/模型共用同一份定价 —— 换模型即失效（窗口更小的会 400，
+ * 窗口更大的白扔上下文，定价档不同的按错档算钱）。
+ *
+ * ## 为什么 1.2 万才是对的
+ * ① **宣称窗口 ≠ 有效记忆**：内容堆到几万 token 以上后，模型对中段内容的召回率显著下降
+ *    （"lost in the middle"）。堆到 20 万字是**花全价 token 买衰减的记忆**，又贵又没用。
+ * ② **窗口大小不该决定"塞多少"**：国产模型现在动辄 1M 窗口 —— 恰恰说明窗口只是**硬上限**
+ *    （绝不超、防 400），不是**目标用量**。同类产品（SillyTavern 默认 4096~8192、
+ *    Character.AI ~8K、Replika ~4K）给的都远小于所接模型的窗口。
+ * ③ 掉出这段窗口的历史由 [com.menghuan.app.data.SummaryEngine] 的滚动摘要兜住 ——
+ *    这也是它存在的意义，而不是靠把窗口塞满。
+ *
+ * ## 现在怎么用
+ * 这个常量只是**默认值**（用户没在「会话设置」里改过的角色走它）；真实的窗口在
+ * `SettingsRepository.historyCharBudget(personaId)`，按角色可配。
+ * [com.menghuan.app.data.SummaryEngine] 也必须读同一个来源，否则窗口边缘会有消息既不进历史
+ * 也不进摘要（v0.82.0 注释里警告过的那个坑）。
+ *
+ * ## 口径 = 纯历史字数（v0.95，用户拍板）
+ * 这个数**只框历史消息**，不再减 system prompt 字数、也不减输出余量。v0.86.0 降窗口时
+ * 沿用了 20 万字时代的「窗口 − system − 8,000 余量」公式，余量吃掉 1.2 万窗口的三分之二，
+ * 模型实际只能看到最近几百字（system prompt 稍长就只剩最新一条）——真机反馈
+ * "人设回复不参考之前的聊天记录"就是这么来的；而且被多减的那段消息摘要引擎也认为
+ * "还在窗口里"，既不进历史也不进摘要，静默蒸发。改成纯历史口径后：设置项
+ * 「记住最近多少字」说到做到，历史与摘要天然对齐。"防 400"不靠减法 —— 1.2 万
+ * 远低于任何现役模型的真实窗口，用户填多大是他对自己模型的判断。
  */
-const val HISTORY_CHAR_BUDGET = 200_000
-
-/** 给回复输出留的余量（模型窗口是输入+输出共享的），按字数同口径扣 */
-private const val OUTPUT_RESERVE_CHARS = 8_000
+const val HISTORY_CHAR_BUDGET = 12_000
 
 /** 聊天页首屏加载的消息条数（v0.82.0 分页）：滚到顶部每次再多拉 [HISTORY_PAGE_STEP] 条 */
 private const val HISTORY_PAGE_STEP = 200
 
-/** LLM 历史分段拉取的页大小：从新到旧攒到 HISTORY_CHAR_BUDGET 字就停，长会话不再整表读 */
+/** LLM 历史分段拉取的页大小：从新到旧攒到本会话的上下文窗口字数就停，长会话不再整表读 */
 private const val LLM_HISTORY_PAGE = 500
 
 /**
- * system prompt 里档案注入的条数上限（v0.82.0）：core 全带 + active 按稳定序截到这条数。
- * 超出的不进前缀（前缀变长 = 每轮成本线性上涨 + 缓存价值稀释），靠 memoryRecallBlock
- * 的召回把相关条目喂进易变上下文兜底。core 在 [com.menghuan.app.data.MemoryScope.visible]
- * 里本来就排最前，所以截断一定先动 active、不动用户设为永久的条目。
+ * **这个角色自己的记忆**在 system prompt 里的条数上限（v0.82.0；v0.98.0 起只管这一条线）。
+ *
+ * 它**不**管基础档案（用户手填的那些）—— 那部分全带、不设上限，见
+ * [com.menghuan.app.data.MemoryScope.split] 的注释。两者共用一个上限会让用户补几条档案
+ * 就把她的记忆整个挤出去，而这两件事本来没有理由共用一个数。
+ *
+ * 被截掉的**不等于丢失**（靠 memoryRecallBlock 召回进易变上下文兜底），只是不"常驻在场"。
+ * 截的是列表尾部，也就是**最早记住的那批**（`INJECT_ORDER` 按 id 倒序，新的在前）。
+ *
+ * ⚠️ `take` 不认识 lifecycle：core 多于这个数时，后面的 core 也会被截 —— 排序只是把 core 提前，
+ * **降低**它被截的概率，不是豁免。
+ *
+ * ⚠️ 这个 30 在代码里**没有来历说明**（v0.82.0 定的折中值）。按一条 ≈ 25 字估，
+ * 30 条约 750 字，只占一轮请求的 5% 左右 —— 所以它算不上值得优化的成本旋钮，
+ * 真正的含义是"多少记忆是**常驻**的、多少要靠**提醒**才想起"。
  */
 private const val MEMORY_INJECT_LIMIT = 30
 
@@ -446,6 +463,15 @@ class ChatViewModel(
     @Volatile
     private var viewModelCleared = false
 
+    /**
+     * 上一次"没落上库"的用户消息（v0.97.0，审查 U13）。
+     *
+     * 写点在落库协程（[generationScope] = Dispatchers.IO），读点在 UI 线程点「重发」时，
+     * 所以同样要 `@Volatile`（与 [toolConfirmDeferred] 是同一类问题）。
+     */
+    @Volatile
+    private var pendingResend: ChatMessage? = null
+
     override fun onCleared() {
         viewModelCleared = true
         // v0.59.0：离开会话就把正在念的停掉并释放 MediaPlayer。
@@ -473,11 +499,19 @@ class ChatViewModel(
     }
 
     /**
+     * 给 LLM 历史组装用的持久化消息（v0.82.0）：从新到旧分页拉，累计字数够窗口就停
+     * ——预算截尾只吃最新一段，再往前的旧消息白拉。
+     * 之后照旧走清洗（乱码剥除 / 语音文件包装）与 [selectHistoryByCharBudget]，语义不变。
+     */
+    /**
      * 给 LLM 历史组装用的持久化消息（v0.82.0）：从新到旧分页拉，累计字数够
-     * [HISTORY_CHAR_BUDGET] 就停——预算截尾只吃最新一段，再往前的旧消息白拉。
+     * 本会话的上下文窗口（[SettingsRepository.historyCharBudget]，v0.86.0 起按角色可配）就停。
+     * 预算截尾只吃最新一段，再往前的旧消息白拉。
      * 之后照旧走清洗（乱码剥除 / 语音文件包装）与 [selectHistoryByCharBudget]，语义不变。
      */
     private suspend fun loadPersistedForLlm(): List<ChatMessage> {
+        val budget = runCatching { settingsRepository.historyCharBudget(personaId).first() }
+            .getOrDefault(settingsRepository.DEFAULT_HISTORY_CHAR_BUDGET)
         val acc = ArrayList<ChatMessage>()
         var offset = 0
         var chars = 0
@@ -487,7 +521,7 @@ class ChatViewModel(
             acc += page
             offset += page.size
             chars += page.sumOf { it.content.length }
-            if (page.size < LLM_HISTORY_PAGE || chars >= HISTORY_CHAR_BUDGET) break
+            if (page.size < LLM_HISTORY_PAGE || chars >= budget) break
         }
         return acc.asReversed()
     }
@@ -531,16 +565,6 @@ class ChatViewModel(
     fun switchApiProfile(id: String) = viewModelScope.launch {
         runCatching { settingsRepository.setPersonaApiProfile(personaId, id) }
     }
-
-    /** 清除本会话覆盖，回跟随全局 */
-    fun followGlobalApi() = viewModelScope.launch {
-        runCatching { settingsRepository.setPersonaApiProfile(personaId, null) }
-    }
-
-    /** 是否至少有一个可用生图模型（决定要不要给模型发生图指令） */
-    val imageApiReady: StateFlow<Boolean> = settingsRepository.imageProfiles
-        .map { list -> list.any { it.isComplete } }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     /** AI 建议 → 写入任务（repeatDaily 取 daily，来源标记 ai），卡片随之消失 */
     fun addSuggestedTask(suggestion: TaskSuggestion) = viewModelScope.launch {
@@ -742,6 +766,8 @@ class ChatViewModel(
     private fun cleanForTts(text: String): String = text
         .replace(Regex("\\[生图:[^\\]]*\\]"), "")
         .replace(Regex("\\[操作手机:[^\\]]*\\]"), "")
+        // 心情标记（v0.98.0）：别让语音条 / 朗读把 `[心情:开心]` 念出来
+        .replace(Regex("[\\[【]心情[:：][^\\]】]*[\\]】]"), "")
         .replace(Regex("[*#`>~]"), "")
         .trim()
 
@@ -868,15 +894,16 @@ class ChatViewModel(
 
     /** 发送共用链路：乐观上屏 → 落库 → LLM 回复 */
     private fun send(userMsg: ChatMessage, clearInput: Boolean) {
-        _uiState.update {
-            it.copy(
-                input = if (clearInput) "" else it.input,
-                messages = it.messages + userMsg,
-                isStreaming = true,
-                generating = true,
-                error = null,
-            )
-        }
+        // v0.97.0：认领必须在**这里**原子完成。调用方的 `if (isStreaming) return` 只是快速返回的
+        // 便利检查，真正的闸门是下面的 CAS —— 否则两个入口（UI 发送 + 语音转写回调）从不同线程
+        // 几乎同时进来时，可能双双通过检查、启动两轮生成，共用同一份 messages 与 DB 历史。
+        if (!beginGeneration { cur ->
+                cur.copy(
+                    input = if (clearInput) "" else cur.input,
+                    messages = cur.messages + userMsg,
+                )
+            }
+        ) return
         ChatDrafts.clear(personaId)
         persistDraft("")
         // v0.57：整轮生成挂应用级作用域（[generationScope]），退出聊天页不掐断
@@ -900,14 +927,31 @@ class ChatViewModel(
                 }
             }
             if (saved.isFailure) {
+                // v0.97.0（审查 U13）：以前这里是 KIND_INFO（无按钮）：
+                // 乐观上屏的那条消息马上会被 Room 的观察结果覆盖掉 —— 用户"打了半天的字"
+                // 闪一下就没了，连再发一次的机会都没有（内容只存在于这条已经不在列表里的消息里）。
+                // 现在把这条消息挂起来，错误条给一个真能点的「重发」。
+                pendingResend = userMsg
                 setError(
-                    "消息保存失败：${saved.exceptionOrNull()?.message ?: "存储异常"}",
-                    ErrorBar.KIND_INFO,
+                    "消息没保存上（${saved.exceptionOrNull()?.message ?: "存储异常"}），点「重发」再试一次",
+                    ErrorBar.KIND_RESEND,
                 )
                 return@launch
             }
             runGeneration()
         }
+    }
+
+    /**
+     * 重发"上次没落上库的那条消息"（v0.97.0，审查 U13）。
+     *
+     * 语义上等价于用户重新按了一次发送：走**同一条** [send] 链路（乐观上屏 → 落库 → 回复），
+     * 所以不会出现"重发走了另一条路径"的分叉。
+     */
+    fun resendPending() {
+        val msg = pendingResend ?: return
+        pendingResend = null
+        send(msg, clearInput = false)
     }
 
     /**
@@ -978,10 +1022,28 @@ class ChatViewModel(
 
     /** 上次请求失败后重试（用户消息已在历史中） */
     fun retry() {
-        if (_uiState.value.isStreaming) return
-        _uiState.update { it.copy(isStreaming = true, generating = true, error = null) }
+        // v0.97.0：同上，用 CAS 把"检查是否在生成"与"置为生成中"合成一步
+        if (!beginGeneration()) return
         // v0.57：同样挂应用级作用域，退出聊天页不掐断
         generationScope.launch { runGeneration() }
+    }
+
+    /**
+     * 原子地进入"生成中"（v0.97.0，内部闸门）。
+     *
+     * 返回 false = 已经有一轮在跑，本次调用被丢弃。
+     * 为什么要 CAS：旧的写法是 `if (_uiState.value.isStreaming) return` 再 `update { … isStreaming = true }`，
+     * 读和写之间没有原子性（check-then-act）。`MutableStateFlow.update` 本身是 CAS 循环，
+     * 但"读 → 判断 → 写"跨了两次调用，两个线程可以双双通过判断。
+     * 这里把判断塞进 CAS 循环里，抢不到就重读，重读到 isStreaming 就如实放弃。
+     */
+    private fun beginGeneration(extra: (ChatUiState) -> ChatUiState = { it }): Boolean {
+        while (true) {
+            val cur = _uiState.value
+            if (cur.isStreaming) return false
+            val next = extra(cur.copy(isStreaming = true, generating = true, error = null))
+            if (_uiState.compareAndSet(cur, next)) return true
+        }
     }
 
     /**
@@ -999,7 +1061,11 @@ class ChatViewModel(
             // ⚠️ 这条协程跑在 applicationScope 上：异常不接住会直接冒到默认处理器 → 进程死掉
             // （同 `CrashLog` / `PipelineVoiceCallEngine` 里反复强调的那条）。这里兜底成错误条，
             // 宁可显示"生成失败"，也不能因为一次生成把整个 App 崩了。
-            setError("生成失败：${e.message ?: "未知异常"}", ErrorBar.KIND_RETRY)
+            //
+            // v0.97.0（审查 B42）：裸抛 `e.message` 对用户是"能读但不知道下一步做什么"
+            // —— 这类技术性文案必须带上**唯一的下一步**（点重试）。同类的 ApiException 早就
+            // 走 `friendlyApiError` 说清了处置办法，这里补齐。
+            setError("生成失败：${e.message ?: "未知异常"}，可点「重试」重新生成", ErrorBar.KIND_RETRY)
         } finally {
             // 正常路径在 finishStream() 之后就已解登记，这里再解一次（集合去重，幂等），
             // 保证任何提前 return / 异常都不会把会话钉死在"生成中"
@@ -1042,6 +1108,10 @@ class ChatViewModel(
     }
 
     /** 确认弹层的挂起句柄（同一时刻最多一个：回环是串行执行工具的） */
+    // v0.97.0：`@Volatile` 不是可选项 —— 写点（awaitToolConfirm）在生成协程（Dispatchers.IO），
+    // 读/完成点（resolveToolConfirm）在 Compose 主线程。没有它，主线程可能读到陈旧的 null，
+    // `complete()` 落在旧对象上不生效，IO 侧 `deferred.await()` **永久挂起**（界面卡在"等待确认"）。
+    @Volatile
     private var toolConfirmDeferred: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
 
     /** 挂起等用户在确认弹层点头/拒绝（P3-3） */
@@ -1083,24 +1153,25 @@ class ChatViewModel(
             return
         }
 
-        val facts = try {
+        val factSplit = try {
             // v0.70.0：记忆按人设分开。以前是整张表原样拼进来，A 角色聊出来的私事
             // 会一字不差地从 B 角色嘴里说出来。现在只取「这个角色的 + 基础档案（开关允许时）」。
             // 读全表再在内存里筛，是因为筛选要同时知道开关值，而开关在 DataStore 不在 SQL。
             runCatching { db.profileFactDao().observeAll().first() }.getOrDefault(emptyList())
                 .let { all ->
                     val shared = runCatching { settingsRepository.profileSharedReadable.first() }.getOrDefault(true)
-                    com.menghuan.app.data.MemoryScope.visible(all, personaId, shared)
+                    com.menghuan.app.data.MemoryScope.split(all, personaId, shared)
                 }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            emptyList()
+            com.menghuan.app.data.MemoryScope.Split(emptyList(), emptyList())
         }
-        // v0.82.0：档案注入封顶 MEMORY_INJECT_LIMIT 条（visible 已按 core 置顶 + id 稳定排序，
-        // take 保持前缀稳定；超出的靠召回块兜底）。foldedFacts = 被折叠的条数，单独一行说明。
-        val injectFacts = facts.take(MEMORY_INJECT_LIMIT)
-        val foldedFacts = facts.size - injectFacts.size
+        // v0.98.0：两条线分开计数 —— 基础档案（用户手填）**全带、不设上限**；
+        // MEMORY_INJECT_LIMIT 只管**这个角色自己的记忆**。原来合并后无差别 take(30)，
+        // 用户档案一多就没有她的份了（根因见 MemoryScope.split 的注释）。超出的靠召回块兜底。
+        val injectFacts = factSplit.forInject(MEMORY_INJECT_LIMIT)
+        val foldedFacts = factSplit.folded(MEMORY_INJECT_LIMIT)
         // 无人设（systemPrompt 为空）= 普通 AI：不套人设、不叠对话风格，只带用户档案；
         // 对话风格（tone）是人设之上的语气维度，没有人设就没有叠加对象
         val personaPrompt = persona.systemPrompt.trim()
@@ -1198,12 +1269,33 @@ class ChatViewModel(
             // 记忆写入协议（v0.70.0）：这一段的文字是**固定的**，所以放得起前缀（不伤缓存）。
             // 与 §零.9 里"每轮都变的内容不许进 system prompt"不冲突 —— 变的是命中的记忆，不是这段说明。
             if (isNotEmpty()) append("\n\n")
-            append(com.menghuan.app.data.MemoryMarker.promptSection())
-            // 动态发帖/回帖协议（v0.73.0）：同样是**固定**文字，放得起前缀。
-            // 每轮变的「有哪些帖子可回」不在这里，走易变上下文（见 momentFeedBlock）。
+            // v0.98.0：策略可编（「设置 · AI 提示词 · 记忆记录策略」）—— 管的是"聊天时 AI 随手记"；
+            // 后台批量提炼那段（ProfileExtractor）是另一条入口，见 MemoryMarker 的注释。
+            val memoryStrategy = try {
+                settingsRepository.memoryMarkerStrategy.first()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                com.menghuan.app.data.MemoryMarker.DEFAULT_STRATEGY
+            }
+            append(com.menghuan.app.data.MemoryMarker.promptSection(memoryStrategy))
+            // 动态协议（v0.73.0 起）**已整块从聊天链移除**（用户拍板：动态只存于主动关心那条链）。
+            // 这里原本追加 [MomentMarker.promptSection]（教回帖/点赞语法）+ 易变上下文里的名单，
+            // 两处都删了：聊天链现在不看名单、不回帖、不点赞、不发帖 —— 模型每轮不用再为
+            // "有没有动态可接"分一份注意力。动态能力整体归主动关心链（ProactiveChat 自己拼教法与名单）。
+            // 连 [persistReply] 里那步"剥动态标记"也一并撤了：这条链里 `MomentMarker` 已无任何引用。
+            // 「你看得到记忆」那句原来夹在动态那段里（v0.77.0 用户点名），已搬到 [MemoryMarker.promptSection]。
+            // 任务建议协议（v0.88.0）：固定文字、放得起前缀。**总是注入**（不看任何开关）——
+            // 它和"建议任务"是不是好主意无关，而是"要不要告诉模型有这条通道"；
+            // 关掉它只会让模型把"我建议你把xx加进任务"写成大白话，用户反而没卡片可点。
             if (isNotEmpty()) append("\n\n")
-            append(com.menghuan.app.data.MomentMarker.promptSection())
-            // 滚动摘要（v0.82.0 P1-1）：掉出 20 万字历史预算的旧对话压缩成的这一段，
+            append(com.menghuan.app.data.TaskSuggestionMarker.promptSection())
+            // 心情标记协议（v0.98.0）：固定文字、放得起前缀，**总是注入**。
+            // 它是 valence/arousal 的**唯一输入端** —— 不注入模型就永远不会输出标记，
+            // 会话列表那颗心情计又会退回"恒半格"（根因见 data/CompanionMarker.kt 头注释）。
+            if (isNotEmpty()) append("\n\n")
+            append(com.menghuan.app.data.CompanionMarker.promptSection())
+            // 滚动摘要（v0.82.0 P1-1）：掉出本会话历史窗口的旧对话压缩成的这一段，
             // 拼在 system prompt **尾部**——它只在水位线推进（3 万字攒一次）那一刻才变，
             // 同一水位线内逐字节稳定，前面的人设/档案/能力说明整段前缀照旧命中缓存（§零.9）。
             val summaryText = try {
@@ -1236,7 +1328,7 @@ class ChatViewModel(
         // 历史取持久化消息：UI 种子对话是展示用假数据，绝不能发给 LLM 当真历史；
         // 同时剥离历史 bug 遗留的 "null" 乱码前缀，纯乱码消息整条剔除。
         // 带图的用户消息保留（没写字幕也发图，v0.38.0 vision 输入）
-        // v0.82.0：分段从新到旧拉（每页 LLM_HISTORY_PAGE 条，攒够 20 万字就停）——
+        // v0.82.0：分段从新到旧拉（每页 LLM_HISTORY_PAGE 条，攒够本会话窗口字数就停）——
         // 超长会话不再整表读进内存；预算截尾本来就只吃最新的部分，旧页拉到够预算即可。
         val history = try {
             loadPersistedForLlm()
@@ -1283,10 +1375,15 @@ class ChatViewModel(
                     it.content.isNotBlank() || it.imagePath.isNotBlank()
                 }
                 .let { selected ->
-                    // (0, 200000) 计费档（v0.39.0）：历史字数 = 20 万 - system prompt 字数 - 回复余量，
-                    // 从最新往最旧收，聊到 20 万字之前就是全量记忆
-                    val budget = (HISTORY_CHAR_BUDGET - systemPrompt.length - OUTPUT_RESERVE_CHARS)
-                        .coerceAtLeast(0)
+                    // v0.95：窗口口径 = **纯历史字数**（与设置项「记住最近多少字」同名同义，用户拍板）。
+                    // 以前还要再减 system prompt 字数与 8,000 输出余量 —— 那是 20 万字窗口时代的
+                    // 算法；v0.86.0 把窗口降到 1.2 万后，余量吃掉窗口的三分之二，模型实际只能看到
+                    // 最近几百字、system prompt 稍长就只剩最新一条（真机反馈"看不到上下文"）。
+                    // 更糟的是摘要引擎按**整个**窗口判"掉出"，被多减的那段消息既不进历史、
+                    // 也还没进摘要 —— 静默蒸发（v0.82.0 注释警告过的坑，被这个减法重新挖开）。
+                    // 现在历史与摘要读的就是同一个窗口，缝自然闭合。
+                    val budget = runCatching { settingsRepository.historyCharBudget(personaId).first() }
+                        .getOrDefault(settingsRepository.DEFAULT_HISTORY_CHAR_BUDGET)
                     selectHistoryByCharBudget(selected, budget)
                 }
         } catch (e: CancellationException) {
@@ -1306,6 +1403,8 @@ class ChatViewModel(
         var usagePrompt = 0
         var usageCached = 0
         var streamError: Throwable? = null
+        // v0.97.0：流被提前掐断（没见过 [DONE] / finish_reason）——已收内容照样落库，但要告诉用户
+        var truncated = false
         // P3-1/P3-3：tools 回环的准备——配了 MCP 服务器且端点支持 tools 才有这份清单；
         // null = 请求体与旧版逐字节一致（一个字段都不多）
         val toolsBundle = prepareToolsBundle(config)
@@ -1319,6 +1418,11 @@ class ChatViewModel(
                 // 限 MAX_TOOL_ROUNDS 防死循环。中间消息只活在 extraMessages 里，不落库。
                 val extraMessages = ArrayList<org.json.JSONObject>()
                 var toolRound = 0
+                // v0.97.0：易变上下文**每轮只算一次**。以前放在 while 里，于是每多一轮工具调用，
+                // 就重新跑一次联网搜索（一次外部 API）+ 向量召回（一次 embeddings 调用 + 可能懒索引），
+                // 一轮最多 4 轮 = 同一份上下文重复付 4 次钱、等待时间还叠加。
+                // 顺带保住前缀缓存：各轮 system + 历史逐字节相同，只有最后一条消息在变。
+                val runtimeContext = runtimeContextNow()
                 while (true) {
                     val roundStart = sb.length
                     var pendingCalls: List<com.menghuan.app.llm.PendingToolCall>? = null
@@ -1326,7 +1430,7 @@ class ChatViewModel(
                         .streamEvents(
                             systemPrompt,
                             history,
-                            runtimeContextNow(),
+                            runtimeContext,
                             imageDataUrl = { path ->
                                 // 用户发的图现场降采样转 base64（AI 生成图是 assistant 消息，不进请求）
                                 com.menghuan.app.data.VisionImage.encodeDataUrl(path)
@@ -1345,6 +1449,8 @@ class ChatViewModel(
                                 }
 
                                 is com.menghuan.app.llm.StreamEvent.ToolCalls -> pendingCalls = ev.calls
+                                // v0.97.0：连接在结束标记之前被掐断，别把半截回复当完整回复
+                                com.menghuan.app.llm.StreamEvent.Incomplete -> truncated = true
                             }
                         }
                     val calls = pendingCalls.orEmpty()
@@ -1409,7 +1515,8 @@ class ChatViewModel(
             // 已收到部分回复：保留已收内容并正常落库
         } else if (failure != null) {
             if (sb.isEmpty()) {
-                setError("回复失败：${failure.message ?: "网络异常"}", ErrorBar.KIND_RETRY)
+                // v0.97.0（B42）：技术性文案补"下一步怎么办"
+                setError("回复失败：${failure.message ?: "网络异常"}，可点「重试」重新生成", ErrorBar.KIND_RETRY)
                 return
             }
             // 已收到部分回复：保留已收内容并正常落库
@@ -1424,6 +1531,11 @@ class ChatViewModel(
         // 这里把原串带回去供生图解析
         val (rawReply, replyId) = persistReply(sb, reasoning)
         finishStream()
+        // v0.97.0：半截回复照样落库（已收内容有价值），但**必须说出来**——
+        // 以前连接被掐断时这里一声不吭，用户只看到一句说到一半的话，以为是模型抽风。
+        if (truncated) {
+            setError("回复可能不完整：连接在结束标记之前中断了，可点「重试」重新生成", ErrorBar.KIND_RETRY)
+        }
         // 文字这一段落库完成 = "生成中"这一刻结束。**先解登记**，好让重新进入会话的 VM
         // 立刻看到完整回复；后面的语音条/生图有自己的登记（imageBusy），各管各的。
         ChatGenerationBus.endText(personaId)
@@ -1445,8 +1557,14 @@ class ChatViewModel(
         // `<add:内容>` → 待入库（v0.70.0）。放在文字落库之后：一条回复先要能正常显示，
         // 记忆只是它的副作用，副作用失败绝不能把正文带走。
         maybeStageMemories(rawReply)
-        // `[动态:…]` / `[动态#id:…]` → 落进动态时间线（v0.73.0）。同上：副作用，失败不带走正文。
-        maybePostMoments(rawReply)
+        // `[心情:词]` → 落 valence/arousal（v0.98.0）。这是 CompanionLogic.applyDelta 的**第一个调用点**：
+        // 接上它，会话列表那颗心情计才会真的随对话变化（原来它恒半格 —— 根因见 data/CompanionMarker.kt）。
+        maybeUpdateMood(rawReply)
+        // `[动态:…]` / `[动态#id:…]` → 落时间线这条副作用**已移除**（用户拍板：动态只存于主动关心链）。
+        // 聊天链现在完全不碰动态：落库的调用点没了，模型也不再被告知有这条通道。
+        // `[建议任务:标题|备注]` → 聊天页出卡（v0.88.0，用户点名「只在聊天页出卡」）。
+        // 放在正文落库之后：卡片是这句回复的附带物，出不来也绝不能影响那句话本身。
+        maybeSuggestTasks(personaId, rawReply)
         // 提炼流水线：攒够增量消息后由引擎在应用级作用域自行决定是否调用 LLM
         extractionEngine.maybeExtract(personaId)
         // 滚动摘要（v0.82.0 P1-1）：掉出历史预算的积压攒够 3 万字才真发请求，平时这一步零成本
@@ -1515,6 +1633,10 @@ class ChatViewModel(
     // [readToken] 是"这一轮朗读"的序号：任何一次打断（再点一条、手动停、发新消息）
     // 都会 ++，旧协程回来发现自己过期就直接放弃，不会把新的状态覆盖掉。
 
+    // v0.97.0：同上 —— 自动朗读在生成协程（IO）里 `++readToken`，用户长按朗读/停止在 Main 线程，
+    // 两侧并发读写同一 int。没 `@Volatile` 时打断判定可能读到过期值，旧朗读协程不被判过期、
+    // 覆盖新一轮状态（表现为"停不下来 / 念串了"）。
+    @Volatile
     private var readToken = 0
     private var readPlayer: android.media.MediaPlayer? = null
 
@@ -1827,28 +1949,55 @@ class ChatViewModel(
     }
 
     /**
-     * 回复里带 `[动态:内容]` / `[动态#id:内容]` → 落进动态时间线（v0.73.0）。
+     * 回复里带 `[建议任务:标题|备注]` → 聊天页出卡（v0.88.0）。
      *
-     * 放在文字落库**之后**，与 [maybeStageMemories] 同一条纪律：一条回复先要能正常显示，
-     * 发帖只是它的副作用，副作用失败绝不能把正文带走（整条链路包在 runCatching 里）。
+     * 去重走 [TaskSuggestionHub.filterAndRecord]：同名任务已在任务库里、或今天已经建议过同名，
+     * 一律不再出卡（用户点名过「老是重复建议同一件事」）。
      *
-     * 三条口径：
-     * - **回帖先验 id**：模型会编一个不存在的编号（`[动态#99:…]`）。那种回复指向空气，
-     *   时间线上算不出条数、点进去还会白屏 —— 直接丢弃，并留一条日志。
-     *   正文里那个标记已经被剥掉了，所以用户看不见这条没落成的回复；这是刻意的，
-     *   把模型的协议错误甩给用户看只会变成"这 App 奇怪"。
-     * - **一帖一条上限**：一轮回复最多发 2 条，防它把一次回答拆成刷屏（时间线是公共空间）。
-     * - **AI 不能删、不能改用户发的帖**：这条链路只有 insert，没有 update/delete。
+     * 拿不到 [appScope]（单测环境）时**静默跳过** —— 建议是附带物，不该让正文落库失败。
+     * 通话/定时消息链路不调这个方法，标记照剥（在 [persistReply] 或各自的剥标记步骤里）但不出卡。
      */
-    private suspend fun maybePostMoments(rawReply: String) {
-        // v0.79.0：落库逻辑抽到 MomentActions —— 动态现在有两条链路（聊天 / 主动关心），
-        // 校验口径必须只有一份；这里只管"什么时候调"，不管"怎么落"。
-        com.menghuan.app.data.MomentActions.apply(
-            db,
-            personaId,
-            rawReply,
-            com.menghuan.app.data.MomentActions.Limits.CHAT,
-        )
+    private suspend fun maybeSuggestTasks(personaId: Long, rawReply: String) {
+        val marker = com.menghuan.app.data.TaskSuggestionMarker.parse(rawReply)
+        if (!marker.hasSuggestion) return
+        val existingTitles = runCatching { db.taskDao().observeAll().first().map { it.title } }
+            .getOrDefault(emptyList())
+            .toSet()
+        val fresh = runCatching { taskSuggestionHub.filterAndRecord(marker.suggestions, existingTitles) }
+            .getOrDefault(emptyList())
+        if (fresh.isNotEmpty()) taskSuggestionHub.publish(personaId, fresh)
+    }
+
+    /**
+     * 心情标记 `[心情:词]` → 把这次对话的效果落到角色的 valence / arousal（v0.98.0）。
+     *
+     * 这是 [com.menghuan.app.data.CompanionLogic.applyDelta] 的**第一个调用点** —— 在此之前
+     * valence/arousal 没有任何输入源，恒为常数，`moodOf` 的九个情绪簇只有"情绪平平"可达，
+     * 会话列表那颗心情计因此永远是半格（根因见 `data/CompanionMarker.kt` 头注释）。
+     *
+     * 三条纪律：
+     * - **放在正文落库之后**（调用点与 [maybeStageMemories] 并列）：心情是这句回复的附带物，
+     *   落轴失败绝不能影响那句话本身；
+     * - **无效标记一律跳过**（[com.menghuan.app.data.CompanionMarker.Decision.effective] 为假，
+     *   比如词不认识）：否则会白写一次盘、把 `atMs` 推新，吃掉一段本该补算的漂移；
+     * - 全程 `runCatching`：拿不到状态 / 写盘失败都静默，不打扰对话。
+     */
+    private suspend fun maybeUpdateMood(rawReply: String) {
+        val mood = com.menghuan.app.data.CompanionMarker.parse(rawReply)
+        if (!mood.effective) return
+        runCatching {
+            val nowMs = System.currentTimeMillis()
+            val s = com.menghuan.app.data.CompanionLogic.decode(
+                settingsRepository.companionStateRaw(personaId).first()
+            )
+            settingsRepository.setCompanionStateRaw(
+                personaId,
+                com.menghuan.app.data.CompanionLogic
+                    .applyDelta(s, valence = mood.valence, arousal = mood.arousal)
+                    .copy(atMs = nowMs)
+                    .let { com.menghuan.app.data.CompanionLogic.encode(it) },
+            )
+        }
     }
 
     private suspend fun persistReply(sb: StringBuilder, reasoning: String = ""): Pair<String, Long> {
@@ -1867,12 +2016,19 @@ class ChatViewModel(
         val withoutVoiceNote = if (voiceNote.wantsVoice) voiceNote.cleanText else raw
         // 记忆标记 `<add:内容>` 同样在这一层剥（v0.70.0）：条目进"待入库"，正文不许带标记
         val memory = com.menghuan.app.data.MemoryMarker.parse(withoutVoiceNote)
-        // 动态标记 `[动态:…]` / `[动态#id:…]`（v0.73.0）：同一条纪律 —— 标记是给 App 的信号，
-        // 帖子另由 maybePostMoments 落进时间线，正文里一个字都不许留
-        val moment = com.menghuan.app.data.MomentMarker.parse(memory.cleanText)
+        // 动态标记（`[动态:…]` / `[动态#id:…]` / `[点赞:…]`）**聊天链完全不处理**：
+        // 协议段、每轮名单、落库，连"把标记剥掉"这一步都撤了（动态只存于主动关心链）。
+        // 于是 `MomentMarker` 在这条链里已无任何引用 —— 模型若凭旧习惯写出标记，
+        // 它会原样出现在正文里（这是"这条链不再为动态做任何事"的必然结果）。
+        // 任务建议标记 `[建议任务:标题|备注]`（v0.88.0）：同一条纪律 —— 标记是给 App 的信号，
+        // 卡片出在气泡下方，正文里一个字都不许留
+        val taskSuggestion = com.menghuan.app.data.TaskSuggestionMarker.parse(memory.cleanText)
+        // 心情标记 `[心情:词]`（v0.98.0）：同一条纪律 —— 标记是给 App 的信号，正文一个字都不许留。
+        // 增量落轴另在 [maybeUpdateMood] 里做（用的是**未剥的** rawReply）。
+        val mood = com.menghuan.app.data.CompanionMarker.parse(taskSuggestion.cleanText)
         val text = AgentPrompts.stripMarker(
             imgClient.stripMarker(
-                com.menghuan.app.data.AiCallLogic.stripMarker(moment.cleanText)
+                com.menghuan.app.data.AiCallLogic.stripMarker(mood.cleanText)
             ),
         ).ifBlank {
             // 整条回复只有标记、没有正文：给一句占位（图/执行卡/语音条随后接管观感）
@@ -1882,8 +2038,10 @@ class ChatViewModel(
                 // 只写了 `<add:…>`：用户得看见"TA 记了一笔"，否则这条回复看起来是空的，
                 // 而记忆已经静静进了暂存区 —— 无声的变化最难查
                 memory.items.isNotEmpty() -> MEMORY_ONLY_PLACEHOLDER
-                // 只写了 `[动态:…]` 同理：TA 去发动态了，屏幕上要给一句交代
-                moment.wantsAnything -> MOMENT_ONLY_PLACEHOLDER
+                // 动态标记的占位（原来那句「去动态上表态了」）**已删**：聊天链不再对动态做任何动作，
+                // 那句交代就成了谎话。真只写了动态标记的回复落到下一行的通用兜底即可。
+                // 只写了 `[建议任务:…]`：卡片就在下面，正文可以短，但不能是空字符串
+                taskSuggestion.hasSuggestion -> TASK_SUGGESTION_ONLY_PLACEHOLDER
                 else -> AGENT_ONLY_PLACEHOLDER
             }
         }
@@ -2065,92 +2223,70 @@ class ChatViewModel(
             if (isNotEmpty()) append("\n\n")
             append(recall)
         }
-        // 动态时间线现状（v0.73.0）：模型要回帖就得知道**有哪些编号可回**。
-        // 这份名单每轮都变（新帖随时进、旧帖会被删），进 system prompt 就是每轮作废前缀；
-        // 所以和记忆检索一样贴到最后一条用户消息上（§零.9）。
-        val feed = momentFeedBlock()
-        if (feed.isNotBlank()) {
-            if (isNotEmpty()) append("\n\n")
-            append(feed)
-        }
-        // 今日任务状态（v0.77.0，用户点名「AI 识别不了任务已经完成」）：
+        // 动态时间线现状那份名单**已移除**（用户拍板：动态只存于主动关心链）：
+        // 不再每轮把「有哪些帖子可回」贴给模型 —— 既是白花的 token，也是勾它去接动态的诱因。
+        // 主动链自己有一份同名名单（[com.menghuan.app.data.ProactiveChat.momentsFeedBlock]），与这条链无关。
+        // 今日任务状态（v0.77.0，用户点名「AI 识别不了任务已经完成」；v0.84.0 补引用纪律）：
         // 以前"任务完成了"只以一条用户消息 `✅ 已完成打卡：xx` 的形式落在主人设会话里，
         // **别的会话看不到、AI 也不会把它当状态**，于是它照样催"你今天还没打卡吧"。
-        // 现在把当前的任务状态直接喂进上下文（完成/未完成/失败分列），每轮现算——
-        // 状态随打卡时刻变，进 system prompt 就是每轮作废前缀（§零.9）。
+        // 现在把当前的任务状态直接喂进上下文（今天该做 / 明天到期 / 今天已完成 / 逾期计数），
+        // 每轮现算——状态随打卡时刻变，进 system prompt 就是每轮作废前缀（§零.9）。
+        // v0.84.0：出料按归属日分桶并附引用纪律（只许提今天/明天到期的），
+        // 见 TaskContext 的文件注释——光写"不要提过期的"没用，料里带着过期任务模型就有理由提。
         val tasks = taskStatusBlock()
         if (tasks.isNotBlank()) {
             if (isNotEmpty()) append("\n\n")
             append(tasks)
         }
+        // 角色此刻的心情（v0.98.0，用户点名「普通聊天链里也要加」）：把五轴状态翻成一句人话。
+        // 放在**最后**（离生成最近，行为约束最容易被遵守），且刻意走易变上下文而不是 system prompt ——
+        // 心情每轮都可能变，进前缀就是每轮作废缓存（§零.9，与时间/记忆/任务同一条纪律）。
+        val mood = companionMoodBlock()
+        if (mood.isNotBlank()) {
+            if (isNotEmpty()) append("\n\n")
+            append(mood)
+        }
     }
 
     /**
-     * 今日任务状态（v0.77.0）。
+     * 角色此刻的心情（v0.98.0）：[com.menghuan.app.data.CompanionLogic.promptContext] 的一层薄壳。
      *
-     * 只报**当前还没有结束的任务**（未完成的）+ 今天已完成的**计数与名字**：
-     * - 未完成逐条列出来，AI 才知道该催哪几件、不该催哪些已经做完的；
-     * - 已完成的列名字，AI 说"你今天的 xx 做完啦"才不是凭空恭维；
-     * - 每日任务跨天重置用 [isEffectivelyDone] / [isEffectivelyFailed] 判定，
-     *   与任务页/周报同一口径（别自己写 `isDone`，那会把昨天的完成算成今天的）。
+     * 在这之前心情**只有一个出口** —— 主动关心那一次（`ProactiveChat`）。于是"她今天心情不好
+     * 所以话少"只在"她主动来找你"时成立；你主动找她聊，那条回复完全感知不到她的心情。
+     * 这条就是补上另一个出口，两个出口共用同一个纯函数，不会各说各话。
      *
-     * 没有任何任务（列表为空）+ 今天也没完成任何事 → 返回空串，不往上下文里塞空标题。
+     * 三条口径：
+     * - **平淡时返回空串**（`promptContext` 自己就返回空），不往上下文里塞没信息的 token；
+     * - **读已落盘的状态，不在这里 tick**：状态的真实推进归 `ProactiveChat` 与 `maybeUpdateMood`
+     *   两个检查点（同 `ChatListScreen` 的纪律：读的地方不许写盘）。用户刚发完消息时
+     *   `send()` 已经跑过 `onUserMessage`、`atMs` 刚推新，读到的就是此刻的状态；
+     * - 拿不到状态 / 解码失败一律静默返回空串 —— 心情是参考，不该让整轮生成失败。
+     */
+    private suspend fun companionMoodBlock(): String {
+        val raw = runCatching { settingsRepository.companionStateRaw(personaId).first() }.getOrNull()
+        if (raw.isNullOrBlank()) return ""
+        return runCatching {
+            com.menghuan.app.data.CompanionLogic.promptContext(
+                com.menghuan.app.data.CompanionLogic.decode(raw)
+            )
+        }.getOrDefault("")
+    }
+
+    /**
+     * 今日任务状态（v0.77.0；v0.84.0 交给 [TaskContext] 统一构建）。
+     *
+     * v0.77.0 解决的是「AI 不知道任务已完成、照样催打卡」；v0.84.0 补上另一半：
+     * 出料时**按归属日分桶 + 附引用纪律**，因为用户点名「老是提到已完成/已过时/很久之后的任务」。
+     * 分桶与纪律的唯一实现在 [com.menghuan.app.data.TaskContext]（聊天/主动关心/电话/定时消息共用，
+     * 别在四个调用点各拼一份 —— 那样必然又走散）。
+     *
+     * 每日任务跨天重置走 [isEffectivelyDone] / [isEffectivelyFailed]，与任务页同一口径。
+     * 没有任何任务 → 返回空串，不往上下文里塞空标题。
      */
     private suspend fun taskStatusBlock(): String {
         val all = runCatching { db.taskDao().observeAll().first() }.getOrDefault(emptyList())
         if (all.isEmpty()) return ""
-        val today = java.time.LocalDate.now().toEpochDay()
-        val done = all.filter { it.isEffectivelyDone(today) }
-        val failed = all.filter { it.isEffectivelyFailed(today) }
-        val pending = all.filter { !it.isEffectivelyDone(today) && !it.isEffectivelyFailed(today) }
-        if (done.isEmpty() && failed.isEmpty() && pending.isEmpty()) return ""
-        return buildString {
-            append("## 用户的任务现状\n")
-            append("（这是实时状态，用户说「我做完了 xx」时以这里为准，别凭印象说人家没做。）\n")
-            if (pending.isEmpty()) {
-                append("· 待办：今天没有未完成的任务。\n")
-            } else {
-                append("· 还没完成（${pending.size} 件）：")
-                append(pending.take(8).joinToString("、") { it.title })
-                if (pending.size > 8) append(" 等 ${pending.size} 件")
-                append("\n")
-            }
-            if (done.isNotEmpty()) {
-                append("· 今天已完成（${done.size} 件）：")
-                append(done.take(8).joinToString("、") { it.title })
-                if (done.size > 8) append(" 等 ${done.size} 件")
-                append("\n")
-            }
-            if (failed.isNotEmpty()) {
-                append("· 今天标了失败（${failed.size} 件）：")
-                append(failed.take(8).joinToString("、") { it.title })
-                append("\n")
-            }
-        }.trimEnd()
-    }
-
-    /**
-     * 「你手上有哪些帖子可以回」那一段（v0.73.0）。
-     *
-     * 只给**帖子**（parentId=0），不给回复：回复不能再被回复，列出编号只会诱导它写出
-     * `[动态#回复id:…]`，那条会因为指向的不是帖子而被 [maybePostMoments] 丢掉。
-     *
-     * 6 条是实测的平衡点：再多模型开始回每条都像在刷屏，而时间线翻两屏也就这些。
-     */
-    private suspend fun momentFeedBlock(): String {
-        val all = runCatching { db.momentDao().observeAll().first() }.getOrDefault(emptyList())
-        val posts = all.filter { it.parentId == 0L }.sortedByDescending { it.createdAt }.take(6)
-        if (posts.isEmpty()) return ""
-        val names = runCatching { db.personaDao().observeAll().first() }
-            .getOrDefault(emptyList()).associate { it.id to it.name }
-        val lines = posts.map { p ->
-            com.menghuan.app.data.MomentMarker.feedLine(
-                id = p.id,
-                author = if (p.personaId == 0L) "用户" else names[p.personaId] ?: "TA",
-                text = p.text,
-            )
-        }
-        return com.menghuan.app.data.MomentMarker.feedBlock(lines)
+        return com.menghuan.app.data.TaskContext.block(all)
     }
 
     /**

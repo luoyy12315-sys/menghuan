@@ -164,12 +164,16 @@ object SherpaAsr {
             if (samples.isEmpty()) return@withContext null
             val rec = obtain(context) ?: return@withContext null
             synchronized(lock) {
-                runCatching {
-                    val stream = rec.createStream()
+                // v0.97.0：**stream 必须在 finally 里 release**。
+                // 以前 `stream.release()` 写在 runCatching 体内、decode 之后 —— 只要
+                // acceptWaveform / decode / getResult 任一步抛异常（损坏音频、native OOM），
+                // release 就被跳过，native 侧那条流永久泄漏；通话每句话都走这里，会累积。
+                var stream: com.k2fsa.sherpa.onnx.OfflineStream? = null
+                try {
+                    stream = rec.createStream()
                     stream.acceptWaveform(samples, SAMPLE_RATE)
                     rec.decode(stream)
                     val result = rec.getResult(stream)
-                    stream.release()
                     val text = stripSenseVoiceTags(result.text)
                     Log.i(
                         TAG,
@@ -183,21 +187,13 @@ object SherpaAsr {
                         event = result.event.orEmpty().trim(),
                         lang = result.lang.orEmpty().trim(),
                     )
-                }.getOrElse {
-                    Log.e(TAG, "decode failed: ${it.javaClass.simpleName} ${it.message.orEmpty().take(160)}")
+                } catch (e: Throwable) {
+                    Log.e(TAG, "decode failed: ${e.javaClass.simpleName} ${e.message.orEmpty().take(160)}")
                     null
+                } finally {
+                    runCatching { stream?.release() }
                 }
             }
-        }
-
-    /** wav 文件 → 语气读数（与 [transcribeWav] 同一套读法，只是多带回两个字段） */
-    suspend fun readoutWav(context: Context, wavPath: String): AsrReadout? =
-        withContext(Dispatchers.IO) {
-            val samples = runCatching { WavPcm.readMonoAt(java.io.File(wavPath), SAMPLE_RATE) }
-                .getOrNull()
-                ?.takeIf { it.isNotEmpty() }
-                ?: return@withContext null
-            readoutSamples(context, samples)
         }
 
     /**

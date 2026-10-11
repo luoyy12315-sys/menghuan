@@ -2,5 +2,7 @@
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
     <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+    <!-- 主题图标（单色）不能复用前景：前景里气泡是实心的，统一上色后会糊成一整块，
+         单色版只画气泡轮廓 + 「mh」笔画，靠 alpha 抠出字 -->
+    <monochrome android:drawable="@drawable/ic_launcher_monochrome" />
 </adaptive-icon>

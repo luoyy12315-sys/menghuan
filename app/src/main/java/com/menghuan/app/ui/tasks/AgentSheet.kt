@@ -62,6 +62,10 @@ fun AgentSheet(vm: TasksViewModel, onDismiss: () -> Unit) {
     var whitelistOn by remember { mutableStateOf(false) }
     var selectedApps by remember { mutableStateOf<Set<String>>(emptySet()) }
     var sensitiveConfirm by remember { mutableStateOf(true) }
+    var keepAlive by remember { mutableStateOf(true) }
+    var agentModel by remember { mutableStateOf("") }
+    var agentVision by remember { mutableStateOf(true) }
+    var scriptCount by remember { mutableStateOf(0) }
     var serviceEnabled by remember { mutableStateOf(AgentAccessibilityService.isRunning()) }
     // 已安装应用（有桌面入口的）：白名单勾选列表用，排除本应用自身
     var apps by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
@@ -72,6 +76,11 @@ fun AgentSheet(vm: TasksViewModel, onDismiss: () -> Unit) {
             whitelistOn = config.whitelist.isNotEmpty()
             selectedApps = config.whitelist
             sensitiveConfirm = config.sensitiveConfirm
+            keepAlive = app.settingsRepository.agentKeepAlive.first()
+            agentModel = app.settingsRepository.agentModel.first()
+            agentVision = app.settingsRepository.agentVision.first()
+            scriptCount = com.menghuan.app.agent.ActionScriptStore
+                .load(java.io.File(context.filesDir, "agent_scripts.json")).size
         }
         apps = runCatching {
             val pm = context.packageManager
@@ -169,6 +178,83 @@ fun AgentSheet(vm: TasksViewModel, onDismiss: () -> Unit) {
                     Text("敏感操作需确认", fontSize = 14.sp, color = TextPrimary, modifier = Modifier.weight(1f))
                     NeuSwitch(checked = sensitiveConfirm, onToggle = { sensitiveConfirm = it })
                 }
+                Spacer(Modifier.height(14.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("后台保活", fontSize = 14.sp, color = TextPrimary)
+                        Text(
+                            "开 = 用过 Agent 后挂常驻服务，无障碍不被系统回收（有一条静默通知）",
+                            fontSize = 10.sp,
+                            color = MutedText,
+                        )
+                    }
+                    NeuSwitch(checked = keepAlive, onToggle = {
+                        keepAlive = it
+                        scope.launch {
+                            app.settingsRepository.setAgentKeepAlive(it)
+                            if (!it) com.menghuan.app.agent.AgentKeepAliveService.stop(context)
+                        }
+                    })
+                }
+                Spacer(Modifier.height(14.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("发送屏幕截图", fontSize = 14.sp, color = TextPrimary)
+                        Text(
+                            "开 = 每步附一张截图（看得懂图标与布局，更准；图片会多花一点 token）。" +
+                                "需要所用模型支持看图，Android 11 以下自动不生效",
+                            fontSize = 10.sp,
+                            color = MutedText,
+                        )
+                    }
+                    NeuSwitch(checked = agentVision, onToggle = {
+                        agentVision = it
+                        scope.launch { app.settingsRepository.setAgentVision(it) }
+                    })
+                }
+                Spacer(Modifier.height(14.dp))
+                // M3-I：Agent 专用模型（留空 = 跟随所选接口的模型）
+                NeuTextField(
+                    value = agentModel,
+                    onValueChange = { agentModel = it },
+                    label = "执行模型（留空 = 跟随接口）",
+                    placeholder = "例：qwen-flash / gpt-4o-mini",
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("已学脚本", fontSize = 14.sp, color = TextPrimary)
+                        Text(
+                            "同一目标 + 同一界面：本地重放，不再逐步问模型（已存 $scriptCount 条）",
+                            fontSize = 10.sp,
+                            color = MutedText,
+                        )
+                    }
+                    NeuButton(
+                        text = "清除",
+                        kind = NeuButtonKind.Secondary,
+                        onClick = {
+                            val file = java.io.File(context.filesDir, "agent_scripts.json")
+                            if (com.menghuan.app.agent.ActionScriptStore.clear(file)) {
+                                scriptCount = 0
+                                com.menghuan.app.ui.common.AppToast.ok("已清除已学脚本")
+                            } else {
+                                com.menghuan.app.ui.common.AppToast.fail("清除失败")
+                            }
+                        },
+                    )
+                }
                 if (!serviceEnabled) {
                     Spacer(Modifier.height(14.dp))
                     NeuButton(
@@ -179,6 +265,21 @@ fun AgentSheet(vm: TasksViewModel, onDismiss: () -> Unit) {
                                 context.startActivity(
                                     android.content.Intent(
                                         android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS,
+                                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }
+                        },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    // 国产 ROM 杀后台是无障碍"总被关掉"的主因：顺手把电池优化名单也引导过去
+                    NeuButton(
+                        text = "电池白名单（防系统杀服务）",
+                        kind = NeuButtonKind.Secondary,
+                        onClick = {
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(
+                                        android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS,
                                     ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
                                 )
                             }
@@ -196,6 +297,7 @@ fun AgentSheet(vm: TasksViewModel, onDismiss: () -> Unit) {
                             val packages = if (whitelistOn) selectedApps else emptySet()
                             app.settingsRepository.setAgentWhitelist(packages)
                             app.settingsRepository.setAgentSensitiveConfirm(sensitiveConfirm)
+                            app.settingsRepository.setAgentModel(agentModel)
                             AgentRunner.start(vm.viewModelScope, app.settingsRepository, goal.trim())
                         }
                     },

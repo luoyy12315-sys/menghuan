@@ -13,6 +13,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -55,6 +56,10 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -87,7 +92,6 @@ val EaseOutExpo = CubicBezierEasing(0.16f, 1f, 0.3f, 1f)
 val EaseOutQuart = CubicBezierEasing(0.25f, 1f, 0.5f, 1f)
 val NeuPressSpec = tween<Float>(110)
 val NeuStateSpec = tween<Float>(220, easing = EaseOutQuart)
-val NeuPressDpSpec = tween<Dp>(110)
 val NeuSpring = spring<Float>(
     dampingRatio = Spring.DampingRatioMediumBouncy,
     stiffness = Spring.StiffnessMediumLow,
@@ -511,13 +515,27 @@ fun NeuChip(
     }
 }
 
-/** 圆形勾选框：未选 = 白底发丝线圈；已选 = 纯黑填充 + 对勾弹簧弹出 */
+/**
+ * 圆形勾选框：未选 = 白底发丝线圈；已选 = 纯黑填充 + 对勾弹簧弹出。
+ *
+ * ## 无障碍（v0.97.0，审查 U16）
+ * 旧实现只有 `Modifier.clickable` + 一个 `Text("✓")`：TalkBack 读到的是一堆无角色的文字，
+ * 视障用户根本不知道这是"能勾的"，更听不出当前是勾了还是没勾 —— 任务打卡、Agent 白名单
+ * 这两个功能对他们等于不存在。现在改用 `Modifier.toggleable(role = Role.Checkbox)`，
+ * 并补 `stateDescription`（读屏会念"未完成/已完成"）。
+ *
+ * @param label 读屏用的名字（如任务标题、应用名）。null = 不覆盖，由外层节点负责朗读。
+ * @param checkedDescription / [uncheckedDescription] 状态朗读文案，默认中性词
+ */
 @Composable
 fun NeuCheckCircle(
     checked: Boolean,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
     boxSize: Dp = 24.dp,
+    label: String? = null,
+    checkedDescription: String = "已选中",
+    uncheckedDescription: String = "未选中",
 ) {
     val press = rememberNeuPressState(raised = 4.dp)
     val checkScale by animateFloatAsState(if (checked) 1f else 0f, NeuSpring)
@@ -542,11 +560,16 @@ fun NeuCheckCircle(
                     }.clip(CircleShape)
                 },
             )
-            .clickable(
+            .toggleable(
+                value = checked,
                 interactionSource = press.interactionSource,
                 indication = null,
-                onClick = onToggle,
-            ),
+                role = Role.Checkbox,
+            ) { onToggle() }
+            .semantics {
+                if (label != null) contentDescription = label
+                stateDescription = if (checked) checkedDescription else uncheckedDescription
+            },
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -559,12 +582,22 @@ fun NeuCheckCircle(
     }
 }
 
-/** 开关：灰轨 + 底色钮，选中强调轨（位移走 expo） */
+/**
+ * 开关：灰轨 + 底色钮，选中强调轨（位移走 expo）。
+ *
+ * ## 无障碍（v0.97.0，审查 U16）
+ * 旧实现是 `Modifier.clickable`：读屏既读不出"这是一个开关"，也读不出开/关状态。
+ * 设置链上几十个开关（联网、朗读、摘要、主动关心、MCP 启停…）对视障用户全部不可用。
+ * 现在用 `Modifier.toggleable(role = Role.Switch)` + `stateDescription`。
+ *
+ * @param label 读屏用的名字；null = 由外层行负责朗读（当前多数调用点是这种）
+ */
 @Composable
 fun NeuSwitch(
     checked: Boolean,
     onToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    label: String? = null,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     // v0.55.0：滑块位移从 `animateDpAsState` + `offset` 改成 **animateFloat + graphicsLayer**。
@@ -586,10 +619,16 @@ fun NeuSwitch(
             .width(46.dp)
             .height(27.dp)
             .background(trackColor, CircleShape)
-            .clickable(
+            .toggleable(
+                value = checked,
                 interactionSource = interactionSource,
                 indication = null,
-            ) { onToggle(!checked) },
+                role = Role.Switch,
+            ) { onToggle(!checked) }
+            .semantics {
+                if (label != null) contentDescription = label
+                stateDescription = if (checked) "已开启" else "已关闭"
+            },
     ) {
         Box(
             Modifier
@@ -629,6 +668,18 @@ fun NeuSheetRow(
     subtitle: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 副标题下的**第二行小字**（v0.91.0，可选）。给的是纯文本 —— 由本组件统一管三件事：
+     * ① 固定行宽 + 尾部省略；② 11sp；③ `MutedText`。
+     *
+     * 为什么单位是"行"而不是行尾控件：模型卡原来把用量挂 [trailing]，而 trailing 只能吃
+     * Row 的**剩余宽度**，标题列 `weight(1f)` 一长就把读数压成竖排单字（真机截图里
+     * "deepseek-chat" 逐字竖着排、卡片撑高一倍）。
+     *
+     * ⚠️ 溢出只能用 `TextOverflow.Ellipsis`（尾部省略）：本项目 Compose BOM 2024.12.01
+     * （ui-text 1.7.6）**没有** `MiddleEllipsis`（那是 1.8 才加的），写了直接编译不过。
+     */
+    extra: String? = null,
     selected: Boolean = false,
     /** v0.80.0：自定义图标位（圆头像）；为 null 时画 [icon] */
     iconSlot: (@Composable () -> Unit)? = null,
@@ -691,6 +742,15 @@ fun NeuSheetRow(
             if (subtitle.isNotBlank()) {
                 Text(subtitle, fontSize = 12.sp, color = MutedText, maxLines = 1)
             }
+            extra?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    fontSize = 11.sp,
+                    color = MutedText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         if (trailing != null) {
             Spacer(Modifier.width(8.dp))
@@ -707,6 +767,10 @@ fun NeuSheetRow(
             Box(
                 Modifier
                     .size(40.dp)
+                    // v0.91.0：箭头定点居中、**不参与行高**。原来它给行立了个 40dp 的下限，
+                    // 三行字的模型卡（标题+副题+用量）本来已经超过 40dp 所以看不出来，
+                    // 两行的卡还是会被它撑高一截地显出多余的空白。
+                    .align(Alignment.CenterVertically)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -798,6 +862,32 @@ fun NeuSectionTitle(title: String, modifier: Modifier = Modifier, accent: Boolea
     )
 }
 
+/**
+ * 防重复点击闸门（v0.97.0，审查 U20）。
+ *
+ * 用法：`val gate = rememberClickGate(); onClick = { if (gate()) doSubmit() }`。
+ *
+ * 为什么要有它：这些动作都是"写一条记录"，而触发点常常既是行本身又是行里的按钮
+ * （任务行整行可点 + 勾选圈可点、记账页「记一笔」、动态发布）。手指抖一下、或者
+ * 触摸事件被两个节点各收一次，就会写出两条数据 —— 而这类脏数据在界面上看不出来，
+ * 只有累计金额对不上、打卡天数多一天时才会被发现。
+ *
+ * 用 `SystemClock.uptimeMillis()` 而不是 `currentTimeMillis()`：前者不受用户改系统时间影响。
+ */
+@Composable
+fun rememberClickGate(windowMs: Long = 350L): () -> Boolean {
+    val last = remember { longArrayOf(Long.MIN_VALUE / 2) }
+    return {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - last[0] >= windowMs) {
+            last[0] = now
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /** 列表行通用按压包装：只缩不放（IM 行不需要凸起） */
 @Composable
 fun Modifier.neuRowPress(onClick: () -> Unit): Modifier {
@@ -807,4 +897,65 @@ fun Modifier.neuRowPress(onClick: () -> Unit): Modifier {
     return this
         .scale(scale)
         .clickable(interactionSource = interactionSource, indication = null, onClick = onClick)
+}
+
+/**
+ * 通用骨架屏占位（v0.97.0，审查 U2/U5/U6/U9）。
+ *
+ * ## 为什么要有这个共用件
+ * 项目里三态纪律最早是在会话列表立起来的（`ChatListScreen` 的 `ChatListSkeleton`），
+ * 但那份骨架是**私有的**，于是别的页面在"数据还没到"这一帧只能写成
+ * `Box(Modifier.fillMaxSize())`（纯空白，用户以为页面坏了）或者干脆跳过加载态直接渲染空态
+ * （冷启动闪一下"暂无 XX"）。把骨架提成公共件，是让"三态"这件事能一键复制。
+ *
+ * ## 视觉
+ * 沿用设计系统：灰轨色圆角块、**零阴影**、行高节奏与真实列表一致（[rowHeight] + [gap]）。
+ * 不写"加载中…"这类说明性小字（§四：界面不写说明性小字）。
+ *
+ * @param count 占位行数，默认 6（一屏大致能看到的行数，再多也是白画）
+ * @param rowHeight 单行的块高；窄行用 14.dp，卡片型用 72.dp
+ * @param gap 行间距
+ * @param horizontalPadding 左右留白，与宿主页对齐
+ */
+@Composable
+fun NeuSkeleton(
+    modifier: Modifier = Modifier,
+    count: Int = 6,
+    rowHeight: Dp = 14.dp,
+    gap: Dp = 20.dp,
+    horizontalPadding: Dp = 16.dp,
+) {
+    val track = NeuTrack
+    Column(modifier.fillMaxWidth().padding(horizontal = horizontalPadding, vertical = 14.dp)) {
+        repeat(count) { index ->
+            // 末行短一点（0.55 宽），读起来像"正文的最后一行"，比齐刷刷等长更像真实内容
+            val widthFraction = if (index == count - 1) 0.55f else 1f
+            Box(
+                Modifier
+                    .fillMaxWidth(widthFraction)
+                    .height(rowHeight)
+                    .background(track, RoundedCornerShape(rowHeight / 2)),
+            )
+            if (index != count - 1) Spacer(Modifier.height(gap))
+        }
+    }
+}
+
+/**
+ * 卡片型骨架的便捷包装：一叠圆角大块，用在"一屏两三条卡"的页面（动态 / 记忆 / 定时消息）。
+ */
+@Composable
+fun NeuCardSkeleton(modifier: Modifier = Modifier, count: Int = 3) {
+    val track = NeuTrack
+    Column(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        repeat(count) { index ->
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(96.dp)
+                    .background(track, RoundedCornerShape(16.dp)),
+            )
+            if (index != count - 1) Spacer(Modifier.height(12.dp))
+        }
+    }
 }

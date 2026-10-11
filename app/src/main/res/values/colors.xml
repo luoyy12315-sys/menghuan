@@ -2,6 +2,7 @@
 <resources>
     <!-- 与 ui/theme/Theme.kt 的 NeuBackground 保持一致：冷启动窗口底色（Figma 画廊白） -->
     <color name="neu_background">#FFFFFF</color>
-    <!-- 图标底色 = 纯黑（Figma 骨架色），与前景白气泡 + 品牌色三点配套 -->
-    <color name="ic_launcher_background">#000000</color>
+    <!-- 图标底色 = 近白（#FBFBFA）：新 logo 是**黑气泡 + 白 mh**，底色必须浅，
+         黑气泡才看得见；也是开屏页的纸色（ui/common/MhLogoSplash.kt 的 SplashPaper） -->
+    <color name="ic_launcher_background">#FBFBFA</color>
 </resources>

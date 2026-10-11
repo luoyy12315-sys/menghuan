@@ -316,7 +316,9 @@ private fun decodeSampledBitmap(path: String, targetPx: Int): android.graphics.B
  * 图片正好把环压住，看起来"环在头像里面"，用了自定义图更是几乎看不见。
  * 现在环贴最外圈（外缘距边 1.5dp），内容再内缩到环内侧，环一定露在头像外面。
  */
-private fun Modifier.drawRing(brush: androidx.compose.ui.graphics.Brush): Modifier = this.then(
+// v0.93.0：改成 internal —— 个人档案那张「我」的圆脸也要套同一款环（`MeAvatar`），
+// 画法必须和这里一模一样，不能另写一份（另写一份早晚会长歪）。
+internal fun Modifier.drawRing(brush: androidx.compose.ui.graphics.Brush): Modifier = this.then(
     Modifier.drawBehind {
         drawCircle(
             brush = brush,

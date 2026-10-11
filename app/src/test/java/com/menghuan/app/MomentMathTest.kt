@@ -126,6 +126,35 @@ class MomentMathTest {
         assertEquals(odd, MomentMath.decodeImages(MomentMath.encodeImages(odd)))
     }
 
+    private fun entry(id: Long, personaId: Long, parent: Long = 0L, liked: String = "") =
+        MomentEntry(id = id, personaId = personaId, parentId = parent, text = "t", createdAt = id, likedBy = liked)
+
+    /**
+     * 「这个角色回过/赞过的帖子不再摆回它面前」（v0.93.x，聊天链与主动链共用）。
+     *
+     * 盯的是真机那次刷屏的三个面：自己回过算、自己赞过算、**别人回过/赞过不算**
+     * （用户或另一角色回过，不该挡住这个角色第一次表态）。
+     */
+    @Test
+    fun `角色自己回过或赞过的帖子算已表态`() {
+        val target = entry(1, personaId = 0L) // 用户发的帖子
+        val all = listOf(
+            target,
+            entry(2, personaId = 5L, parent = 1L), // 角色 5 回过
+            entry(3, personaId = 9L, parent = 1L, liked = ""), // 别的角色也回过
+        )
+        assertTrue(MomentMath.engagedBy(all, target, personaId = 5L)) // 自己回过
+        assertFalse(MomentMath.engagedBy(all, target, personaId = 7L)) // 只回过别人的楼，自己没表过态
+    }
+
+    @Test
+    fun `赞过也算已表态而别人的赞不算`() {
+        val target = entry(1, personaId = 0L, liked = "u,9")
+        val all = listOf(target)
+        assertTrue(MomentMath.engagedBy(all, target, personaId = 9L)) // 自己赞过
+        assertFalse(MomentMath.engagedBy(all, target, personaId = 5L)) // 赞的人不是它
+    }
+
     @Test
     fun `位置收口去空白压换行并截到上限`() {
         assertEquals("西湖边的星巴克", MomentMath.sanitizeLocation("  西湖边的星巴克 \n"))

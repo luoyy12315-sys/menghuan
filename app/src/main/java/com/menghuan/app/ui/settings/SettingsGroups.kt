@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -470,7 +471,10 @@ fun EmbeddingConfigScreen(onBack: () -> Unit) {
     val app = settingsContainer()
     val scope = rememberCoroutineScope()
 
-    val enabled by app.settingsRepository.embeddingEnabled.collectAsState(initial = false)
+    // 三态（v0.97.0，审查 U7）：初值 null = "还没读到"，读到之前不画开关。
+    // 原来 `initial = false` —— 已开启的用户进来会看到开关先显示"关"，再跳成"开"，
+    // 这中间的误触就把开启状态写掉了。
+    val enabled by app.settingsRepository.embeddingEnabled.collectAsState(initial = null)
     val storedUrl by app.settingsRepository.embeddingBaseUrl.collectAsState(initial = "")
     val storedModel by app.settingsRepository.embeddingModel.collectAsState(initial = "")
     val storedKey by app.settingsRepository.embeddingApiKey.collectAsState(initial = "")
@@ -493,9 +497,12 @@ fun EmbeddingConfigScreen(onBack: () -> Unit) {
                 color = TextPrimary,
                 modifier = Modifier.weight(1f),
             )
-            NeuSwitch(checked = enabled, onToggle = { on ->
-                scope.launch { app.settingsRepository.setEmbeddingEnabled(on) }
-            })
+            // 未读到（null）时占住同样的位置，避免文字独占整行再被挤回去
+            enabled?.let { cur ->
+                NeuSwitch(checked = cur, label = "换个说法也能想起来", onToggle = { on ->
+                    scope.launch { app.settingsRepository.setEmbeddingEnabled(on) }
+                })
+            } ?: Spacer(Modifier.width(46.dp).height(27.dp))
         }
         Spacer(Modifier.height(8.dp))
         Text(

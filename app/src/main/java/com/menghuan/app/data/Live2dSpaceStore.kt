@@ -201,10 +201,6 @@ object Live2dSpaceStore {
         }
     }
 
-    fun deleteBackground(context: Context, personaId: Long) {
-        runCatching { bgDir(context, personaId).deleteRecursively() }
-    }
-
     /**
      * 从相册导入一段背景视频（v0.74.0）。
      *
@@ -301,24 +297,6 @@ object Live2dSpaceStore {
         MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
             ?.isNotBlank() == true
     }.getOrDefault(false)
-
-    /** 背景视频的时长（毫秒），读不出来返回 0；弹层用来显示"00:08" */
-    fun videoDurationMs(context: Context, personaId: Long, config: SpaceConfig): Long {
-        val f = backgroundVideoFile(context, personaId, config) ?: return 0L
-        return runCatching {
-            val mmr = MediaMetadataRetriever()
-            try {
-                mmr.setDataSource(f.absolutePath)
-                mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            } finally {
-                runCatching { mmr.release() }
-            }
-        }.getOrDefault(0L)
-    }
-
-    fun deleteBackgroundVideo(context: Context, personaId: Long) {
-        runCatching { bgVideoDir(context, personaId).deleteRecursively() }
-    }
 
     /** 人设删除时级联清目录 */
     fun deletePersona(context: Context, personaId: Long) {

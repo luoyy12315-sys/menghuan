@@ -16,31 +16,33 @@ data class TaskSuggestion(
  * LLM 被要求只输出 JSON；但真实模型可能裹 markdown 代码栅栏或夹带说明文字，
  * 解析按"截取首个 { 到末个 }"宽容处理，任何失败返回空结果而不是抛异常。
  *
- * **v0.36.0 提示词分层**：
+ * **提示词分层**：
  * - [FRAMEWORK] = 硬编码不可改：JSON schema、字段名、"只输出 JSON"约束。
  *   改这个会让 [parse] 崩溃，所以不暴露给用户编辑。
- * - [DEFAULT_STRATEGY] = 用户可在「设置 · AI 提示词 · AI 洞察策略」里覆盖：
+ * - [DEFAULT_STRATEGY] = 用户可在「设置 · AI 提示词 · 记忆提炼策略」里覆盖：
  *   宁缺毋滥的具体标准、什么算长期画像、字段长度约束、数量指引。
  * - [systemPrompt] = 拼接两者，作为最终发给 LLM 的 system prompt。
  *
- * **v0.36.0 数量松绑**：洞察 / 任务建议不再硬编码"最多 1 条"，
- * 改为 AI 根据信息价值自主决定（可以是 0 条），代码保留宽松软上限防灾
- * （[MAX_INSIGHTS] / [MAX_SUGGESTIONS]）——正常输出 0~3 条不受影响，
+ * **v0.88.0 职责收窄：这里现在只产 facts（记忆）**。
+ * insights 挪去 `InsightEngine`（改从「记忆+任务+记账」按天/周/月归纳），
+ * taskSuggestions 挪去主对话链（AI 用 `[建议任务:…]` 标记主动触发）。
+ * 一次对话提炼只解决一件事，提示词与判据都短了一半。
+ *
+ * **v0.36.0 数量松绑**：不再硬编码"最多 1 条"，改由 AI 按信息价值自主决定（可以是 0 条），
+ * 代码保留宽松软上限防灾（[MAX_FACTS]）——正常输出 0~3 条不受影响，
  * 只是防止某个模型突然吐 50 条把 UI 撑爆。
  */
 object ProfileExtractor {
 
     /** 硬编码框架：JSON schema + 输出格式约束（不可编辑，改了 parse 会崩） */
     const val FRAMEWORK: String =
-        "你是用户画像提炼器。从对话记录中提炼关于**用户本人**的长期画像信息与可执行任务建议，供后续对话参考。\n" +
+        "你是用户画像提炼器。从对话记录中提炼关于**用户本人**的长期画像信息，供后续对话参考。\n" +
             "铁律：对话记录里标注为「AI角色」的一方，是用户创建的虚拟角色在扮演（角色名见行首），**不是用户本人**。\n" +
-            "角色的性格、设定、称呼、台词、情节走向一律不得写进 facts / insights / taskSuggestions；\n" +
+            "角色的性格、设定、称呼、台词、情节走向一律不得写进 facts；\n" +
             "也不要提炼用户与角色之间的关系、互动方式或对角色的态度——那不是用户本人的画像。\n" +
             "只提炼「用户：」一方真实、稳定的长期属性。\n" +
             "只输出 JSON，格式：\n" +
-            "{\"facts\":[{\"key\":\"条目名\",\"value\":\"内容\"}]," +
-            "\"insights\":[{\"title\":\"洞察标题\",\"detail\":\"洞察说明\"}]," +
-            "\"taskSuggestions\":[{\"title\":\"任务名\",\"note\":\"备注\",\"daily\":true,\"date\":\"yyyy-MM-dd 可选：仅当用户明确提到未来某天要做的事（面试/约会/截止）时填，没提到就不加 date 字段\"}]}\n" +
+            "{\"facts\":[{\"key\":\"条目名\",\"value\":\"内容\"}]}\n" +
             "全部用简体中文。不要输出 JSON 以外的任何文字。"
 
     /**
@@ -69,22 +71,22 @@ object ProfileExtractor {
         }.getOrDefault("")
     }
 
-    /** 默认策略：宁缺毋滥 + 数量指引（用户可在设置里覆盖） */
+    /** 默认策略：宁缺毋滥 + 命名规范（用户可在设置里覆盖） */
     const val DEFAULT_STRATEGY: String =
         "规则：\n" +
             "0. 宁缺毋滥是最高原则：只记录对后续对话长期有价值、且对话中有明确依据的信息。" +
             "普通闲聊、寒暄、一次性情绪、临时话题、模糊猜测一律不记；没有值得记录的就输出空数组。\n" +
-            "1. facts 只提炼用户本人的长期稳定属性：职业/学业、长期目标、重要作息与健康约束、明确的长期偏好。" +
+            "1. 只提炼用户本人的长期稳定属性：职业/学业、长期目标、重要作息与健康约束、明确的长期偏好。" +
             "明确不收：AI 角色的任何属性、一次性事件、当下的情绪、角色扮演情节、" +
             "用户与 AI 角色的关系或互动方式、称呼昵称、琐碎的聊天细节。" +
             "每条 value 不超过 40 字；与已知档案重复且无变化就不要输出。\n" +
-            "2. insights 只在对话中出现明确的重复模式、或用户提供了具体数据支撑时才输出，" +
-            "根据信息价值自主决定条数（宁少勿滥，可以是 0 条）；泛泛的鼓励、常识性建议、模棱两可的观察、" +
-            "单次对话的具体内容、角色扮演里的情节都不要输出。\n" +
-            "3. taskSuggestions 只在用户明确表达想做某事、或明确承认需要执行的行动时才建议，" +
-            "根据信息价值自主决定条数（宁少勿滥，可以是 0 条）；必须具体、可执行、可打卡；不确定就不要输出。" +
-            "daily=true 表示适合每天重复的任务。\n" +
-            "4. title/detail 控制在 40 字以内，note 控制在 30 字以内。"
+            "1.1 **条目名（key）的命名规范**（v0.85.0，用户反馈「记忆老是重复」）：" +
+            "用 2-6 字的**名词**，直接说是什么事（「工作」「作息」「口味」「生日」「过敏」），" +
+            "**不要加修饰、不要带版本感**（不写「目前的工作」「最近的工作情况」，就写「工作」）。" +
+            "同一个概念永远用同一个名字 —— 要记的事如果和上面【已经记住的条目名】里某条是同一件事，" +
+            "**必须复用那个名字**（哪怕你觉得另一个说法更好），只更新 value；" +
+            "换个说法重新起名会在库里变成两条重复记忆，这是明确要避免的。\n" +
+            "2. 一次可以输出多条，也可以一条都不输出（0 条是正常的，不是失败）。"
 
     /** 完整 system prompt = 框架 + 策略；策略为空/空白时只发框架 */
     fun systemPrompt(strategy: String = DEFAULT_STRATEGY): String =
@@ -92,16 +94,12 @@ object ProfileExtractor {
 
     /** 软防灾上限：AI 自主决定条数，但极端情况（模型失控吐几十条）仍要保护 UI 与数据库 */
     private const val MAX_FACTS = 6
-    private const val MAX_INSIGHTS = 10
-    private const val MAX_SUGGESTIONS = 5
 
     data class Extracted(
         val facts: List<Pair<String, String>> = emptyList(),
-        val insights: List<Pair<String, String>> = emptyList(),
-        val taskSuggestions: List<TaskSuggestion> = emptyList(),
     )
 
-    /** 模型输出 → (档案条目, 洞察, 任务建议)；单条畸形数据跳过，整体失败返回空 */
+    /** 模型输出 → 档案条目；单条畸形数据跳过，整体失败返回空 */
     fun parse(raw: String): Extracted {
         val start = raw.indexOf('{')
         val end = raw.lastIndexOf('}')
@@ -117,43 +115,7 @@ object ProfileExtractor {
                         if (k.isNotEmpty() && v.isNotEmpty()) k to v else null
                     }.getOrNull()
                 } }.orEmpty()
-            val insights = root.optJSONArray("insights")
-                ?.let { arr -> (0 until arr.length()).mapNotNull { i ->
-                    runCatching {
-                        val o = arr.getJSONObject(i)
-                        val t = o.optString("title").trim()
-                        val d = o.optString("detail").trim()
-                        if (t.isNotEmpty() && d.isNotEmpty()) t to d else null
-                    }.getOrNull()
-                } }.orEmpty()
-            val suggestions = root.optJSONArray("taskSuggestions")
-                ?.let { arr -> (0 until arr.length()).mapNotNull { i ->
-                    runCatching {
-                        val o = arr.getJSONObject(i)
-                        val t = o.optString("title").trim()
-                        if (t.isEmpty()) return@mapNotNull null
-                        TaskSuggestion(
-                            title = t.take(40),
-                            note = o.optString("note").trim().take(60),
-                            daily = o.optBoolean("daily", false),
-                            dueDate = normalizeDueDate(o.optString("date")),
-                        )
-                    }.getOrNull()
-                } }.orEmpty()
-            // 软防灾上限：正常输出远低于此，仅在模型失控时兜底
-            Extracted(facts.take(MAX_FACTS), insights.take(MAX_INSIGHTS), suggestions.take(MAX_SUGGESTIONS))
+            Extracted(facts.take(MAX_FACTS))
         }.getOrDefault(Extracted())
     }
-
-    /**
-     * 建议去重（纯函数）：跳过已存在同名任务的、当日已建议过的；同轮内按标题去重。
-     * 同 title 当日不重复建议的日期状态由 TaskSuggestionHub 维护。
-     */
-    fun filterSuggestions(
-        suggestions: List<TaskSuggestion>,
-        existingTaskTitles: Set<String>,
-        suggestedToday: Set<String>,
-    ): List<TaskSuggestion> = suggestions
-        .filter { it.title !in existingTaskTitles && it.title !in suggestedToday }
-        .distinctBy { it.title }
 }

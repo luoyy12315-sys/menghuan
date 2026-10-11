@@ -122,10 +122,6 @@ object CallVisualStore {
             ?.let { File(videoDir(context, personaId), it) }
             ?.takeIf { it.isFile && it.length() > 0L }
 
-    /** 伪视频至少还有一条能用吗（一条都没有 = 视觉层降级为无形象，方案文档 §十六最后一档） */
-    fun hasAnyVideo(context: Context, personaId: Long, asset: CallVisualAsset): Boolean =
-        asset.videoStates.keys.any { videoFile(context, personaId, asset, it) != null }
-
     /** Live2D 的 `live2d/` 根目录（模型内部路径都相对它） */
     fun live2dRoot(context: Context, personaId: Long): File = live2dDir(context, personaId)
 
@@ -307,21 +303,6 @@ object CallVisualStore {
             if (ld.exists()) runCatching { ld.deleteRecursively() }.onSuccess { removed++ }
         }
         return removed
-    }
-
-    /**
-     * 放弃一次未完成的编辑：把 staging 目录和未绑定的素材一起清掉。
-     * 只动 metadata.json 里**没有**引用的东西，已生效的形象绝不会被误删。
-     */
-    fun discardStaging(context: Context, personaId: Long) {
-        val dir = personaDir(context, personaId)
-        runCatching {
-            dir.listFiles()?.forEach { f ->
-                val isStagingDir = f.isDirectory && f.name.startsWith(STAGING_PREFIX)
-                val isStagingZip = f.isFile && f.name.startsWith(STAGING_ZIP_PREFIX)
-                if (isStagingDir || isStagingZip) f.deleteRecursively()
-            }
-        }
     }
 
     // ---- Live2D 模型包导入 ----

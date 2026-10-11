@@ -18,7 +18,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import java.util.concurrent.ConcurrentHashMap
 
 /** 主题模式默认值：跟随系统（不落盘即为 SYSTEM） */
 const val DEFAULT_THEME_MODE = "SYSTEM"
@@ -95,13 +94,19 @@ class SettingsRepository(
     private val keyThemeMode = stringPreferencesKey("theme_mode")
     private val keyNotifyEnabled = booleanPreferencesKey("notify_enabled")
     private val keyDailySummaryEnabled = booleanPreferencesKey("daily_summary_enabled")
-    private val keyWeeklyReportNotifyEnabled = booleanPreferencesKey("weekly_report_notify_enabled")
     private val keyAgentMaxSteps = intPreferencesKey("agent_max_steps")
     private val keyAgentWhitelist = stringPreferencesKey("agent_whitelist")
     private val keyAgentSensitiveConfirm = booleanPreferencesKey("agent_sensitive_confirm")
-    // v0.42.0：每日建议（独立第三条 AI 产出链路）的提示词策略 + 是否通知
+    private val keyAgentKeepAlive = booleanPreferencesKey("agent_keep_alive")
+    /** Agent 专用模型（空 = 跟随所选接口的模型）；每步决策是"这一屏点哪个"的简单任务，用快模型能省一半延迟 */
+    private val keyAgentModel = stringPreferencesKey("agent_model")
+    /** Agent 观测层：每步随请求附一张屏幕截图（混合输入，更准但更费图片 token）；API 30+ 才真的生效 */
+    private val keyAgentVision = booleanPreferencesKey("agent_vision")
+    // v0.42.0：每日建议（独立第三条 AI 产出链路）的提示词策略
+    // ⚠️ 老键 `daily_suggestion_notify_enabled` 已删：那个开关**从来没有过 UI 写入口**
+    //（v0.42.0 引入后 setter 一直零调用，`?: false` 永远生效）→ 这条通知**一次都没弹过**。
+    // 整条链（开关 + 通知通道 + 通知构建）是行为不变的清理，不是删功能。
     private val keyDailySuggestionStrategy = stringPreferencesKey("daily_suggestion_strategy")
-    private val keyDailySuggestionNotifyEnabled = booleanPreferencesKey("daily_suggestion_notify_enabled")
     // v0.50.0：语音合成接口（三家可切；通话与 AI 语音条共用同一套配置）
     private val keyTtsProvider = stringPreferencesKey("tts_provider")
     private val keyTtsBaseUrl = stringPreferencesKey("tts_base_url")
@@ -127,16 +132,46 @@ class SettingsRepository(
     /** 提炼水位线前缀：extract_upto_<personaId> = 已提炼到的最后一条消息 id */
     private val watermarkPrefix = "extract_upto_"
 
+    /** 上下文窗口前缀：history_budget_<personaId> = 该会话记住最近多少字（v0.86.0） */
+    private val historyBudgetPrefix = "history_budget_"
+
+    /** 提炼间隔前缀：extract_every_<personaId> = 该会话攒够几轮提炼一次（v0.86.0） */
+    private val extractEveryPrefix = "extract_every_"
+
     /** 聊天草稿前缀：draft_<personaId> = 未发送的输入（进程被杀后恢复） */
     private val draftPrefix = "draft_"
+
+    companion object {
+        /**
+         * [decryptCache] 的容量上限（v0.97.0，审查 B37）。
+         *
+         * 64 远超实际需要：真正会被反复读的就是当前生效的那一两条 API Key，
+         * 其余（历史接口配置）命中率极低，被淘汰也只是多解一次密（十几毫秒，且不在热路径）。
+         */
+        private const val MAX_DECRYPT_CACHE_ENTRIES = 64
+    }
 
     /**
      * Keystore 解密有成本（真机一次可达十几毫秒）：密文 → 明文的进程级缓存。
      * 同一条密文整个进程生命周期只解一次；后续 DataStore 重发（进聊天页 markChatRead
      * 就会触发一次）全部走内存，不再在收集方线程上同步 binder 到 keystore2。
      * JVM 单测下 Keystore 不可用，解密失败也照缓存（空串），调用方回退明文字段的语义不变。
+     *
+     * ⚠️ v0.97.0（审查 B37）：加了**容量上限**。原来是裸 `ConcurrentHashMap`，只在
+     * `resetAll()` 里清空 —— 而每次保存/更换 API Key 都会产生一个**新的密文**
+     * （AES/GCM 的 IV 每次都不同），老的键值对永远留着。频繁换 Key 的用户会让**明文**
+     * 在内存里只增不减（既是内存问题，也是"明文多留一份"的问题）。
+     * 改用访问序 LRU：命中会刷新顺序，容量 64 远超实际需要（真正热的就是当前那条），
+     * 淘汰的代价只是下次多解一次密。
      */
-    private val decryptCache = ConcurrentHashMap<String, String>()
+    private val decryptCache: MutableMap<String, String> =
+        java.util.Collections.synchronizedMap(
+            object : java.util.LinkedHashMap<String, String>(16, 0.75f, true) {
+                override fun removeEldestEntry(
+                    eldest: MutableMap.MutableEntry<String, String>?,
+                ): Boolean = size > MAX_DECRYPT_CACHE_ENTRIES
+            },
+        )
 
     /** 主题模式内存缓存（首帧同步读用，省掉二次磁盘 IO） */
     @Volatile
@@ -176,7 +211,7 @@ class SettingsRepository(
         if (storedIds.isEmpty() || id in storedIds) id else storedIds.first()
     }
 
-    /** 当前生效的对话接口：聊天 / 提炼 / 周报 / Agent 全读这一个 */
+    /** 当前生效的对话接口：聊天 / 提炼 / Agent 全读这一个 */
     val apiConfig: Flow<ApiConfig> = combine(apiProfiles, activeProfileId) { profiles, activeId ->
         val hit = profiles.firstOrNull { it.id == activeId } ?: profiles.firstOrNull()
         ApiConfig(
@@ -244,14 +279,14 @@ class SettingsRepository(
     )
 
     /** 密文 → 明文（缓存优先）；解密失败/未加密返回 null，由调用方决定回退策略 */
-    private fun resolveSealed(sealed: String): String? = when {
-        sealed.isBlank() -> null
-        decryptCache.containsKey(sealed) -> decryptCache[sealed]!!.ifEmpty { null }
-        else -> {
-            val plain = ApiKeyCipher.decrypt(sealed) ?: ""
-            decryptCache[sealed] = plain
-            plain.ifEmpty { null }
-        }
+    private fun resolveSealed(sealed: String): String? {
+        if (sealed.isBlank()) return null
+        // `get`（而不是 containsKey + get）才会刷新 LRU 的访问顺序
+        val cached = decryptCache[sealed]
+        if (cached != null) return cached.ifEmpty { null }
+        val plain = ApiKeyCipher.decrypt(sealed) ?: ""
+        decryptCache[sealed] = plain
+        return plain.ifEmpty { null }
     }
 
     private suspend fun currentStoredProfiles(): MutableList<StoredApiProfile> =
@@ -419,21 +454,31 @@ class SettingsRepository(
     }
 
     /**
+     * `companion_last_msg_<personaId>` 的键名（v0.97.0，审查 B39）。
+     *
+     * 这个字面量原来在**读 / 写 / 清**三处各写一遍。运行期拼接键拼错是不会报错的：
+     * 改一处漏一处，就是"删角色时清了状态、但这个时间戳还在"这种静默不一致 ——
+     * 收敛成一个函数后，"三处必须同名"由类型系统保证，而不是靠人眼。
+     */
+    private fun companionLastMsgKey(personaId: Long) =
+        longPreferencesKey("companion_last_msg_$personaId")
+
+    /**
      * 上一次收到用户消息的时刻。连接需求看的是「离上次他说话多久」，
      * 不是「离上次算漂移多久」—— 一次长关机（两天没打开 App）不能只按这一次的长度算。
      */
     fun companionLastMessageAt(personaId: Long): Flow<Long> =
-        store.data.map { it[longPreferencesKey("companion_last_msg_" + personaId)] ?: 0L }
+        store.data.map { it[companionLastMsgKey(personaId)] ?: 0L }
 
     suspend fun markCompanionMessageAt(personaId: Long, atMs: Long) {
-        store.edit { it[longPreferencesKey("companion_last_msg_" + personaId)] = atMs }
+        store.edit { it[companionLastMsgKey(personaId)] = atMs }
     }
 
     /** 人设删除时级联清掉（与 [removeReadMark] 同批调用） */
     suspend fun removeCompanionState(personaId: Long) {
         store.edit {
             it.remove(stringPreferencesKey(companionStatePrefix + personaId))
-            it.remove(longPreferencesKey("companion_last_msg_" + personaId))
+            it.remove(companionLastMsgKey(personaId))
         }
     }
 
@@ -451,13 +496,6 @@ class SettingsRepository(
         store.edit { it[keyDailySummaryEnabled] = enabled }
     }
 
-    /** AI 周报生成完成通知（默认关：周报不时效敏感，静默生成、数据页可看） */
-    val weeklyReportNotifyEnabled: Flow<Boolean> = store.data.map { it[keyWeeklyReportNotifyEnabled] ?: false }
-
-    suspend fun setWeeklyReportNotifyEnabled(enabled: Boolean) {
-        store.edit { it[keyWeeklyReportNotifyEnabled] = enabled }
-    }
-
     // ===== AI 提示词（设置 · AI 提示词，可编辑；默认值见 AiPrompts） =====
 
     private val keyBasePrompt = stringPreferencesKey("base_prompt")
@@ -470,15 +508,21 @@ class SettingsRepository(
      * 关掉之后每个角色只剩自己的记忆 —— 有人就是不想让新认识的角色知道自己以前说过什么。
      */
     private val keyProfileSharedReadable = booleanPreferencesKey("profile_shared_readable")
-    // v0.36.0：三段"策略"提示词（框架部分硬编码在 ProfileExtractor / WeeklyReportMath / ChatViewModel）
+    // v0.36.0：三段"策略"提示词（框架部分硬编码在 ProfileExtractor / ChatViewModel）
     private val keyExtractionStrategy = stringPreferencesKey("extraction_strategy")
-    private val keyWeeklyReportStrategy = stringPreferencesKey("weekly_report_strategy")
     private val keyImageHintStrategy = stringPreferencesKey("image_hint_strategy")
+    // v0.88.0：AI 洞察策略从「记忆提炼策略」里拆出来（洞察不再由提炼副产，选材口径无关了）
+    private val keyInsightStrategy = stringPreferencesKey("insight_strategy")
     // v0.37.0：对话内操控手机（总开关默认开 = 用户授了完全权限；关掉即不注入能力提示）
     private val keyAgentChatEnabled = booleanPreferencesKey("agent_chat_enabled")
     private val keyAgentChatStrategy = stringPreferencesKey("agent_chat_strategy")
     // v0.50.0：AI 语音条策略（标记格式 【语音条】 硬编码在 VOICE_NOTE_FRAMEWORK）
     private val keyVoiceNoteStrategy = stringPreferencesKey("voice_note_strategy")
+    // v0.98.0：主动关心策略（硬约束 HINT_FRAMEWORK 硬编码在 ProactiveChat）
+    private val keyProactiveStrategy = stringPreferencesKey("proactive_strategy")
+    // v0.98.0：记忆记录策略（硬约束 HINT_FRAMEWORK 硬编码在 MemoryMarker；
+    // ⚠️ 与 keyExtractionStrategy「记忆提炼策略」是两条入口，别搞混）
+    private val keyMemoryMarkerStrategy = stringPreferencesKey("memory_marker_strategy")
     // v0.82.0 P1-1：滚动摘要（总开关默认开 + 摘要策略可编辑，框架硬编码在 SummaryExtractor）
     private val keyRollingSummaryEnabled = booleanPreferencesKey("rolling_summary_enabled")
     private val keySummaryStrategy = stringPreferencesKey("summary_strategy")
@@ -502,13 +546,18 @@ class SettingsRepository(
      */
     private val keyPersonaProactiveWindow = stringPreferencesKey("persona_proactive_window")
     private val keyPersonaProactiveLimit = stringPreferencesKey("persona_proactive_limit")
+    // v0.94：主动关心的另外两个独立开关（发帖/打电话）与电话的每日次数/当日计数
+    private val keyPersonaProactiveMoments = stringPreferencesKey("persona_proactive_moments")
+    private val keyPersonaProactiveCall = stringPreferencesKey("persona_proactive_call")
+    private val keyPersonaProactiveCallLimit = stringPreferencesKey("persona_proactive_call_limit")
+    private val keyPersonaProactiveCallDay = stringPreferencesKey("persona_proactive_call_day")
     // v0.53.5：AI 主动打电话
     private val keyAiCallEnabled = booleanPreferencesKey("ai_call_enabled")
     private val keyAiCallTime = stringPreferencesKey("ai_call_time")
     private val keyAiCallIdleDays = intPreferencesKey("ai_call_idle_days")
     private val keyAiCallPersonaId = longPreferencesKey("ai_call_persona_id")
-    private val keyAiCallCountDay = longPreferencesKey("ai_call_count_day")
-    private val keyAiCallCount = intPreferencesKey("ai_call_count")
+    // ⚠️ `keyAiCallCountDay` / `keyAiCallCount` 已删：它们是老「几天没聊就主动打」的当日计数，
+    // v0.94 那条链整段砍掉后（当日次数改走 `keyPersonaProactiveCallDay`）就零引用了。
     /** v0.53.6：每人设一套「主动打电话」规则（JSON） */
     private val keyAiCallRules = stringPreferencesKey("ai_call_rules")
     // v0.53.5：定时主动消息 + 联网搜索
@@ -627,8 +676,11 @@ class SettingsRepository(
     }
 
     /**
-     * AI 洞察提炼策略（框架 JSON schema 硬编码在 [ProfileExtractor.FRAMEWORK]）。
+     * AI 记忆提炼策略（框架 JSON schema 硬编码在 [ProfileExtractor.FRAMEWORK]）。
      * 用户改这段只影响"什么该记 / 什么不该记"的策略，不会破坏 parse 逻辑。
+     *
+     * ⚠️ v0.88.0 起这条只管**记忆**：以前设置页把它叫「AI 洞察策略」，
+     * 但它实际控的是提炼（facts）+ 洞察 + 任务建议三件事。洞察已挪去 [insightStrategy]。
      */
     val extractionStrategy: Flow<String> =
         store.data.map { it[keyExtractionStrategy] ?: ProfileExtractor.DEFAULT_STRATEGY }
@@ -644,21 +696,6 @@ class SettingsRepository(
         }
     }
 
-    /** AI 周报策略（框架"只输出正文纯文本"硬编码在 [WeeklyReportMath.FRAMEWORK]） */
-    val weeklyReportStrategy: Flow<String> =
-        store.data.map { it[keyWeeklyReportStrategy] ?: WeeklyReportMath.DEFAULT_STRATEGY }
-
-    suspend fun setWeeklyReportStrategy(text: String) {
-        store.edit { prefs ->
-            val trimmed = text.trim()
-            if (trimmed.isEmpty() || trimmed == WeeklyReportMath.DEFAULT_STRATEGY) {
-                prefs.remove(keyWeeklyReportStrategy)
-            } else {
-                prefs[keyWeeklyReportStrategy] = trimmed
-            }
-        }
-    }
-
     /** 生图触发策略（标记格式 [生图:...] 硬编码在 IMAGE_HINT_FRAMEWORK） */
     val imageHintStrategy: Flow<String> =
         store.data.map { it[keyImageHintStrategy] ?: com.menghuan.app.ui.chat.IMAGE_HINT_DEFAULT_STRATEGY }
@@ -670,6 +707,49 @@ class SettingsRepository(
                 prefs.remove(keyImageHintStrategy)
             } else {
                 prefs[keyImageHintStrategy] = trimmed
+            }
+        }
+    }
+
+    /**
+     * 主动关心策略（v0.98.0）。
+     *
+     * 这一段在 v0.98.0 之前是 `ProactiveChat` 里的一句**死代码**（零引用），
+     * 所以那时用户改不了、约束也没生效。现在接上并开放编辑：
+     * 取值范围 = 取材、语气、长度（硬约束 `ProactiveChat.HINT_FRAMEWORK` 仍不可编）。
+     */
+    val proactiveStrategy: Flow<String> =
+        store.data.map { it[keyProactiveStrategy] ?: ProactiveChat.DEFAULT_STRATEGY }
+
+    suspend fun setProactiveStrategy(text: String) {
+        store.edit { prefs ->
+            val trimmed = text.trim()
+            if (trimmed.isEmpty() || trimmed == ProactiveChat.DEFAULT_STRATEGY) {
+                prefs.remove(keyProactiveStrategy)
+            } else {
+                prefs[keyProactiveStrategy] = trimmed
+            }
+        }
+    }
+
+    /**
+     * 记忆记录策略（v0.98.0）：聊天时 AI 随手记（`<add:…>`）该记什么、以什么视角记。
+     *
+     * ⚠️ 与 [extractionStrategy]「记忆提炼策略」是记忆的**两条入口**，别搞混：
+     * 这段注入**聊天 system prompt**（每轮都在），管"聊天当下要不要记"；
+     * 那段只在**批量提炼请求**里发给提炼模型，管"攒够轮数后从对话记录里提炼哪些"。
+     * 用户抱怨"记太多/记太快"时该改的是这一段，不是那段，也不是提炼间隔。
+     */
+    val memoryMarkerStrategy: Flow<String> =
+        store.data.map { it[keyMemoryMarkerStrategy] ?: MemoryMarker.DEFAULT_STRATEGY }
+
+    suspend fun setMemoryMarkerStrategy(text: String) {
+        store.edit { prefs ->
+            val trimmed = text.trim()
+            if (trimmed.isEmpty() || trimmed == MemoryMarker.DEFAULT_STRATEGY) {
+                prefs.remove(keyMemoryMarkerStrategy)
+            } else {
+                prefs[keyMemoryMarkerStrategy] = trimmed
             }
         }
     }
@@ -837,13 +917,29 @@ class SettingsRepository(
         }
     }
 
-    /** 每日建议生成后的通知（默认关：和 AI 周报一样静默生成，数据页可看） */
-    val dailySuggestionNotifyEnabled: Flow<Boolean> =
-        store.data.map { it[keyDailySuggestionNotifyEnabled] ?: false }
+    /**
+     * AI 洞察策略（v0.88.0 从「记忆提炼策略」里拆出来）。
+     *
+     * 拆分原因就是本次重构的核心：以前洞察是提炼对话的副产品，两份策略由同一段文字管；
+     * 现在洞察改从「记忆 + 任务 + 记账」归纳，选材口径与「什么该记进档案」完全无关了，
+     * 继续共用一个旋钮会让用户改一头痛另一头。框架 JSON schema 硬编码在 [InsightMath.FRAMEWORK]。
+     */
+    val insightStrategy: Flow<String> =
+        store.data.map { it[keyInsightStrategy] ?: InsightMath.DEFAULT_STRATEGY }
 
-    suspend fun setDailySuggestionNotifyEnabled(enabled: Boolean) {
-        store.edit { it[keyDailySuggestionNotifyEnabled] = enabled }
+    suspend fun setInsightStrategy(text: String) {
+        store.edit { prefs ->
+            val trimmed = text.trim()
+            if (trimmed.isEmpty() || trimmed == InsightMath.DEFAULT_STRATEGY) {
+                prefs.remove(keyInsightStrategy)
+            } else {
+                prefs[keyInsightStrategy] = trimmed
+            }
+        }
     }
+
+    // 每日建议生成后的通知那一套（`dailySuggestionNotifyEnabled` + `setDailySuggestionNotifyEnabled`）
+    // 已整段删除 —— 见上面 key 处的说明：开关从引入起就零写入口，通知从未执行过。
 
     /**
      * 人设专属音色（通话与 AI 语音条**共用一套**）。空 = 用当前 provider 的第一个预置音色。
@@ -1316,6 +1412,85 @@ class SettingsRepository(
     suspend fun setProactiveDailyLimit(personaId: Long, count: Int) =
         writeIdTable(keyPersonaProactiveLimit, personaId, count.coerceIn(1, 999).toString())
 
+    /**
+     * 该角色主动关心时**顺手发动态**（发新帖 / 回帖 / 点赞）的开关（v0.94）。
+     *
+     * 默认**开**：v0.79.0 起主动链本来就带动态动作，老用户的预期不变；
+     * 关掉 = TA 主动找你时只发消息，不动你的动态。
+     */
+    fun proactiveMomentsEnabled(personaId: Long): Flow<Boolean> = store.data.map { prefs ->
+        readIdTable(prefs[keyPersonaProactiveMoments])[personaId] != "0"
+    }
+
+    suspend fun setProactiveMomentsEnabled(personaId: Long, enabled: Boolean) =
+        writeIdTable(keyPersonaProactiveMoments, personaId, if (enabled) "1" else "0")
+
+    /**
+     * 该角色**主动打电话**的开关（v0.94：电话并入主动关心的随机时刻，不再是「几天没聊」）。
+     *
+     * 老数据的迁移走**读取时推断**：v0.93 及更早的「主动电话」开关存在 `aiCallRules`
+     * 的 `enabled` 里，这张新表没写过值时按老开关读（只读推断、不回写盘，
+     * 与项目"存量字段靠 from* 推断、不做批量回填"的规矩一致）。
+     */
+    fun proactiveCallEnabled(personaId: Long): Flow<Boolean> = store.data.map { prefs ->
+        readIdTable(prefs[keyPersonaProactiveCall])[personaId]?.let { return@map it == "1" }
+        // 老装机：新键没值 → 看老的「主动电话」开关
+        AiCallRuleCodec.decode(prefs[keyAiCallRules] ?: "")
+            .firstOrNull { it.personaId == personaId }?.enabled ?: false
+    }
+
+    suspend fun setProactiveCallEnabled(personaId: Long, enabled: Boolean) =
+        writeIdTable(keyPersonaProactiveCall, personaId, if (enabled) "1" else "0")
+
+    /** 该角色**每天最多打几次**主动电话（v0.94，1–9，默认 1；取代老的「每人每天最多一次」） */
+    fun proactiveCallLimit(personaId: Long): Flow<Int> = store.data.map { prefs ->
+        val raw = readIdTable(prefs[keyPersonaProactiveCallLimit])[personaId]
+        (raw?.trim()?.toIntOrNull() ?: 1).coerceIn(1, 9)
+    }
+
+    suspend fun setProactiveCallLimit(personaId: Long, count: Int) =
+        writeIdTable(keyPersonaProactiveCallLimit, personaId, count.coerceIn(1, 9).toString())
+
+    /** 该角色今天已经主动打过几次电话 */
+    suspend fun proactiveCallsTodayOf(personaId: Long, today: Long): Int {
+        val raw = readIdTable(store.data.first()[keyPersonaProactiveCallDay])[personaId] ?: return 0
+        val parts = raw.split(':')
+        if ((parts[0].toLongOrNull() ?: 0L) != today) return 0
+        return parts.getOrNull(1)?.toIntOrNull() ?: 0
+    }
+
+    /** 记下"今天给这个角色主动打了一通电话" */
+    suspend fun markProactiveCall(personaId: Long, today: Long) {
+        val sent = proactiveCallsTodayOf(personaId, today)
+        writeIdTable(keyPersonaProactiveCallDay, personaId, "$today:${sent + 1}")
+    }
+
+    /**
+     * 排闹钟的门槛：三个开关（发信息 / 发帖 / 打电话）**有一个开着**这个角色就该有闹钟
+     * （v0.94：闹钟不再只看「发信息」——关信息开动态的角色也该按时去看一眼动态）。
+     *
+     * 「发帖」默认值是开但**未写键不算开**：从没配过主动关心的角色，
+     * 不能因为发帖的默认值就白给它排上闹钟（全关 = 不触发）。
+     */
+    suspend fun anyProactiveEnabled(personaId: Long): Boolean {
+        val prefs = store.data.first()
+        if (readIdTable(prefs[keyPersonaProactive])[personaId] == "1") return true
+        if (readIdTable(prefs[keyPersonaProactiveMoments])[personaId] == "1") return true
+        readIdTable(prefs[keyPersonaProactiveCall])[personaId]?.let { return it == "1" }
+        // 老装机的「主动电话」开关（只读推断，见 proactiveCallEnabled）
+        return AiCallRuleCodec.decode(prefs[keyAiCallRules] ?: "")
+            .firstOrNull { it.personaId == personaId }?.enabled ?: false
+    }
+
+    /** 人设删除的级联清理：主动关心的三开关 / 次数 / 当日计数一并摘掉（不留孤儿键） */
+    suspend fun removeProactiveTuning(personaId: Long) {
+        setPersonaProactive(personaId, false)
+        writeIdTable(keyPersonaProactiveMoments, personaId, "0")
+        writeIdTable(keyPersonaProactiveCall, personaId, "0")
+        writeIdTable(keyPersonaProactiveCallLimit, personaId, "1")
+        writeIdTable(keyPersonaProactiveCallDay, personaId, "0:0")
+    }
+
 
     // ===== AI 主动打电话（v0.53.6：**按人设独立配置**）=====
     //
@@ -1366,52 +1541,14 @@ class SettingsRepository(
         }
     }
 
-    /** 记下"今天给这个人设打过了"（每人设各自去重，互不影响） */
-    suspend fun markAiCallDone(personaId: Long, day: Long) = withContext(Dispatchers.IO) {
-        store.edit { prefs ->
-            val list = AiCallRuleCodec.decode(prefs[keyAiCallRules] ?: "")
-                .map { if (it.personaId == personaId) it.copy(lastCallDay = day) else it }
-            prefs[keyAiCallRules] = AiCallRuleCodec.encode(list)
-        }
-    }
+    // v0.94：markAiCallDone 已随「几天没聊就主动打」整条删除（当日电话计数改走
+    // keyPersonaProactiveCallDay，见 markProactiveCall）。
 
-    // ---- 下面三项是 v0.53.6 之前的全局配置：只读，用于上面那段兼容推断 ----
-
-    /** 定时的时刻（`HH:mm`，默认 21:00） */
-    val aiCallTime: Flow<String> = store.data.map { it[keyAiCallTime] ?: DEFAULT_AI_CALL_TIME }
-
-    suspend fun setAiCallTime(value: String) {
-        store.edit { it[keyAiCallTime] = value }
-    }
-
-    /** 智能那一路的判据：多久没聊（天，默认 3） */
-    val aiCallIdleDays: Flow<Int> = store.data.map { it[keyAiCallIdleDays] ?: 3 }
-
-    suspend fun setAiCallIdleDays(days: Int) {
-        store.edit { it[keyAiCallIdleDays] = days.coerceIn(1, 30) }
-    }
-
-    /** 打给你的人设 id（0 = 主人设）——v0.53.6 起被"每人设规则"取代，仅作兼容推断用 */
-    val aiCallPersonaId: Flow<Long> = store.data.map { it[keyAiCallPersonaId] ?: 0L }
-
-    suspend fun setAiCallPersonaId(id: Long) {
-        store.edit { prefs ->
-            if (id == 0L) prefs.remove(keyAiCallPersonaId) else prefs[keyAiCallPersonaId] = id
-        }
-    }
-
-    /** 今天已经打了几个（day = epochDay，跨天自动归零）——v0.53.6 起改为按人设各自去重，保留兼容 */
-    suspend fun aiCallCount(): Pair<Long, Int> = store.data.first().let { p ->
-        (p[keyAiCallCountDay] ?: 0L) to (p[keyAiCallCount] ?: 0)
-    }
-
-    suspend fun bumpAiCallCount(day: Long) {
-        store.edit { prefs ->
-            val sameDay = prefs[keyAiCallCountDay] == day
-            prefs[keyAiCallCountDay] = day
-            prefs[keyAiCallCount] = if (sameDay) (prefs[keyAiCallCount] ?: 0) + 1 else 1
-        }
-    }
+    // ⚠️ v0.94 又删掉三处：`setAiCallTime` / `setAiCallIdleDays` / `aiCallPersonaId`。
+    // 它们是 v0.53.6 之前那套「全局配置」的**写入口与读出口**，被「每人设规则」取代后一直零调用 ——
+    // `setAiCallTime` 只写 `keyAiCallTime`、`setAiCallIdleDays` 只写 `keyAiCallIdleDays`（两个键
+    // 仍被上面 `aiCallRules` 的兼容推断读着，**键保留**），`aiCallPersonaId` 这个 Flow 连读方都没有。
+    // 兼容推断所需的三个键（time / idleDays / personaId）保持只读，不受影响。
 
     // ===== 定时主动消息（v0.53.5，可配多条）+ 联网搜索服务 =====
 
@@ -1436,6 +1573,28 @@ class SettingsRepository(
             else prefs[keyScheduledMessages] = ScheduledMessageCodec.encode(list)
         }
     }
+
+    /**
+     * 删角色时的级联清理：把这个角色的**全部定时项**（定时消息 + 定时电话，两种 kind 同一条存储）摘掉。
+     *
+     * ⚠️ v0.89.0：以前漏了这一步 —— 人设删了，定时项还在 DataStore 里、闹钟还在每天响，
+     * 报时被 [ScheduledMessageSender] 的兜底"改嫁"给了应用助手（用户看到的现像：
+     * 「我删了人设，它还是每天从应用助手发过来」）。删角色就把它写给那个角色的话一起带走。
+     *
+     * @return 被删掉的定时项 id（调用方拿它取消对应闹钟；闹钟 key 是 id 的 hashCode）
+     */
+    suspend fun removeScheduledMessagesForPersona(personaId: Long): List<String> =
+        withContext(Dispatchers.IO) {
+            var removed = emptyList<String>()
+            store.edit { prefs ->
+                val all = ScheduledMessageCodec.decode(prefs[keyScheduledMessages] ?: "")
+                val keep = all.filterNot { it.personaId == personaId }
+                removed = all.filter { it.personaId == personaId }.map { it.id }
+                if (keep.isEmpty()) prefs.remove(keyScheduledMessages)
+                else prefs[keyScheduledMessages] = ScheduledMessageCodec.encode(keep)
+            }
+            removed
+        }
 
     /** 标记某条今天已发（epochDay 去重，保证当天只发一次） */
     suspend fun markScheduledMessageSent(id: String, day: Long) = withContext(Dispatchers.IO) {
@@ -1977,6 +2136,30 @@ class SettingsRepository(
         store.edit { it[keyAgentSensitiveConfirm] = enabled }
     }
 
+    /** Agent 保活前台服务开关（默认开）：用过 Agent 才启动，「自动执行」弹层里可关 */
+    val agentKeepAlive: Flow<Boolean> = store.data.map { it[keyAgentKeepAlive] ?: true }
+
+    suspend fun setAgentKeepAlive(enabled: Boolean) {
+        store.edit { it[keyAgentKeepAlive] = enabled }
+    }
+
+    /** Agent 执行模型：空串 = 跟随接口自带模型（默认），非空 = 只给 Agent 决策用这个模型名 */
+    val agentModel: Flow<String> = store.data.map { it[keyAgentModel].orEmpty() }
+
+    suspend fun setAgentModel(model: String) {
+        store.edit { prefs ->
+            val v = model.trim()
+            if (v.isEmpty()) prefs.remove(keyAgentModel) else prefs[keyAgentModel] = v
+        }
+    }
+
+    /** Agent 是否随每步请求附屏幕截图（默认开；API 30 以下自动不生效） */
+    val agentVision: Flow<Boolean> = store.data.map { it[keyAgentVision] ?: true }
+
+    suspend fun setAgentVision(enabled: Boolean) {
+        store.edit { it[keyAgentVision] = enabled }
+    }
+
     /** 提炼水位线：每个会话已提炼到的最后一条消息 id（extract_upto_<personaId>） */
     suspend fun extractionWatermark(personaId: Long): Long =
         store.data.first()[longPreferencesKey(watermarkPrefix + personaId)] ?: 0L
@@ -1988,6 +2171,68 @@ class SettingsRepository(
     /** 人设删除的级联清理：移除提炼水位线 */
     suspend fun removeExtractionWatermark(personaId: Long) {
         store.edit { it.remove(longPreferencesKey(watermarkPrefix + personaId)) }
+    }
+
+    // ===== v0.86.0：按会话（角色）配置的「上下文窗口」与「提炼间隔」=====
+    //
+    // 为什么按角色而不是全局：每个角色可以配不同的 API/模型，模型不同则能装多少、
+    // 值不值得堆，都是这个角色自己的事。写成全局常量（原 HISTORY_CHAR_BUDGET = 20 万）
+    // 等于假设所有角色共用一个模型的价目表 —— 换角色即失效。
+    // 两条都**只在用户手动改过时**才落盘（见 setter 的 remove 分支），
+    // 没设过的角色走默认值，所以以后调默认值一处改、不必迁移数据。
+
+    /**
+     * 上下文窗口默认值：记住最近多少字（v0.86.0）。
+     * 唯一来源是 [com.menghuan.app.ui.chat.HISTORY_CHAR_BUDGET] —— 写成两个数，
+     * 将来调默认值时会漏改一处，历史与摘要的分界就会错位。
+     */
+    val DEFAULT_HISTORY_CHAR_BUDGET = com.menghuan.app.ui.chat.HISTORY_CHAR_BUDGET
+
+    /** 提炼间隔默认值：攒够几轮对话提炼一次（v0.86.0） */
+    val DEFAULT_EXTRACT_EVERY_TURNS = 6
+
+    /** 上下文窗口允许范围：太小学不到上下文，太大既贵又超出有效记忆（衰减区） */
+    val HISTORY_CHAR_BUDGET_RANGE = 2_000..200_000
+
+    /** 提炼间隔允许范围：1 = 每轮都提炼（最及时最贵）；上限防手滑填出天文数字 */
+    val EXTRACT_EVERY_TURNS_RANGE = 1..50
+
+    /**
+     * 该会话的上下文窗口（字数）。没设过 = [DEFAULT_HISTORY_CHAR_BUDGET]。
+     * 记得最近多少字，直接决定每一轮重发的历史量 → 就是成本旋钮。
+     */
+    fun historyCharBudget(personaId: Long): Flow<Int> =
+        store.data.map { it[intPreferencesKey(historyBudgetPrefix + personaId)] ?: DEFAULT_HISTORY_CHAR_BUDGET }
+
+    suspend fun setHistoryCharBudget(personaId: Long, chars: Int) {
+        val v = chars.coerceIn(HISTORY_CHAR_BUDGET_RANGE)
+        store.edit { prefs ->
+            if (v == DEFAULT_HISTORY_CHAR_BUDGET) prefs.remove(intPreferencesKey(historyBudgetPrefix + personaId))
+            else prefs[intPreferencesKey(historyBudgetPrefix + personaId)] = v
+        }
+    }
+
+    /**
+     * 该会话的提炼间隔（轮）。没设过 = [DEFAULT_EXTRACT_EVERY_TURNS]。
+     * 「轮」= 一次用户发言 + 一次 AI 回复；按轮不按条，免得系统气泡/动态等额外行把节奏打乱。
+     */
+    fun extractEveryTurns(personaId: Long): Flow<Int> =
+        store.data.map { it[intPreferencesKey(extractEveryPrefix + personaId)] ?: DEFAULT_EXTRACT_EVERY_TURNS }
+
+    suspend fun setExtractEveryTurns(personaId: Long, turns: Int) {
+        val v = turns.coerceIn(EXTRACT_EVERY_TURNS_RANGE)
+        store.edit { prefs ->
+            if (v == DEFAULT_EXTRACT_EVERY_TURNS) prefs.remove(intPreferencesKey(extractEveryPrefix + personaId))
+            else prefs[intPreferencesKey(extractEveryPrefix + personaId)] = v
+        }
+    }
+
+    /** 人设删除的级联清理：移除该角色的上下文窗口 / 提炼间隔配置 */
+    suspend fun removeSessionTuning(personaId: Long) {
+        store.edit {
+            it.remove(intPreferencesKey(historyBudgetPrefix + personaId))
+            it.remove(intPreferencesKey(extractEveryPrefix + personaId))
+        }
     }
 
     /**

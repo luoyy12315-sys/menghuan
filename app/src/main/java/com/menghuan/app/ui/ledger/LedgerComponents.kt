@@ -46,6 +46,7 @@ import com.menghuan.app.ui.common.NeuChip
 import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuTextField
 import com.menghuan.app.ui.common.neuSurface
+import com.menghuan.app.ui.common.rememberClickGate
 import com.menghuan.app.ui.common.rememberNeuPressState
 import com.menghuan.app.ui.theme.AccentInk
 import com.menghuan.app.ui.common.EaseOutExpo
@@ -68,6 +69,8 @@ private val ExpenseInk = Color(0xFF2E9E6B)
  * 交互设计：
  * - 顶部「支出 / 收入」二选一（默认支出）——记账场景八成是支出
  * - 金额是最重要的字段：最大字号 + 独立凹陷面，语音/识图结果直接灌进这个框
+ * - **分类滚轮**（v0.83.0 用户点名）：一排预设分类无限循环滑过正中选中槽，
+ *   手感与头像选择器一致；未分类是"家"，可以随时滚回来把分类清掉
  * - 三个入口横排：语音、识图、保存（Primary 黑底白字收尾）
  * - 识别失败不瞎猜：解析不到金额就不填金额，只把文本放进备注并提示用户手填
  */
@@ -75,7 +78,7 @@ private val ExpenseInk = Color(0xFF2E9E6B)
 fun LedgerEntrySheet(
     cashCents: Long,
     onDismiss: () -> Unit,
-    onSave: (isIncome: Boolean, amountCents: Long, note: String, source: String) -> Unit,
+    onSave: (isIncome: Boolean, amountCents: Long, note: String, category: String, source: String) -> Unit,
     voice: VoiceLedgerController,
     onNeedPermission: () -> Unit,
     hasPermission: () -> Boolean,
@@ -89,12 +92,18 @@ fun LedgerEntrySheet(
     initial: LedgerEntry? = null,
 ) {
     var isIncome by remember { mutableStateOf(initial?.isIncome ?: initialDraft?.isIncome ?: false) }
+    // 防重复记账（v0.97.0，审查 U20）：保存后 `onDismiss()` 要播一段收起动画，
+    // 这期间按钮还在屏幕上 —— 快速双击就是两条一模一样的流水，
+    // 而多出来的一笔在列表里看着完全正常，只有月底对不上账时才会被发现。
+    val gateSave = rememberClickGate()
     var amountText by remember {
         mutableStateOf(
             (initial?.amountCents ?: initialDraft?.amountCents)?.let { LedgerMath.formatCents(it) } ?: "",
         )
     }
     var note by remember { mutableStateOf(initial?.note ?: initialDraft?.note.orEmpty()) }
+    // v0.83.0：分类。滚轮自己管滚动，这里只存"槽里现在是哪一个"。
+    var category by remember { mutableStateOf(initial?.category.orEmpty()) }
     var source by remember { mutableStateOf(initialSource) }
     var hint by remember { mutableStateOf<String?>(null) }
 
@@ -168,6 +177,16 @@ fun LedgerEntrySheet(
             }
         }
         Spacer(Modifier.height(16.dp))
+
+        // v0.83.0 加分类、v0.91.0 把滚轮换成一行点选 chips（用户点名：不要滚动、不要中间焦点槽，
+        // 点哪个哪个就是选中）。放在金额与备注之间：金额填完顺手点一下分类，再补一句备注。
+        Text("分类", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = TextSecondary, letterSpacing = 0.6.sp)
+        Spacer(Modifier.height(7.dp))
+        LedgerCategoryPicker(
+            category = category,
+            onCategoryChange = { category = it },
+        )
+        Spacer(Modifier.height(18.dp))
 
         NeuTextField(
             value = note,
@@ -252,9 +271,10 @@ fun LedgerEntrySheet(
                 NeuButton(
                     text = "保存",
                     onClick = {
+                        if (!gateSave()) return@NeuButton
                         val cents = LedgerMath.parseAmountToCents(amountText)
                         if (cents != null) {
-                            onSave(isIncome, cents, note.trim(), source)
+                            onSave(isIncome, cents, note.trim(), category, source)
                             onDismiss()
                         } else {
                             hint = "请先填写金额"
@@ -331,6 +351,10 @@ private fun LedgerActionButton(
  * 一条流水的行（记账本全屏页 / 最近记录共用）。
  * 金额符号区分收支、颜色遵循中国习惯（进账红 / 出账绿）；
  * 长按只弹菜单（删除在菜单里点，需二次确认的那一下就是菜单项）。
+ *
+ * [showDate]（v0.91.0）：记账本页已按天分组、日期挂在分组小标题上，
+ * 行内再写一遍「10/10」是重复 —— 那里传 false 只留 `HH:mm`。
+ * 「最近记录」等没有分组标题的地方仍传默认 true（时间戳是那里唯一的日期线索）。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -341,7 +365,9 @@ fun LedgerRow(
     showDate: Boolean = true,
 ) {
     val press = rememberNeuPressState(raised = 4.dp)
-    val dateLabel = remember(entry.occurredAt) { formatLedgerTime(entry.occurredAt) }
+    val dateLabel = remember(entry.occurredAt, showDate) {
+        if (showDate) formatLedgerTime(entry.occurredAt) else formatLedgerClock(entry.occurredAt)
+    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -383,6 +409,12 @@ fun LedgerRow(
                     Text(" · ", fontSize = 11.5.sp, color = MutedText)
                 }
                 Text(LedgerSource.label(entry.source), fontSize = 11.5.sp, color = MutedText)
+                // v0.83.0：分类标签。空分类（老流水 / 未选）不显示——老数据看起来与升级前一样
+                // v0.89.0：labelOf 不再带 emoji（用户点名去掉），这里只显示分类名
+                if (entry.category.isNotBlank()) {
+                    Text(" · ", fontSize = 11.5.sp, color = MutedText)
+                    Text(LedgerCategory.labelOf(entry.category), fontSize = 11.5.sp, color = TextSecondary)
+                }
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -402,4 +434,31 @@ internal fun formatLedgerTime(epochMillis: Long): String {
         .atZone(java.time.ZoneId.systemDefault())
         .toLocalDateTime()
     return "${t.monthValue}/${t.dayOfMonth} ${"%02d".format(t.hour)}:${"%02d".format(t.minute)}"
+}
+
+/**
+ * 时间 → 只要 `HH:mm`（本机时区）。
+ * v0.91.0：记账本页按天分组后，行内不再重复日期，只留时分。
+ */
+internal fun formatLedgerClock(epochMillis: Long): String {
+    val t = java.time.Instant.ofEpochMilli(epochMillis)
+        .atZone(java.time.ZoneId.systemDefault())
+        .toLocalDateTime()
+    return "%02d:%02d".format(t.hour, t.minute)
+}
+
+/**
+ * 分组小标题的日期文字（v0.91.0）：`今天 · 10月10日` / `昨天 · 10月9日` / `10月8日`。
+ *
+ * 「今天/昨天」是记账时最有用的锚点——用户找的多半就是「今天花的那几笔」；
+ * 更早的日子只给月日，不写成「10月8日 星期四」这种要读两遍才认出来的形式。
+ * [today] 可注入，便于纯函数单测。
+ */
+internal fun ledgerDayLabel(day: java.time.LocalDate, today: java.time.LocalDate = java.time.LocalDate.now()): String {
+    val md = "${day.monthValue}月${day.dayOfMonth}日"
+    return when (day) {
+        today -> "今天 · $md"
+        today.minusDays(1) -> "昨天 · $md"
+        else -> md
+    }
 }

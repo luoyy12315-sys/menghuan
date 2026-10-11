@@ -4,10 +4,7 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,15 +26,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.menghuan.app.data.AiCallLogic
-import com.menghuan.app.data.AiCallRule
 import com.menghuan.app.data.CallBackgroundStore
 import com.menghuan.app.data.CallRingtone
 import com.menghuan.app.data.CallVisualStore
@@ -60,6 +53,7 @@ import com.menghuan.app.ui.common.NeuSheetScaffold
 import com.menghuan.app.ui.common.NeuSwitch
 import com.menghuan.app.ui.common.NeuTextButton
 import com.menghuan.app.ui.common.NeuTextField
+import com.menghuan.app.ui.common.ReminderPermissionHints
 import com.menghuan.app.ui.persona.PersonaVoiceSheet
 import com.menghuan.app.ui.settings.SettingsLineRow
 import com.menghuan.app.ui.settings.SettingsPage
@@ -130,22 +124,25 @@ fun ChatSettingsScreen(
     val personas by app.personaRepository.observePersonas().collectAsState(initial = emptyList())
     val persona = personas.firstOrNull { it.id == personaId }
 
-    // 主动打电话（按角色）
-    val callRules by repo.aiCallRules.collectAsState(initial = emptyList())
-    val callRule = callRules.firstOrNull { it.personaId == personaId }
     // 联网搜索（按角色）
-    val chatWeb by repo.chatWebSearch.collectAsState(initial = emptyMap())
-    val webOn = chatWeb[personaId] == true
+    //
+    // 三态（v0.97.0，审查 U7）：这几条的初值从 `emptyMap()`（→ 一律算出 false）改成 **null**。
+    // 原因是它们下面都直接挂 `NeuSwitch`：DataStore 读到之前开关渲染成"关"，
+    // 而本来开着的角色会看到开关先关、几十毫秒后再跳开 —— 跳的那一下要是正好被点到，
+    // 就是把用户的开启状态写成了关闭。null = "还没读到"，这几行先不画。
+    val chatWeb by repo.chatWebSearch.collectAsState(initial = null)
     // v0.59.0：自动朗读也是**按角色**一条（与联网搜索同一套 `id\t1|0` 表）
-    val readAloudMap by repo.chatReadAloud.collectAsState(initial = emptyMap())
-    val readOn = readAloudMap[personaId] == true
+    val readAloudMap by repo.chatReadAloud.collectAsState(initial = null)
     // 人设主动关心（按角色）
-    val proactive by repo.personaProactive.collectAsState(initial = emptyMap())
-    val proactiveOn = proactive[personaId] == true
+    val proactive by repo.personaProactive.collectAsState(initial = null)
     // 主动关心的随机时间段与每天条数（v0.56.8 第二批：**每个角色一套**，弹层里改）
     val proactiveWindow by repo.proactiveWindow(personaId)
         .collectAsState(initial = DEFAULT_PROACTIVE_WINDOW_START to DEFAULT_PROACTIVE_WINDOW_END)
     val proactiveLimit by repo.proactiveDailyLimit(personaId).collectAsState(initial = 1)
+    // v0.94：主动关心的另外两个开关（发动态默认开；打电话默认关，老规则读取时推断）与电话每日次数
+    val proactiveMomentsOn by repo.proactiveMomentsEnabled(personaId).collectAsState(initial = null)
+    val proactiveCallOn by repo.proactiveCallEnabled(personaId).collectAsState(initial = null)
+    val proactiveCallLimit by repo.proactiveCallLimit(personaId).collectAsState(initial = 1)
     // 会话级资产
     // v0.58.0：persona_art / persona_live2d 这两张老表（DataStore 里的 id→单文件路径）已废弃，
     // 通话形象改走 CallVisualStore（完整模型包 + metadata.json），见 Live2dVisualSheet / VideoVisualSheet。
@@ -165,15 +162,9 @@ fun ChatSettingsScreen(
         defaultRingtone.isNotBlank() -> CallRingtone.displayNameOf(defaultRingtone)
         else -> "系统默认"
     }
-    // 定时消息（只列这个角色的；v0.56.6 起定时电话是同一条存储的另一种 kind，不混进这一串）
+    // 定时（只列这个角色的；v0.94 起消息与电话合并在一张列表里，按 kind 标「电话」）
     val allScheduled by repo.scheduledMessages.collectAsState(initial = emptyList())
-    val myScheduled = allScheduled.filter {
-        it.personaId == personaId && it.kind != KIND_SCHEDULED_CALL
-    }
-    /** 这个角色的**定时电话**（在「电话」弹层里管，不挂在下面的定时消息串里） */
-    val myScheduledCalls = allScheduled.filter {
-        it.personaId == personaId && it.kind == KIND_SCHEDULED_CALL
-    }
+    val myScheduled = allScheduled.filter { it.personaId == personaId }
     // 接口（本会话覆盖）
     val apiProfiles by repo.apiProfiles.collectAsState(initial = emptyList())
     val globalProfileId by repo.activeProfileId.collectAsState(initial = "")
@@ -197,13 +188,15 @@ fun ChatSettingsScreen(
     }
     var showApiSwitch by remember { mutableStateOf(false) }
     var showRingtoneSheet by remember { mutableStateOf(false) }
-    var showCallSheet by remember { mutableStateOf(false) }
     var showBackgroundSheet by remember { mutableStateOf(false) }
     // v0.66.0：视频通话背景（系统预设 / 自定义图片，两档，形状与角色空间背景一致）
     var showCallBgSheet by remember { mutableStateOf(false) }
     var showProactiveSheet by remember { mutableStateOf(false) }
-    // v0.82.0 P1-1：对话摘要的查看/删除弹层
-    var showSummarySheet by remember { mutableStateOf(false) }
+    // v0.82.0 P1-1：对话摘要的查看/删除入口
+    // v0.86.0：**整页化了**（用户点名「对话摘要我也要全屏展示」），所以这里不再有弹层开关，
+    // 那一行直接 `onOpen("conv_summary/$personaId")`，设置与正文都在 ConversationSummaryScreen 里。
+    // v0.86.0：「TA 的记忆」那一行点开先弹这个小层（提炼间隔 + 去清单的入口）
+    var showMemorySheet by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<ScheduledMessage?>(null) }
 
     // 音色候选（v0.56.6）：**在弹层打开之前**就把名单备好 —— 详见 PersonaVoiceSheet 的说明。
@@ -256,30 +249,6 @@ fun ChatSettingsScreen(
     val voiceLabel = voiceOptions.firstOrNull { it.first.voiceId == voiceEffectiveId }?.second
         ?: voiceEffectiveId
 
-    /**
-     * 落盘这个角色的打电话规则，并按开关状态重排/撤销闹钟（只动这一个人设）。
-     *
-     * ① **主动电话**：每天那个"检查"闹钟（到点 + X 天未聊天才打，见 `AiCallReceiver`）；
-     * ② **定时电话**：每条一个闹钟（与「定时消息」同一套机制），开关一变就把已配的逐条排上/撤掉。
-     */
-    fun applyCallRule(next: AiCallRule) {
-        scope.launch {
-            repo.upsertAiCallRule(next)
-            if (next.enabled) {
-                AlarmScheduler.scheduleAiCallForPersona(context, personaId, next.time)
-            } else {
-                AlarmScheduler.cancelAiCallForPersona(context, personaId)
-            }
-            myScheduledCalls.forEach { call ->
-                if (next.enabled && next.scheduledEnabled && call.enabled) {
-                    AlarmScheduler.scheduleScheduledMessage(context, call.id, call.time)
-                } else {
-                    AlarmScheduler.cancelScheduledMessage(context, call.id)
-                }
-            }
-        }
-    }
-
     fun importAsset(uri: Uri, subDir: String, ext: String, hint: String, onDone: (String) -> Unit) {
         scope.launch {
             val path = runCatching {
@@ -290,10 +259,10 @@ fun ChatSettingsScreen(
                 }
                 target.takeIf { it.length() > 0 }?.absolutePath
             }.getOrNull()
-            if (path == null) Toast.makeText(context, "这个文件读不出来", Toast.LENGTH_SHORT).show()
+            if (path == null) com.menghuan.app.ui.common.AppToast.fail("这个文件读不出来")
             else {
                 onDone(path)
-                Toast.makeText(context, hint, Toast.LENGTH_SHORT).show()
+                com.menghuan.app.ui.common.AppToast.ok(hint)
             }
         }
     }
@@ -317,12 +286,12 @@ fun ChatSettingsScreen(
             when (outcome) {
                 is CallBackgroundStore.Import.Ok -> {
                     repo.setCallBackground(personaId, outcome.value)
-                    Toast.makeText(context, "通话背景已保存", Toast.LENGTH_SHORT).show()
+                    com.menghuan.app.ui.common.AppToast.ok("通话背景已保存")
                 }
                 // 失败必须把原因说出来（超 24MB / 读不出来 / 空文件三种的处理动作完全不同），
                 // 不许糊成一句"设置失败"
                 is CallBackgroundStore.Import.Failed ->
-                    Toast.makeText(context, outcome.reason, Toast.LENGTH_SHORT).show()
+                    com.menghuan.app.ui.common.AppToast.fail(outcome.reason)
             }
         }
     }
@@ -335,10 +304,10 @@ fun ChatSettingsScreen(
             when (outcome) {
                 is CallBackgroundStore.Import.Ok -> {
                     repo.setCallBackground(personaId, outcome.value)
-                    Toast.makeText(context, "视频背景已保存", Toast.LENGTH_SHORT).show()
+                    com.menghuan.app.ui.common.AppToast.ok("视频背景已保存")
                 }
                 is CallBackgroundStore.Import.Failed ->
-                    Toast.makeText(context, outcome.reason, Toast.LENGTH_SHORT).show()
+                    com.menghuan.app.ui.common.AppToast.fail(outcome.reason)
             }
         }
     }
@@ -360,32 +329,38 @@ fun ChatSettingsScreen(
             onOpen("persona_editor/$personaId")
         }
         SettingsLineRow("模型", titleSize = 17.sp, index = 1) { showApiSwitch = true }
-        SettingsLineRow(
-            "联网搜索",
-            titleSize = 17.sp,
-            index = 2,
-            onClick = { scope.launch { repo.setChatWebSearchEnabled(personaId, !webOn) } },
-            trailing = {
-                NeuSwitch(checked = webOn, onToggle = { on ->
-                    scope.launch { repo.setChatWebSearchEnabled(personaId, on) }
-                })
-            },
-        )
+        chatWeb?.let { map ->
+            val webOn = map[personaId] == true
+            SettingsLineRow(
+                "联网搜索",
+                titleSize = 17.sp,
+                index = 2,
+                onClick = { scope.launch { repo.setChatWebSearchEnabled(personaId, !webOn) } },
+                trailing = {
+                    NeuSwitch(checked = webOn, label = "联网搜索", onToggle = { on ->
+                        scope.launch { repo.setChatWebSearchEnabled(personaId, on) }
+                    })
+                },
+            )
+        }
         // v0.59.0（用户拍板）：自动朗读**按角色各开各的**，放在第一组最后一行。
         // 默认关：开着它这个角色的每条回复都会发一次合成请求，那是真花额度的；
         // 长按菜单里的「朗读」不受这个开关管，随时能点。
-        SettingsLineRow(
-            "自动朗读",
-            titleSize = 17.sp,
-            index = 3,
-            divider = false,
-            onClick = { scope.launch { repo.setChatReadAloudEnabled(personaId, !readOn) } },
-            trailing = {
-                NeuSwitch(checked = readOn, onToggle = { on ->
-                    scope.launch { repo.setChatReadAloudEnabled(personaId, on) }
-                })
-            },
-        )
+        readAloudMap?.let { map ->
+            val readOn = map[personaId] == true
+            SettingsLineRow(
+                "自动朗读",
+                titleSize = 17.sp,
+                index = 3,
+                divider = false,
+                onClick = { scope.launch { repo.setChatReadAloudEnabled(personaId, !readOn) } },
+                trailing = {
+                    NeuSwitch(checked = readOn, label = "自动朗读", onToggle = { on ->
+                        scope.launch { repo.setChatReadAloudEnabled(personaId, on) }
+                    })
+                },
+            )
+        }
 
         GroupSeam()
 
@@ -411,21 +386,19 @@ fun ChatSettingsScreen(
             trailingText = CallBackgroundStore.labelOf(callBg),
         ) { showCallBgSheet = true }
         // v0.64.0：**角色空间**——可以拖动、点击互动、换背景、玩动作库的地方。
-        // 它是独立场景，不是视频通话页（两者解耦），所以入口也独立。
-        // v0.65.0（用户点名）：**小标题去掉**，与「聊天背景」一样是一行高的单行入口。
-        SettingsLineRow("角色空间", titleSize = 17.sp, index = 6) {
-            onOpen("live2d_space/$personaId")
-        }
+        // v0.92.0（用户点名"把角色空间卡片入口移到数据页"）：**这一行已从这里删除**，
+        // 入口现在在「我的数据」页（与记账本 / 任务同一排入口卡，点开先选角色）——
+        // 同一功能不摆两个入口，所以这里是**搬走**不是复制。
         // v0.64.0：**通话动作**——四个状态各自播什么，可以换成动作库里的任意动作。
         // v0.65.0（用户点名）：同样**不带小标题**（"已自定义几个"这类状态在这行看不重要，
         // 进页面四个槽各写着当前播哪条，那儿才是说清楚的地方）。
-        SettingsLineRow("通话动作", titleSize = 17.sp, index = 7) {
+        SettingsLineRow("通话动作", titleSize = 17.sp, index = 6) {
             onOpen("call_actions/$personaId")
         }
         SettingsLineRow(
             "聊天背景",
             titleSize = 17.sp,
-            index = 8,
+            index = 7,
             divider = false,
             onClick = { showBackgroundSheet = true },
         )
@@ -446,73 +419,86 @@ fun ChatSettingsScreen(
             "铃声",
             titleSize = 17.sp,
             index = 10,
+            divider = false,
             trailingText = ringtoneLabel,
         ) { showRingtoneSheet = true }
-        // 电话：开关、来电时刻、阈值都在底部弹层里
-        SettingsLineRow("电话", titleSize = 17.sp, index = 11, divider = false) { showCallSheet = true }
+        // v0.94：原「电话」行删除 —— 主动电话并进「主动关心」（三开关之一），
+        // 定时电话并进「定时」（与定时消息一张列表）。
 
         GroupSeam()
 
         // ④ 主动互动提醒（触发类功能聚合）
         // v0.56.8（用户点名）：开关**挪进弹层**，这一行点开就是「主动关心」的设置
+        // v0.94：弹层里是三个独立开关（发信息 / 发动态 / 打电话）+ 时间段 + 每天条数 + 电话次数
         SettingsLineRow(
-            "人设主动关心",
+            "主动关心",
             titleSize = 17.sp,
-            index = 12,
+            index = 11,
             onClick = { showProactiveSheet = true },
         )
-        // v0.58.1：定时消息的**条目不再摊在页面上**，全部收进这个弹层（点一条改它）
-        SettingsLineRow("定时消息", titleSize = 17.sp, index = 13, divider = false) {
+        // v0.94：定时消息与定时电话**合并成这一行**（一张列表，按类型区分；用户拍板）
+        SettingsLineRow("定时", titleSize = 17.sp, index = 12, divider = false) {
             showScheduledSheet = true
         }
 
         GroupSeam()
 
         // ⑤ 辅助工具（最低频，行业通用放底部）
-        SettingsLineRow("查看聊天记录", titleSize = 17.sp, index = 14) {
+        SettingsLineRow("查看聊天记录", titleSize = 17.sp, index = 13) {
             onOpen("chat_history/$personaId")
         }
         // 「TA 的记忆」（v0.71.0）：带待确认条数。
         // ⚠️ 这个数一定要显示 —— AI 说要记的东西先进 staging，而 staging **不参与注入**；
         // 入口上没有提示，用户就不知道有个地方要点，那些记忆会一直静静躺着不起作用
         // （和"没审批入口就别写 staging"是同一条道理）。
+        // v0.86.0：这一行改为**先弹一个小层**（里面有「每隔几轮提炼一次」+ 去清单的入口），
+        // 不再直接跳整页 —— 提炼间隔属于"这个角色多勤快"，跟记忆清单是两件事，
+        // 而记忆清单本身是四段纯列表，插一条数字设置进去会看着像第五段。
         val stagingCount by app.db.profileFactDao().observeStagingCount(personaId).collectAsState(initial = 0)
         SettingsLineRow(
             if (stagingCount > 0) "TA 的记忆 · $stagingCount 条待确认" else "TA 的记忆",
-            titleSize = 17.sp, index = 15,
-        ) { onOpen("memory/$personaId") }
+            titleSize = 17.sp, index = 14,
+        ) { showMemorySheet = true }
         // 「对话摘要」（v0.82.0 P1-1）：滚动摘要的查看/删除入口（生成开关在「设置 · AI 提示词」）。
+        // v0.86.0：「记住最近多少字」也进了这一页（窗口小 → 摘要勤，两者是一件事的两面）；
+        // **整页化**（用户点名「对话摘要我也要全屏展示」）—— 摘要正文是几百字连续文本，
+        // 原来那个半屏弹层里和输入框挤在一起，键盘一顶上来正文就看不见了。
         val convSummary by app.db.conversationSummaryDao().observe(personaId).collectAsState(initial = null)
         SettingsLineRow(
             "对话摘要",
-            titleSize = 17.sp, index = 16, divider = false,
+            titleSize = 17.sp, index = 15, divider = false,
             trailingText = if (convSummary == null) "还没有" else "已生成",
-        ) { showSummarySheet = true }
+        ) { onOpen("conv_summary/$personaId") }
 
         Spacer(Modifier.height(24.dp))
     }
 
-    // ===== 对话摘要（底部弹层，v0.82.0 P1-1）：查看全文 + 删除（删了按"从来没有摘要"重新积累）=====
-    if (showSummarySheet) {
-        val summary by app.db.conversationSummaryDao().observe(personaId).collectAsState(initial = null)
-        NeuSheetScaffold(title = "对话摘要", onDismiss = { showSummarySheet = false }) {
+    // ===== 「TA 的记忆」的那条提炼间隔（v0.86.0）=====
+    //
+    // 为什么不做成第三个全屏页：记忆页本身是**四段清单**（待入库/记住的/永久/已忽略），
+    // 把一条数字设置插在清单顶上，看着像第五段记忆。
+    // 所以从会话设置页那行点进去时先弹一个小层：**上面是设置、下面是"去看清单"**，
+    // 两个入口都在手边，也不会污染记忆页的语义。
+    //
+    // ⚠️ 注意和「对话摘要」的差别（v0.86.0）：摘要是**整页**、记忆是**弹层**。
+    // 判据不是"哪个更整齐"，而是里面装的东西：摘要那页是一段几百字的连续文本（弹层装不下、读着累），
+    // 记忆那页是四段清单（清单好读，坏处是插设置进去会串味）——所以一个整页、一个先弹小层。
+    if (showMemorySheet) {
+        val everyTurns by remember(personaId) { repo.extractEveryTurns(personaId) }
+            .collectAsState(initial = repo.DEFAULT_EXTRACT_EVERY_TURNS)
+        NeuSheetScaffold(title = "TA 的记忆", onDismiss = { showMemorySheet = false }) {
             Spacer(Modifier.height(6.dp))
-            val text = summary?.summary?.takeIf { it.isNotBlank() }
-            if (text == null) {
-                Text(
-                    "聊得再久一些就会有了：太早的对话装不下时，会先压缩成一段摘要放在这里，TA 不会真的忘掉。",
-                    fontSize = 13.sp,
-                    lineHeight = 20.sp,
-                    color = MutedText,
-                )
-            } else {
-                Text(text, fontSize = 14.sp, lineHeight = 22.sp, color = TextPrimary)
-                Spacer(Modifier.height(14.dp))
-                NeuTextButton("删除这段摘要", color = NeuDanger, onClick = {
-                    scope.launch { app.db.conversationSummaryDao().delete(personaId) }
-                    showSummarySheet = false
-                })
-            }
+            NumberSettingField(
+                label = "每隔几轮提炼一次",
+                value = everyTurns,
+                range = repo.EXTRACT_EVERY_TURNS_RANGE,
+                onCommit = { scope.launch { repo.setExtractEveryTurns(personaId, it) } },
+            )
+            Spacer(Modifier.height(14.dp))
+            NeuTextButton("看看已经记住什么", onClick = {
+                showMemorySheet = false
+                onOpen("memory/$personaId")
+            })
             Spacer(Modifier.height(10.dp))
         }
     }
@@ -545,15 +531,19 @@ fun ChatSettingsScreen(
     // ===== 铃声选择（底部弹层，v0.54.6）=====
     // v0.58.1：通话形象（视频通话的视觉层）——两个上传口各自一个弹层
     if (showScheduledSheet) {
-        // 定时消息的条目以前是一条条摊在页面上（v0.54.6 的老做法），现在收进这个弹层：
-        // 页面只留一行「定时消息」，点条目改它、点底部按钮加新的。
-        NeuSheetScaffold(title = "定时消息", onDismiss = { showScheduledSheet = false }) {
+        // v0.94：定时消息与定时电话**合并成这一张列表**（存储本来就是同一张表、kind 区分）：
+        // 电话条目行首标「电话」，底部两个添加入口各进各的表单（表单按 kind 换措辞）。
+        NeuSheetScaffold(title = "定时", onDismiss = { showScheduledSheet = false }) {
             Spacer(Modifier.height(6.dp))
             myScheduled.forEach { m ->
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    if (m.kind == KIND_SCHEDULED_CALL) {
+                        Text("电话", fontSize = 11.sp, color = MutedText)
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Text(m.time, fontSize = 15.sp, color = TextPrimary)
                     Spacer(Modifier.width(12.dp))
                     Text(
@@ -578,6 +568,16 @@ fun ChatSettingsScreen(
             NeuTextButton(text = "＋ 添加定时消息", onClick = {
                 showScheduledSheet = false
                 editing = ScheduledMessage(id = "sm" + System.currentTimeMillis(), personaId = personaId)
+            })
+            Spacer(Modifier.height(4.dp))
+            NeuTextButton(text = "＋ 添加定时电话", onClick = {
+                showScheduledSheet = false
+                editing = ScheduledMessage(
+                    id = "call" + System.currentTimeMillis(),
+                    personaId = personaId,
+                    kind = KIND_SCHEDULED_CALL,
+                    time = DEFAULT_CALL_TIME,
+                )
             })
             Spacer(Modifier.height(8.dp))
         }
@@ -660,123 +660,15 @@ fun ChatSettingsScreen(
         }
     }
 
-    // ===== 电话（底部弹层）=====
+    // ===== 主动关心（底部弹层，v0.94 重做成三个独立开关）=====
     //
-    // v0.56.7（用户点名）：「允许主动打电话」更名「主动电话」；两行点标题才展开详细设置；
-    // 弹层里不再有小标题/说明小字。
-    // **v0.56.8（用户点名）**：① 删掉「每天几点检查」（触发时刻固定用规则里存的值，默认 21:00）；
-    // ② 两行各加一颗**展开箭头**（收起朝右、展开朝下，带旋转过渡）当提示；
-    // ③ 行上**不要点击后的灰色条** —— 展开/收起用 `indication = null`，不画 ripple。
-    if (showCallSheet) {
-        val rule = callRule ?: AiCallRule(personaId = personaId)
-        // 哪一段被展开了（null = 两段都收起）
-        var expanded by remember { mutableStateOf<String?>(null) }
-        var idleDraft by remember(rule.idleDays) { mutableStateOf(rule.idleDays.toString()) }
-
-        NeuSheetScaffold(title = "电话", onDismiss = { showCallSheet = false }) {
-            Spacer(Modifier.height(6.dp))
-
-            // ① 主动电话：标题（点一下展开/收起）+ 展开箭头 + 开关
-            Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "主动电话",
-                    fontSize = 15.sp,
-                    color = TextPrimary,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { expanded = if (expanded == "call") null else "call" },
-                )
-                ExpandArrow(expanded = expanded == "call")
-                Spacer(Modifier.width(10.dp))
-                NeuSwitch(checked = rule.enabled, onToggle = { on -> applyCallRule(rule.copy(enabled = on)) })
-            }
-            if (expanded == "call") {
-                Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-                    NeuTextField(
-                        value = idleDraft,
-                        onValueChange = { raw ->
-                            val digits = raw.filter { it.isDigit() }.take(2)
-                            idleDraft = digits
-                            digits.toIntOrNull()?.coerceIn(1, 30)?.let { d ->
-                                applyCallRule(rule.copy(idleDays = d))
-                            }
-                        },
-                        label = "几天没聊就主动打（1–30）",
-                        placeholder = "3",
-                        keyboardType = KeyboardType.Number,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(10.dp))
-                }
-            }
-
-            // ② 定时电话：标题（点一下展开/收起）+ 展开箭头 + 开关
-            Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "定时电话",
-                    fontSize = 15.sp,
-                    color = TextPrimary,
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { expanded = if (expanded == "scheduled") null else "scheduled" },
-                )
-                ExpandArrow(expanded = expanded == "scheduled")
-                Spacer(Modifier.width(10.dp))
-                NeuSwitch(
-                    checked = rule.scheduledEnabled,
-                    onToggle = { on -> applyCallRule(rule.copy(scheduledEnabled = on)) },
-                )
-            }
-            if (expanded == "scheduled") {
-                Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
-                    myScheduledCalls.forEach { call ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(call.time, fontSize = 15.sp, color = TextPrimary)
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                call.instruction.ifBlank { "（没写要说什么）" },
-                                fontSize = 12.sp,
-                                color = MutedText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            if (!call.enabled) {
-                                Text("已停用", fontSize = 11.sp, color = MutedText)
-                                Spacer(Modifier.width(8.dp))
-                            }
-                            NeuTextButton("编辑", onClick = { editing = call })
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    NeuTextButton("＋ 添加定时电话", onClick = {
-                        editing = ScheduledMessage(
-                            id = "call" + System.currentTimeMillis(),
-                            personaId = personaId,
-                            kind = KIND_SCHEDULED_CALL,
-                            time = DEFAULT_CALL_TIME,
-                        )
-                    })
-                    Spacer(Modifier.height(6.dp))
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-        }
-    }
-
-    // ===== 主动关心（底部弹层，v0.56.8）：开关 + 随机时间段 + 每天最多几条 =====
-    //
-    // 用户要求：
-    // - 开关放进弹层；发送时刻在**用户自定义的时间段里随机取**；
-    // - 「每天最多几条」是**上限不是定额** —— 实际发几条在这个数以内随机，不超过就行；
-    // - **每个角色各一套**时间段与条数（v0.56.8 第二批），各自一颗闹钟；
-    // - 弹层容器就是「模型选择」那一个（NeuSheetScaffold：从底部升上来的底部弹层）。
+    // v0.94（用户拍板）：主动关心 = 三个**各自独立**的开关，全关 = 这个角色完全不主动：
+    // - **主动发消息**：原来的主动关心（随机时刻 + 每天最多几条，配额照旧）；
+    // - **主动发动态**：TA 主动来看你时在你的动态上发帖 / 回帖 / 点赞（默认开，存量行为不变）；
+    // - **主动打电话**：并入这里的随机时刻（「几天没聊就主动打」整条下线），
+    //   **一次触发只做一件事** —— 电话优先消耗「每天最多几通」的配额，打满自动只发消息；
+    //   电话守静默时段（22:30–08:00 不打）。
+    // 时间段与「每天最多几条」照旧（上限不是定额）；「每天最多几通电话」边填边存（1–9）。
     if (showProactiveSheet) {
         var startDraft by remember { mutableStateOf(proactiveWindow.first) }
         var endDraft by remember { mutableStateOf(proactiveWindow.second) }
@@ -785,16 +677,40 @@ fun ChatSettingsScreen(
             AiCallLogic.minuteOfDayOf(endDraft) != null
         NeuSheetScaffold(title = "主动关心", onDismiss = { showProactiveSheet = false }) {
             Spacer(Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("这个角色主动发消息", fontSize = 15.sp, color = TextPrimary, modifier = Modifier.weight(1f))
-                NeuSwitch(checked = proactiveOn, onToggle = { on ->
+            proactive?.let { map ->
+                ProactiveToggleRow("主动发消息", checked = map[personaId] == true) { on ->
                     scope.launch {
                         repo.setPersonaProactive(personaId, on)
-                        // 开就按这个角色自己的窗口排上，关就把它的闹钟摘掉
                         runCatching { ProactiveChat.schedulePersona(repo, context, personaId) }
                     }
-                })
+                }
             }
+            proactiveMomentsOn?.let { momentsOn ->
+                ProactiveToggleRow("主动发动态", checked = momentsOn) { on ->
+                    scope.launch {
+                        repo.setProactiveMomentsEnabled(personaId, on)
+                        runCatching { ProactiveChat.schedulePersona(repo, context, personaId) }
+                    }
+                }
+            }
+            // 三态（v0.97.0，U7）：初值 null = "还没读到"。原来是 `initial = false`，
+            // DataStore 读到之前这一行渲染成"关"，而已开着的角色会看到开关先关再跳开；
+            // 更糟的是这中间的一次误触会把用户的开启状态改掉。读不到就先不画这一行。
+            proactiveCallOn?.let { callOn ->
+                ProactiveToggleRow("主动打电话", checked = callOn) { on ->
+                    scope.launch {
+                        repo.setProactiveCallEnabled(personaId, on)
+                        runCatching { ProactiveChat.schedulePersona(repo, context, personaId) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            NumberSettingField(
+                label = "每天最多几通电话",
+                value = proactiveCallLimit,
+                range = 1..9,
+                onCommit = { scope.launch { repo.setProactiveCallLimit(personaId, it) } },
+            )
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) {
@@ -978,15 +894,16 @@ fun ChatSettingsScreen(
                     )
                     scope.launch {
                         repo.upsertScheduledMessage(saved)
-                        // 定时电话还要看那两个开关：都开着才排闹钟，否则只存不排
-                        val rule = callRule ?: AiCallRule(personaId = personaId)
-                        val shouldRing = isCall && saved.enabled && rule.enabled && rule.scheduledEnabled
-                        if (saved.enabled && (!isCall || shouldRing)) {
+                        // v0.94：定时电话不再有总开关 —— 只看条目自己的启用状态
+                        if (saved.enabled) {
                             AlarmScheduler.scheduleScheduledMessage(context, saved.id, saved.time)
                         } else {
                             AlarmScheduler.cancelScheduledMessage(context, saved.id)
                         }
                     }
+                    // v0.97.0（审查 B36/B34）：与「设置 → 定时主动消息」同一口径 ——
+                    // 定时链以前没有任何权限提示，通知没开就是静默不响。
+                    if (saved.enabled) ReminderPermissionHints.warnAfterScheduling(context)
                     editing = null
                 },
             )
@@ -1006,22 +923,15 @@ fun ChatSettingsScreen(
 }
 
 /**
- * 「点标题展开」的提示箭头（v0.56.8）：收起朝右、展开朝下，90° 旋转带 180ms 过渡。
- * 用户点名"给个箭头提示展开"——之前两行只有标题和开关，看不出点标题能展开细项。
+ * 「主动关心」弹层里的一个开关行（v0.94 三开关各一行）。
+ * 三个开关**各自独立**（全关 = 不触发），每拨一个就重排这个角色的闹钟。
  */
 @Composable
-private fun ExpandArrow(expanded: Boolean, size: Dp = 16.dp) {
-    val rotation by animateFloatAsState(
-        targetValue = if (expanded) 90f else 0f,
-        animationSpec = tween(180),
-        label = "expandArrow",
-    )
-    Icon(
-        MIcons.ChevronRight,
-        contentDescription = if (expanded) "收起" else "展开",
-        tint = MutedText,
-        modifier = Modifier.size(size).rotate(rotation),
-    )
+private fun ProactiveToggleRow(title: String, checked: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, fontSize = 15.sp, color = TextPrimary, modifier = Modifier.weight(1f))
+        NeuSwitch(checked = checked, onToggle = onToggle)
+    }
 }
 
 /** 铃声弹层里的一行（点一条即选中，选中打勾） */
@@ -1053,4 +963,42 @@ private fun GroupSeam() {
     Spacer(Modifier.height(8.dp))
     Box(Modifier.fillMaxWidth().height(8.dp).background(NeuTrack))
     Spacer(Modifier.height(8.dp))
+}
+
+/**
+ * 数字设置项（v0.86.0）：标题 + 一行数字输入框，**边填边存**。
+ *
+ * 两个会话级设置（「记住最近多少字」「每隔几轮提炼一次」）本来可以在底下再挂一颗
+ * [NeuButton]「保存」，但那要走两次页面（填 → 保存 → 返回），中间还得为"没保存就退了"
+ * 补一层草稿逻辑。这两个值的取值范围本来就窄、且都不需要确认，所以照「电话」弹层里
+ * 「几天没聊就主动打」的做法：**去掉保存按钮，落盘时机 = 输入合法的那一刻**，
+ * 用户填完直接返回就行。
+ *
+ * [onCommit] 只在解析出合法整数时调用；`coerceIn` 在这里做，所以外部只管写库。
+ *
+ * 不是 `private`：另一个用户（「记住最近多少字」）现在住在 [ConversationSummaryScreen]
+ * 那个独立文件里（v0.86.0 摘要整页化），同模块同包、但跨文件 —— Kotlin 的
+ * 文件级 private 挡不住跨文件，只能放到包级可见。
+ */
+@Composable
+internal fun NumberSettingField(
+    label: String,
+    value: Int,
+    range: IntRange,
+    onCommit: (Int) -> Unit,
+) {
+    // 草稿跟着已存值走：DataStore 首次读到真实值时刷一次，之后不再覆盖用户正在敲的内容
+    var draft by remember(value) { mutableStateOf(value.toString()) }
+    NeuTextField(
+        value = draft,
+        onValueChange = { raw ->
+            val digits = raw.filter { it.isDigit() }.take(range.last.toString().length)
+            draft = digits
+            digits.toIntOrNull()?.coerceIn(range.first, range.last)?.let(onCommit)
+        },
+        label = "$label（${range.first}–${range.last}）",
+        placeholder = value.toString(),
+        keyboardType = KeyboardType.Number,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }

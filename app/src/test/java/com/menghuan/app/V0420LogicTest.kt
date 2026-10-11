@@ -403,35 +403,34 @@ class V0420LogicTest {
     }
 
     @Test
-    fun `建议 prompt 带上今日任务与支出信息`() {
+    fun `建议 prompt 只带昨天的洞察`() {
+        // v0.88.0：建议素材收窄成"昨天的洞察"——任务/档案/流水一概不再进 prompt
         val ctx = DailyContext(
             day = LocalDate.of(2026, 10, 3),
-            doneToday = 1,
-            totalToday = 3,
-            pendingTitles = listOf("写周报", "跑步"),
-            facts = listOf("职业" to "产品经理"),
-            insights = listOf("晚间效率更高"),
-            yesterdayExpenseCents = 12_00,
-            monthExpenseCents = 300_00,
+            insights = listOf(
+                "晚间效率更高" to "连续几天下午的任务都堆到晚上才做",
+                "本周支出偏高" to "周中几笔外卖加起来比上周多一倍",
+            ),
+            insightDay = LocalDate.of(2026, 10, 2),
         )
         val prompt = DailySuggestionMath.buildPrompt(ctx)
-        assertTrue(prompt.contains("1/3"))
-        assertTrue(prompt.contains("写周报"))
-        assertTrue(prompt.contains("产品经理"))
         assertTrue(prompt.contains("晚间效率更高"))
-        assertTrue(prompt.contains("12.00"))
-        assertTrue(prompt.contains("300.00"))
+        assertTrue(prompt.contains("连续几天下午的任务都堆到晚上才做"))
+        assertTrue(prompt.contains("本周支出偏高"))
+        assertTrue(prompt.contains("10月2日"))
     }
 
     @Test
-    fun `建议 prompt 无支出时不提钱`() {
+    fun `建议 prompt 不再复述任务与流水`() {
+        // 这是 v0.88.0 的核心：素材里没有任务完成情况、没有档案、没有金额
         val ctx = DailyContext(
             day = LocalDate.of(2026, 10, 3),
-            doneToday = 0, totalToday = 0, pendingTitles = emptyList(),
-            facts = emptyList(), insights = emptyList(),
-            yesterdayExpenseCents = 0, monthExpenseCents = 0,
+            insights = listOf("晚间效率更高" to "下午的任务都堆到晚上"),
+            insightDay = LocalDate.of(2026, 10, 2),
         )
         val prompt = DailySuggestionMath.buildPrompt(ctx)
+        assertFalse(prompt.contains("今日任务"))
+        assertFalse(prompt.contains("用户档案"))
         assertFalse(prompt.contains("支出情况"))
     }
 

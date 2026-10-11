@@ -165,28 +165,19 @@ class MeViewModel(
         settingsRepository.setDailySummaryEnabled(enabled)
     }
 
-    /** AI 周报生成提醒（默认关；生成在 Receiver 侧，开关只管通知） */
-    val weeklyNotifyEnabled: StateFlow<Boolean> = settingsRepository.weeklyReportNotifyEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
-
-    fun setWeeklyReportNotifyEnabled(enabled: Boolean) = viewModelScope.launch {
-        settingsRepository.setWeeklyReportNotifyEnabled(enabled)
-    }
-
     /** 数据与隐私面板：各类数据条数 */
     val dataStats: StateFlow<DataStats> = combine(
         db.messageDao().observeCount(),
         db.taskDao().observeAll().map { it.size.toLong() },
         personaRepository.observePersonas().map { it.size.toLong() },
         db.profileFactDao().observeAll().map { it.size.toLong() },
-        db.aiWeeklyReportDao().observeAll().map { it.size.toLong() },
-    ) { messages, tasks, personas, facts, reports ->
-        DataStats(messages, tasks, personas, facts, reports)
+    ) { messages, tasks, personas, facts ->
+        DataStats(messages, tasks, personas, facts)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DataStats())
 
     /**
      * 清除全部数据（v0.36.5，原「清除全部聊天记录」升级）：
-     * 删 聊天消息 / AI 洞察 / AI 周报 / 用户档案 / 任务 / 打卡记录，
+     * 删 聊天消息 / AI 洞察 / 用户档案 / 任务 / 打卡记录，
      * 并级联清理 任务闹钟 / 提炼水位线 / 未读标记 / 草稿 / 待展示任务建议。
      * **保留**：人设、API 配置（对话+生图）、提示词覆盖、主题、通知开关、会话级接口覆盖。
      */
@@ -199,7 +190,6 @@ class MeViewModel(
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 db.messageDao().deleteAll()
                 db.aiInsightDao().deleteAll()
-                db.aiWeeklyReportDao().deleteAll()
                 db.profileFactDao().deleteAll()
                 db.taskCompletionDao().deleteAll()
                 db.taskDao().deleteAll()
@@ -239,7 +229,7 @@ class MeViewModel(
         }
     }
 
-    /** 导出全部数据为 JSON 文件（含周报；不含 API 密钥），经 FileProvider 分享 */
+    /** 导出全部数据为 JSON 文件（不含 API 密钥），经 FileProvider 分享 */
     fun exportData(context: android.content.Context) = viewModelScope.launch {
         runCatching {
             val json = DataBackup.buildExportJson(
@@ -248,7 +238,6 @@ class MeViewModel(
                 tasks = db.taskDao().observeAll().first(),
                 facts = db.profileFactDao().observeAll().first(),
                 insights = db.aiInsightDao().observeLatest().first(),
-                weeklyReports = db.aiWeeklyReportDao().observeAll().first(),
             )
             val stamp = java.time.LocalDate.now().toString()
             com.menghuan.app.data.ShareFiles.share(
@@ -265,7 +254,7 @@ class MeViewModel(
     val importMessage: StateFlow<String?> = _importMessage.asStateFlow()
 
     /**
-     * 合并导入（非破坏性）：人设/档案/洞察/周报按各自键去重跳过，消息与任务追加，
+     * 合并导入（非破坏性）：人设/档案/洞察按各自键去重跳过，消息与任务追加，
      * 绝不删除现有数据。消息按人设名映射到现有/新建会话，未知人设的消息跳过。
      */
     fun importData(context: android.content.Context, uri: Uri) = viewModelScope.launch {
@@ -280,7 +269,6 @@ class MeViewModel(
             var taskCount = 0
             var factCount = 0
             var insightCount = 0
-            var reportCount = 0
             val nameToId = personaRepository.observePersonas().first()
                 .associate { it.name to it.id }.toMutableMap()
 
@@ -339,21 +327,8 @@ class MeViewModel(
                 insightCount++
             }
 
-            data.aiWeeklyReports.forEach { r ->
-                if (db.aiWeeklyReportDao().getByWeekStart(r.weekStart) != null) return@forEach
-                db.aiWeeklyReportDao().upsert(
-                    com.menghuan.app.data.model.AiWeeklyReport(
-                        weekStart = r.weekStart,
-                        weekEnd = r.weekEnd,
-                        content = r.content,
-                        createdAt = r.createdAt,
-                    )
-                )
-                reportCount++
-            }
-
             _importMessage.value = "导入完成：人设 $personaCount · 消息 $msgCount · 任务 $taskCount · " +
-                "档案 $factCount · 洞察 $insightCount" + if (reportCount > 0) " · 周报 $reportCount" else ""
+                "档案 $factCount · 洞察 $insightCount"
         }.onFailure {
             _importMessage.value = "导入失败：${it.message ?: "文件格式无效"}"
         }
@@ -387,7 +362,6 @@ fun MeScreen(
     val facts by vm.facts.collectAsState()
     val notificationsEnabled by vm.notificationsEnabled.collectAsState()
     val dailySummaryEnabled by vm.dailySummaryEnabled.collectAsState()
-    val weeklyNotifyEnabled by vm.weeklyNotifyEnabled.collectAsState()
     val dataStats by vm.dataStats.collectAsState()
     val importMessage by vm.importMessage.collectAsState()
     val context = LocalContext.current
@@ -617,7 +591,7 @@ fun GalleryScreen(onBack: () -> Unit) {
                     val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
                         as? android.content.ClipboardManager
                     cm?.setPrimaryClip(android.content.ClipData.newPlainText("menghuan", record.prompt))
-                    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                    com.menghuan.app.ui.common.AppToast.ok("已复制")
                     promptRecord = null
                 },
             )

@@ -12,7 +12,9 @@ import java.time.ZoneId
  * AI 主动打电话的纯逻辑单测（v0.53.5）。
  *
  * 全是纯函数（时间一律作为参数传进来），所以不需要 Robolectric、秒级跑完。
- * 覆盖三件最容易写错的事：**静默时段跨零点**、**每天次数上限**、**口头约定标记的两种写法**。
+ * v0.94：「每天检查一次 + 几天没聊」那套判定（canCallBySchedule / canCallBySmart / shouldRing）
+ * 已随主动电话并入主动关心整条删除，对应用例一并删除；剩下的是仍活着的三块：
+ * **静默时段跨零点**、**口头约定标记的两种写法**、**规则编解码兼容**（老数据要读得动）。
  */
 class AiCallLogicTest {
 
@@ -32,40 +34,6 @@ class AiCallLogicTest {
         assertTrue(AiCallLogic.inQuietHours(0))                  // 午夜静默
         assertTrue(AiCallLogic.inQuietHours(7 * 60 + 59))        // 07:59 仍静默
         assertFalse(AiCallLogic.inQuietHours(8 * 60))            // 08:00 解禁
-    }
-
-    // ===== 定时那一路 =====
-
-    @Test
-    fun `定时那一路：开关关着或打满次数或落在静默时段都不打`() {
-        assertFalse(AiCallLogic.canCallBySchedule(enabled = false, minuteOfDay = 21 * 60, callsToday = 0))
-        assertTrue(AiCallLogic.canCallBySchedule(enabled = true, minuteOfDay = 21 * 60, callsToday = 0))
-        assertTrue(AiCallLogic.canCallBySchedule(enabled = true, minuteOfDay = 21 * 60, callsToday = 1))
-        // 每天上限 2 次
-        assertFalse(AiCallLogic.canCallBySchedule(enabled = true, minuteOfDay = 21 * 60, callsToday = 2))
-        // 静默时段即使开关开着也不打
-        assertFalse(AiCallLogic.canCallBySchedule(enabled = true, minuteOfDay = 23 * 60, callsToday = 0))
-    }
-
-    // ===== 智能那一路 =====
-
-    @Test
-    fun `智能那一路要多一条好久没聊`() {
-        val now = tsOf(2026, 10, 5, 21, 0)
-        // 昨天刚聊过 → 不算久，不打
-        val justChatted = now - 24L * 60 * 60 * 1000
-        assertFalse(
-            AiCallLogic.canCallBySmart(true, 21 * 60, 0, justChatted, now, idleDays = 3),
-        )
-        // 4 天没聊 → 打
-        val idle = now - 4L * 24 * 60 * 60 * 1000
-        assertTrue(
-            AiCallLogic.canCallBySmart(true, 21 * 60, 0, idle, now, idleDays = 3),
-        )
-        // 从没聊过（0）也算"好久没聊"
-        assertTrue(AiCallLogic.canCallBySmart(true, 21 * 60, 0, 0L, now, idleDays = 3))
-        // 次数打满就不打
-        assertFalse(AiCallLogic.canCallBySmart(true, 21 * 60, 2, idle, now, idleDays = 3))
     }
 
     // ===== 口头约定标记 =====
@@ -142,48 +110,6 @@ class AiCallLogicTest {
         idleDays = idleDays,
         lastCallDay = lastCallDay,
     )
-
-    @Test
-    fun `按人设判定：只看跟这个人的最后一次聊天`() {
-        val now = tsOf(2026, 10, 5, 21, 0)
-        val today = 20_000L
-        // 小美：上次聊天在 1 天前（没到 3 天）→ 不打
-        val justChatted = now - 24L * 60 * 60 * 1000
-        assertFalse(
-            com.menghuan.app.data.AiCallRuleLogic.shouldRing(rule(idleDays = 3), 21 * 60, today, justChatted, now),
-        )
-        // 教练：上次聊天在 5 天前（超过 3 天）→ 同一天、同一时刻，照打
-        val idle = now - 5L * 24 * 60 * 60 * 1000
-        assertTrue(
-            com.menghuan.app.data.AiCallRuleLogic.shouldRing(rule(idleDays = 3), 21 * 60, today, idle, now),
-        )
-    }
-
-    @Test
-    fun `按人设判定：每人设各自每天只打一次、各自开关与静默`() {
-        val now = tsOf(2026, 10, 5, 21, 0)
-        val today = 20_000L
-        val idle = now - 5L * 24 * 60 * 60 * 1000
-        // 这个人今天已经打过（lastCallDay = 今天）→ 不打；另一个人设的 lastCallDay 是 0，不受影响
-        assertFalse(
-            com.menghuan.app.data.AiCallRuleLogic.shouldRing(rule(lastCallDay = today), 21 * 60, today, idle, now),
-        )
-        assertTrue(
-            com.menghuan.app.data.AiCallRuleLogic.shouldRing(rule(personaId = 2L), 21 * 60, today, idle, now),
-        )
-        // 这个人的规则关着 → 只有他不打
-        assertFalse(
-            com.menghuan.app.data.AiCallRuleLogic.shouldRing(rule(enabled = false), 21 * 60, today, idle, now),
-        )
-        // 静默时段一律不打
-        assertFalse(
-            com.menghuan.app.data.AiCallRuleLogic.shouldRing(rule(), 23 * 60, today, idle, now),
-        )
-        // 从没跟 TA 聊过（0）也算"好久没聊"
-        assertTrue(
-            com.menghuan.app.data.AiCallRuleLogic.shouldRing(rule(), 21 * 60, today, 0L, now),
-        )
-    }
 
     @Test
     fun `规则的编解码往返与脏数据容错`() {

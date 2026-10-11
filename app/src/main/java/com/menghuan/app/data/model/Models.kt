@@ -225,7 +225,20 @@ data class TaskCompletion(
 )
 
 /** 用户档案：手动填写 + AI 从对话中提炼，注入人设上下文 */
-@Entity(tableName = "profile_facts")
+@Entity(
+    tableName = "profile_facts",
+    // v0.97.0：**补齐索引**。这张表以前一个索引都没有，而同库其它表（messages / ai_insights /
+    // moments / call_sessions…）都按过滤列建了；于是 DAO 里这些高频查询全部走全表扫描：
+    //   · findScoped / getByKey        → (key, personaId)
+    //   · observeOwnedBy / 提炼批量读取 → personaId
+    //   · observeVisibleFor / 待审计数  → lifecycle
+    // ⚠️ 实体这里列的索引必须与 `MIGRATION_28_29` 里建的逐项一致，否则 onValidateSchema 直接抛错。
+    indices = [
+        Index(value = ["key", "personaId"]),
+        Index(value = ["personaId"]),
+        Index(value = ["lifecycle"]),
+    ],
+)
 data class ProfileFact(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val key: String,
@@ -258,31 +271,62 @@ data class ProfileFact(
     @ColumnInfo(defaultValue = "0")
     val lastRecalledAt: Long = 0,
 ) {
-    /** 参与注入的唯一判据：`rejected` 与 `archived` 一律不进 prompt（§零.9 的准入口径） */
-    val injectable: Boolean get() = lifecycle != "rejected" && lifecycle != "archived"
+    /**
+     * 参与注入的判据（§零.9 的准入口径）——**必须写成白名单**。
+     *
+     * ⚠️ v0.98.0 修正：原来是"排除 `rejected` / `archived`"的黑名单写法，于是 `staging` 被放进了 prompt。
+     * 而 `staging` 是「模型刚说 `<add:>`、还没等用户在记忆页点头」的暂存态，它的**全部意义**就是"先别生效"。
+     * 放它进去等于审批制不存在 —— 而 `MemoryScope.visible` / `MemoryScreen` / `ChatSettingsScreen`
+     * 三处注释当时都还在承诺"不注入 staging"，承诺与实现相反。
+     *
+     * 白名单的好处是**将来新增 lifecycle 状态时默认不注入**：忘记处理 = 安全的那一侧。
+     */
+    val injectable: Boolean get() = lifecycle == "active" || lifecycle == "core"
 }
 
-/** AI 洞察：提炼流水线从对话中产出的行为模式观察（数据页「AI 洞察」真数据源） */
-@Entity(tableName = "ai_insights")
+/**
+ * AI 洞察：行为模式观察（数据页「AI 洞察」真数据源）。
+ *
+ * **v0.88.0 起数据源与触发都变了**：不再从对话转录里提炼（那是记忆的活），
+ * 改成**每天/每周/每月**从「记忆 + 任务 + 记账」里归纳 —— 见 [InsightPeriod] 与
+ * `data/InsightEngine.kt`。所以加了 [period] 与 [day] 两个字段：
+ * - [period] 区分这条是**日/周/月**洞察，UI 据此分组，每日建议据此取「昨天的洞察」；
+ * - [day] 是**归属日**（epochDay，本周=周日、本月=月末那一天），
+ *   让「取某一天产出的洞察」成为一次索引友好查询，不必靠 createdAt 猜。
+ *
+ * 老数据（v0.88.0 之前从对话里提炼的那些）迁移时落 `DAILY` + `day = 0`，
+ * 它们没有归属日、只能按 createdAt 排序展示 —— 这是**有意保留历史**，不删。
+ */
+@Entity(tableName = "ai_insights", indices = [Index("day")])
 data class AiInsight(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
     val detail: String,
     val createdAt: Long = System.currentTimeMillis(),
+    /** 洞察周期：日 / 周 / 月（见 [InsightPeriod]）。老数据默认 DAILY。 */
+    @ColumnInfo(defaultValue = "DAILY")
+    val period: String = InsightPeriod.DAILY,
+    /** 归属日 epochDay（本周=周日那天、本月=月末那天）。老数据为 0（无归属日）。 */
+    @ColumnInfo(defaultValue = "0")
+    val day: Long = 0,
 )
 
-/** AI 周报：每周日 21:30 由 LLM 生成（同 weekStart 重复生成 = 覆盖，weekStart 周一 epochDay） */
-@Entity(
-    tableName = "ai_weekly_reports",
-    indices = [Index(value = ["weekStart"], unique = true)],
-)
-data class AiWeeklyReport(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val weekStart: Long,  // 周一 epochDay
-    val weekEnd: Long,    // 周日 epochDay
-    val content: String,
-    val createdAt: Long = System.currentTimeMillis(),
-)
+/** 洞察周期常量（存进 [AiInsight.period] 的字面量，别处一律引用这里） */
+object InsightPeriod {
+    const val DAILY = "DAILY"
+    const val WEEKLY = "WEEKLY"
+    const val MONTHLY = "MONTHLY"
+
+    /** 展示顺序：今日 → 本周 → 本月（UI 分组用；也决定闹钟 requestCode 的偏移，别调） */
+    val ORDER = listOf(DAILY, WEEKLY, MONTHLY)
+
+    /** 展示用短标签 */
+    fun label(period: String): String = when (period) {
+        WEEKLY -> "本周"
+        MONTHLY -> "本月"
+        else -> "今日"
+    }
+}
 
 /**
  * AI 生图记录（v0.40.0）：图库不只是成功图片的相册，而是完整生成记录——
@@ -305,7 +349,9 @@ data class ImageGenerationRecord(
  * 记账流水（v0.42.0）：一笔收入或一笔支出。
  *
  * 设计取舍：
- * - **没有分类/分组字段**（用户明确不要）——一条流水只需要知道"多少钱 + 进还是出 + 怎么来的"。
+ * - **分类是"可选标签"**：[category] 存的是预设分类的**名字**（空串 = 未分类）。
+ *   v0.83.0 之前这里明确不要分类字段，v0.83.0 用户点名要回来 —— 但仍然是**轻量的**：
+ *   只是一个展示用标签，不做分组、不做小计、不进统计口径（那些仍按收支方向算）。
  * - **现金余额不入库**：余额 = 全部流水的有符号累加，由 [LedgerMath] 纯函数算出。
  *   存余额字段就要维护一致性（删一条流水得回滚余额），而流水是唯一事实来源，累加永远自洽。
  * - [amountCents] 用「分」存储（Long），避免 Double 累加误差；展示层再除以 100。
@@ -322,6 +368,13 @@ data class LedgerEntry(
     val amountCents: Long,
     /** 备注（手动录入可填；语音/识图自动提取的原始描述也放这里） */
     val note: String = "",
+    /**
+     * 分类名（v0.83.0）：预设名单里的名字之一，空串 = 未分类。
+     * 名单见 [com.menghuan.app.ui.ledger.LedgerCategory]；库里只存名字、不存 emoji，
+     * 换图标/加分类都不用动数据。
+     */
+    @ColumnInfo(defaultValue = "")
+    val category: String = "",
     /** 录入来源：manual / voice / image */
     @ColumnInfo(defaultValue = "manual")
     val source: String = LedgerSource.MANUAL,
@@ -345,11 +398,11 @@ object LedgerSource {
 }
 
 /**
- * 每日建议（v0.42.0）：独立于「AI 洞察 / AI 周报」的第三条 AI 产出链路。
+ * 每日建议（v0.42.0）：独立于「AI 洞察」的第三条 AI 产出链路。
  *
  * 与洞察的区别：洞察是「回看过去」的行为模式总结（长期累积，不删）；
  * 每日建议是「面向今天」的一条可执行建议，每天一条，可长按转成任务。
- * 同 [day] 唯一索引 → 重复生成即覆盖（与 [AiWeeklyReport] 同套路，不堆垃圾数据）。
+ * 同 [day] 唯一索引 → 重复生成即覆盖，不堆垃圾数据。
  */
 @Entity(
     tableName = "daily_suggestions",

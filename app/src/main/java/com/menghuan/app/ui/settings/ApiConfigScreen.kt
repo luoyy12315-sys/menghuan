@@ -2,6 +2,7 @@ package com.menghuan.app.ui.settings
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -149,6 +150,7 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
 
     // 本月「输入 token / 其中缓存命中」（v0.69.0）：把"前缀稳不稳"变成看得见的数。
     // 服务商没回 usage 时两个数都是 0 —— **这时一行都不显示**，不画个 0% 骗用户去改本来就对的前缀。
+    // 注意口径：这里是**所有模型加总**，下面每张卡写的是**这个模型自己**的账，两个数不一样是正常的。
     val cacheUsage by app.settingsRepository.monthlyCacheUsage
         .collectAsState(initial = Triple("", 0, 0))
 
@@ -168,9 +170,10 @@ fun ApiConfigScreen(onBack: () -> Unit, kind: ApiModelKind) {
             Spacer(Modifier.height(8.dp))
         }
 
-        // 本月用量按模型查表（v0.56.8 用户点名：**直接显示在模型卡片上、模型名的右边**，
-        // 文字是「共消耗 X tokens」，字体沿用行内原来的小字）。
-        // 服务商在响应里回了 usage 才计（对话/提炼/周报/Agent/识图/主动关心/通话都算，v0.82.0 补齐盲区）。
+        // 本月用量按模型查表（v0.56.8）。
+        // v0.91.0：从"卡片行尾"改成"卡片第二行副标题"（见 ModelRow / NeuSheetRow.extra）——
+        // 行尾那份只有"剩余宽度"能用，模型名/地址一长就被压成竖排单字（真机截图）。
+        // 服务商在响应里回了 usage 才计（对话/提炼/Agent/识图/主动关心/通话都算，v0.82.0 补齐盲区）。
         val usageByModel by app.settingsRepository.monthlyUsageByModel
             .collectAsState(initial = "" to emptyList())
         val usageOf = usageByModel.second.associateBy { it.model }
@@ -395,20 +398,6 @@ private fun ModelRow(
     onSwitch: () -> Unit,
     onOpenDetail: () -> Unit,
 ) {
-    // 右侧挂一句「共消耗 X tokens」（字体与行内小字一致）；0 就不占位。
-    // 有缓存读数（prompt>0）时顺手带上命中率——用户选型时能直接看出哪个模型缓存友好。
-    val usageSlot: (@Composable () -> Unit)? = if (usageTokens > 0) {
-        {
-            Text(
-                "共消耗 " + com.menghuan.app.data.UsageTracker.formatTokens(usageTokens) + " tokens" +
-                    (usageCacheRate?.let { " · 缓存 " + kotlin.math.round(it * 100).toInt() + "%" } ?: ""),
-                fontSize = 12.sp,
-                color = MutedText,
-            )
-        }
-    } else {
-        null
-    }
     NeuSheetRow(
         icon = icon,
         title = profile.name,
@@ -419,10 +408,26 @@ private fun ModelRow(
         },
         selected = isDefault,
         showCheck = false,
-        trailing = usageSlot,
+        // 本月用量（v0.56.8）挂成**第二行副标题**而不是行尾 trailing（v0.91.0）：
+        // trailing 只有"剩余宽度"可用，模型名/地址一长就被压成竖排单字（真机截图：
+        // "DeepSeek" 竖着排、卡片撑高一倍）。副标题有固定行宽 + maxLines=1，
+        // 不会吊死标题列，也永远不会竖排。
+        extra = usageLine(usageTokens, usageCacheRate),
         onClick = onSwitch,
         onChevronClick = onOpenDetail,
     )
+}
+
+/**
+ * 模型行的用量读数行（v0.91.0）：`本月 46.3万 tokens · 缓存 47%`。
+ *
+ * 0 = 服务商从没回过 usage，**整行不出现**（不画个 0 骗用户）；
+ * 缓存那一截只在真有读数（prompt>0）时才拼——"没读数"与"0%"是两回事（v0.69.0 定口径）。
+ */
+private fun usageLine(tokens: Int, cacheRate: Double?): String? {
+    if (tokens <= 0) return null
+    return "本月 " + com.menghuan.app.data.UsageTracker.formatTokens(tokens) + " tokens" +
+        (cacheRate?.let { " · 缓存 " + kotlin.math.round(it * 100).toInt() + "%" } ?: "")
 }
 
 /**
@@ -606,6 +611,10 @@ private fun ModelEditorDialog(
 /**
  * 「获取可用模型」的列表态（v0.57）：列表，点一行 = 把模型 ID 填进「模型」栏。
  *
+ * v0.93.0 加顶部搜索框：服务商的 `/models` 动辄上百个（带日期后缀的同族模型一大串），
+ * 翻着找不如直接搜。**按模型 ID 子串匹配、不区分大小写**，关键词一清就恢复完整列表
+ * （不做模糊排序、不分词——ID 是"全小写 + 连字符"的机器写法，子串足够准）。
+ *
  * ⚠️ 列表**必须给死高度**：外层弹层是 `verticalScroll` 的 Column，里面再放没有界高度的
  * LazyColumn 会直接崩（"measured with infinity maximum height constraints"）。
  *
@@ -619,14 +628,49 @@ private fun ModelPickerContent(
     onPick: (String) -> Unit,
     onBack: () -> Unit,
 ) {
+    var query by remember { mutableStateOf("") }
+    val keyword = query.trim()
+    val filtering = keyword.isNotEmpty()
+    val matched = remember(models, keyword) {
+        if (keyword.isEmpty()) models else models.filter { it.contains(keyword, ignoreCase = true) }
+    }
+
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         NeuTextButton("← 返回", onClick = onBack)
         Spacer(Modifier.width(12.dp))
-        Text("共 ${models.size} 个", fontSize = 12.sp, color = MutedText)
+        Text(
+            if (filtering) "匹配 ${matched.size} / ${models.size} 个" else "共 ${models.size} 个",
+            fontSize = 12.sp,
+            color = MutedText,
+        )
     }
     Spacer(Modifier.height(10.dp))
+    NeuTextField(
+        value = query,
+        onValueChange = { query = it },
+        label = "搜索模型",
+        placeholder = "按名称或 ID 过滤",
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(10.dp))
+    if (matched.isEmpty()) {
+        // 搜不到要明说"筛没了"，不能给一个空列表让人以为这家没模型（未加载 / 空 / 有数据三态）
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(120.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (filtering) "没有匹配「$keyword」的模型" else "这家没有返回模型",
+                fontSize = 13.sp,
+                color = MutedText,
+            )
+        }
+        return
+    }
     LazyColumn(Modifier.fillMaxWidth().height(320.dp)) {
-        items(models) { id ->
+        items(matched) { id ->
             NeuSheetRow(icon = icon, title = id, subtitle = "", onClick = { onPick(id) })
             Spacer(Modifier.height(8.dp))
         }

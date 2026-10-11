@@ -172,10 +172,13 @@ class AiPromptsTest {
         assertTrue(manual.contains("**默认关、每个角色单独配**"))
         // 「卡片右边就是开关」那句措辞在 v0.54.6（改「电话」行 + 底部弹层）就被改掉了，
         // 现行形态由 v0546 / v0566 两处断言守着，这里不再重复钉一句已经不存在的话
-        assertTrue(manual.contains("各人设互不影响"))
+        // v0.94：整句随「电话」段重写被移除（不再有「几天没聊」那套按人设差异化的说法），
+        // 现行口径是「每个角色各有一套」——由 v0_94 那条测试钉，这里不再钉已不存在的话
+        assertTrue(manual.contains("主动关心是**每个角色各有一套**时间段与每天最多几条"))
         assertTrue(manual.contains("接通后由 AI 先开口"))
         assertTrue(manual.contains("22:30–08:00 一律不打"))
-        assertTrue(manual.contains("每个 AI 每天最多一通"))
+        // v0.94：每天一通 → 可设「每天最多几通」1–9
+        assertTrue(manual.contains("**每天最多几通**，同一个弹层里填，1–9"))
         assertTrue(manual.contains("没接会留一句话给你"))
         assertTrue(manual.contains("待会打给我"))
         assertTrue(manual.contains("全屏通知"))
@@ -381,8 +384,9 @@ class AiPromptsTest {
         assertTrue(manual.contains("右上角**三个点打开的是一个整页**"))
         // v0.54.6：整页改灰线行、三个入口改成底部弹层 —— 具体措辞见 v0546，这里只钉仍成立的
         // v0.56.8 第二批：措辞补上"每个角色各一套"（见 v0568c），这里跟着改成最终文案
-        assertTrue(manual.contains("**人设主动关心**（点开是从底部升上来的弹层：这个角色开不开、**这个角色的发送时间段**、**这个角色每天最多几条**——条数**填什么数字都行**"))
-        assertTrue(manual.contains("不超过就行）——最后三项只对这个角色生效。"))
+        // v0.94：行更名「主动关心」+ 弹层改成三开关（见 v0_94 那条测试），旧枚举措辞作废
+        assertFalse(manual.contains("**人设主动关心**（点开是从底部升上来的弹层：这个角色开不开、**这个角色的发送时间段**、**这个角色每天最多几条**——条数**填什么数字都行**"))
+        assertTrue(manual.contains("不超过就行；以及**每天最多几通电话**，1–9）——最后三项只对这个角色生效。"))
         assertFalse(manual.contains("右上角**三个点**是一个菜单（共九项）"))
         assertFalse(manual.contains("另外还有**专属铃声**、**定时主动消息**、**人设主动关心**（这三项只对这个角色生效）。"))
         // 输入栏概述里那句"三个点 = 编辑人设"也跟着改成整页会话设置
@@ -396,7 +400,10 @@ class AiPromptsTest {
         assertFalse(manual.contains("**定时主动消息与专属铃声在每个角色会话右上角 ⋮ 打开的整页设置里**"))
         assertFalse(manual.contains("定时主动消息与专属铃声在每个角色会话右上角 ⋮ 那一页里"))
         assertTrue(manual.contains("**提醒与通知**（任务到点提醒 / 手机操作进行中）、"))
-        assertTrue(manual.contains("入口 每个角色会话右上角 ⋮ → 整页设置里的「定时主动消息」"))
+        // v0.89.0：会话设置页那一行现在的真名是「定时消息」（v0.58.1 起条目收进弹层），
+        // 这里跟着改成最终文案（这次改动的缘由见 v0_89_0 那条测试）。
+        // v0.94：那一行又更名「定时」（定时电话并进同一张列表），跟着改成最终文案
+        assertTrue(manual.contains("入口 每个角色会话右上角 ⋮ → 整页设置里的「定时」（它和任务提醒是同一类「到点提醒」的行为；v0.94 起**定时电话也在这张列表里**"))
         assertTrue(manual.contains("设置主页的**「提醒与通知」卡**点进去只剩两个开关"))
         assertFalse(manual.contains("**提醒与通知**（定时主动消息 / 任务到点提醒 / 手机操作进行中 / 人设主动关心）、"))
         assertFalse(manual.contains("定时主动消息在「提醒与通知」里"))
@@ -436,7 +443,8 @@ class AiPromptsTest {
     fun `v0545 主动打电话改按角色与接听延迟卡片进手册`() {
         // ① 入口与开关性质：总开关没了，配置在**每个角色**的整页设置里
         // （v0.54.6：卡片改叫「电话」、开关挪进底部弹层；v0.54.7：弹层内容与定时消息对齐 —— 见 v0547）
-        assertTrue(manual.contains("（入口 **每个角色**会话右上角 ⋮ → 整页设置里的「**电话**」行，点开是**底部弹层**"))
+        // v0.94：入口改到「主动关心」行 → 弹层里的「主动打电话」开关
+        assertTrue(manual.contains("入口 每个角色会话右上角 ⋮ → 整页设置里的「**主动关心**」行 → 弹层里「**主动打电话**」开关"))
         assertFalse(manual.contains("（入口 设置 → 通话行为 → 「AI 主动打电话」，**总开关默认关**）"))
         assertFalse(manual.contains("打开总开关后，**每个 AI 人设单独配**三样"))
         // 点名要的一通不再提"总开关"
@@ -446,8 +454,9 @@ class AiPromptsTest {
         assertTrue(manual.contains("设置 → 权限页里的「全屏通知（锁屏来电）」就有直达系统设置的按钮"))
         assertFalse(manual.contains("设置 → 通话行为 → AI 主动打电话那一页里就有直达系统设置的按钮"))
         // ② 语音章总述 / 设置页怎么用的路径清单：主动打电话归到角色页、通话行为里只剩铃声
-        assertTrue(manual.contains("**语音通话铃声在「通话行为」里；允许主动打电话、定时主动消息与专属铃声都在"))
-        assertTrue(manual.contains("语音通话铃声在「通话行为」里、允许主动打电话与定时主动消息还有专属铃声"))
+        // v0.94：主动打电话/定时都已搬出这句话所在的位置，改钉新表述
+        assertTrue(manual.contains("**语音通话铃声在「通话行为」里；专属铃声在每个角色会话右上角 ⋮ 打开的整页设置里"))
+        assertFalse(manual.contains("允许主动打电话、定时主动消息与专属铃声都在每个角色会话右上角 ⋮ 打开的整页设置里"))
         assertTrue(manual.contains("**通话行为**（语音通话铃声）、"))
         // v0.56.5 起这句话里多了「接听延迟」——措辞已随该版 replace 改掉，这里对齐到新形态
         assertTrue(manual.contains("模型配置点进去还有五张子卡，通话行为里是「语音通话铃声」与「接听延迟」两张"))
@@ -476,12 +485,16 @@ class AiPromptsTest {
     fun `v0546 会话设置灰线行与长按菜单瘦身进手册`() {
         // ① 会话设置整页改灰线行；三个入口（电话 / 铃声 / 定时消息）
         assertTrue(manual.contains("整页是**一条条用灰线分隔的行**（不再用卡片）"))
-        assertTrue(manual.contains("**电话**（点开是底部弹层：主动电话 / 定时电话，**点标题才展开细项**）"))
+        // v0.94：「电话」行已删（主动电话并入主动关心、定时电话并入定时），旧行名作废
+        assertFalse(manual.contains("**电话**（点开是底部弹层：主动电话 / 定时电话，**点标题才展开细项**）"))
         assertTrue(manual.contains("**铃声**（点开是底部弹层的铃声列表）"))
-        assertTrue(manual.contains("**定时消息**（点开就是添加弹层，"))
+        // v0.94：「定时消息」行更名「定时」，旧行名作废
+        assertFalse(manual.contains("**定时消息**（点开就是添加弹层，"))
         assertFalse(manual.contains("联网（开/关）、音色、模型，另外还有**专属铃声**、**定时主动消息**、"))
         // 「允许主动打电话」卡片 → 「电话」行 + 弹层
-        assertTrue(manual.contains("每个角色会话右上角 ⋮ 的整页设置里有一行**「电话」**（点开是底部弹层）"))
+        // v0.94：「电话」行没了，入口改到「主动关心」弹层（见 v0_94 那条测试）
+        assertFalse(manual.contains("每个角色会话右上角 ⋮ 的整页设置里有一行**「电话」**（点开是底部弹层）"))
+        assertFalse(manual.contains("允许主动打电话、定时主动消息与专属铃声都在每个角色会话右上角 ⋮ 打开的整页设置里"))
         assertFalse(manual.contains("卡片右边就是开关；点卡片右侧的箭头弹出详情"))
         assertFalse(manual.contains("① 每天几点检查（默认 21:00）、② 距上次跟 TA 聊天多久没交流才打"))
         // ② 长按菜单：只留图标、缩小
@@ -577,10 +590,12 @@ class AiPromptsTest {
         assertTrue(manual.contains("https://mimo.mi.com/docs/zh-CN/api/audio/tts"))
         assertTrue(manual.contains("实名认证"))
         assertTrue(manual.contains("【语音条】"))
-        // 提示词段数跟着改了（v0.68.0 补每日建议：八段 → 九段）
-        assertTrue(manual.contains("九段提示词都可编辑"))
+        // 提示词段数跟着改过多次（v0.68.0 八→九、v0.87.0 九→八、v0.88.0 八→十）。
+        // ⚠️ 这里**不钉具体数字**（下一版一改就必红），只钉"段数说明在、且旧数字不在"。
+        assertTrue(manual.contains("段提示词都可编辑"))
         assertFalse(manual.contains("七段提示词都可编辑"))
         assertFalse(manual.contains("八段提示词都可编辑"))
+        assertFalse(manual.contains("九段提示词都可编辑"))
         assertTrue(manual.contains("AI 语音条策略"))
     }
 
@@ -656,11 +671,12 @@ class AiPromptsTest {
     @Test
     fun `v0566 定时电话与接听延迟自填秒数进手册`() {
         // ① 电话弹层：两块（总闸 + 定时电话），不再有"多久没聊才打"
-        assertTrue(manual.contains("**电话**（点开是底部弹层：主动电话 / 定时电话，**点标题才展开细项**）"))
+        // v0.94：「电话」行与弹层整个删除（主动电话并入主动关心、定时电话并入定时），旧措辞全作废
+        assertFalse(manual.contains("**电话**（点开是底部弹层：主动电话 / 定时电话，**点标题才展开细项**）"))
         assertFalse(manual.contains("允许主动打电话 / 几点打过来 / 说什么 / 多久没聊才打"))
-        assertTrue(manual.contains("弹层里两块（**点标题才展开**，页内没有小字说明）—— "))
+        assertFalse(manual.contains("弹层里两块（**点标题才展开**，页内没有小字说明）—— "))
         assertFalse(manual.contains("弹层里两块 —— ① 开关「**允许主动打电话**」（总闸，关掉则下面一条都不会打）；"))
-        assertTrue(manual.contains("② 「**定时电话**」：展开后是一条条定时电话"))
+        assertFalse(manual.contains("② 「**定时电话**」：展开后是一条条定时电话"))
         assertTrue(manual.contains("填**每天几点打给你**和**接通后说什么**"))
         // v0.56.7：这条"不再有"的话反过来 —— 用户要求把「X 天没聊就主动打」加回来（见 v0567）
         assertFalse(manual.contains("**已经不再有「多久没聊才打」这种触发方式**。"))
@@ -681,18 +697,17 @@ class AiPromptsTest {
     @Test
     fun `v0567 主动电话与半区手势与按模型用量进手册`() {
         // ① 电话：更名 + 点标题展开
-        assertTrue(manual.contains("弹层里两块（**点标题才展开**，页内没有小字说明）—— "))
-        // v0.56.8：措辞改成"展开后**只填**几天没聊"（「每天几点检查」已删，见 v0568）
-        assertTrue(manual.contains("① 「**主动电话**」：展开后只填**几天没聊就主动打**（自己填 1–30 天，默认 3 天）—— "))
+        // v0.94：「几天没聊就主动打」整条下线（并入主动关心的随机时刻），旧措辞全作废
+        assertFalse(manual.contains("① 「**主动电话**」：展开后只填**几天没聊就主动打**（自己填 1–30 天，默认 3 天）—— "))
         assertFalse(manual.contains("与**每天几点检查**（默认 21:00）"))
-        assertTrue(manual.contains("② 「**定时电话**」：展开后是一条条定时电话"))
+        assertFalse(manual.contains("② 「**定时电话**」：展开后是一条条定时电话"))
         assertFalse(manual.contains("① 开关「**允许主动打电话**」"))
         assertFalse(manual.contains("**已经不再有「多久没聊才打」这种触发方式**。"))
         // ② 按住说话：按屏幕左右半区判档
         assertTrue(manual.contains("**左半区 = 取消、右半区 = 转文字、正中间那条灰带 = 录音中**"))
         assertTrue(manual.contains("两块环带选择区"))
         assertFalse(manual.contains("两块扇形选择区"))
-        // ③ 用量：v0.56.8 起挪到模型卡片右侧（见 v0568）
+        // ③ 用量：v0.56.8 起挪到模型卡片上（位置又在 v0.91.0 从"右侧"改成"下方"，见 v0820 那条）
         assertFalse(manual.contains("**本月 API 用量，按模型分别列出各自的 tokens**"))
         assertFalse(manual.contains("面板底部显示**本月 API 用量**（服务商返回用量数据时才统计）。"))
     }
@@ -700,10 +715,13 @@ class AiPromptsTest {
     /** v0.56.8：主动电话删掉「每天几点检查」/ 用量改显示在模型卡片上。 */
     @Test
     fun `v0568 主动电话去检查时刻与用量进模型卡进手册`() {
-        assertTrue(manual.contains("展开后只填**几天没聊就主动打**（自己填 1–30 天，默认 3 天）—— "))
-        assertTrue(manual.contains("每天固定检查一次（时刻沿用这个角色存着的值，默认 21:00）"))
+        // v0.94：「几天没聊就主动打」与「每天固定检查一次」整套说法随那条触发链下线
+        assertFalse(manual.contains("展开后只填**几天没聊就主动打**（自己填 1–30 天，默认 3 天）—— "))
+        assertFalse(manual.contains("每天固定检查一次（时刻沿用这个角色存着的值，默认 21:00）"))
         assertFalse(manual.contains("与**每天几点检查**（默认 21:00）"))
-        assertTrue(manual.contains("**每个模型卡片的右侧直接显示这个模型本月消耗了多少**"))
+        // ⚠️ 这里只钉"用量进卡片了"这个不随位置变的事实：措辞在 v0.91.0 由"右侧"改成"下方"，
+        // 钉死方向词等于给下一版埋一颗必红的雷（手册断言只钉事实、不钉版本相关措辞）。
+        assertTrue(manual.contains("**每个模型卡片的") && manual.contains("直接显示这个模型本月消耗了多少**"))
         assertFalse(manual.contains("面板底部显示**本月 API 用量，按模型分别列出各自的 tokens**"))
     }
 
@@ -711,7 +729,8 @@ class AiPromptsTest {
     @Test
     fun `v0568b 主动关心随机时间与搜索框改造进手册`() {
         // ① 主动关心：开关进弹层 + 时间段 + 每天条数 + 贴合时间（最终措辞见 v0568c）
-        assertTrue(manual.contains("**人设主动关心**（点开是从底部升上来的弹层：这个角色开不开"))
+        // v0.94：行更名「主动关心」+ 弹层改三开关，旧行名措辞作废
+        assertFalse(manual.contains("**人设主动关心**（点开是从底部升上来的弹层：这个角色开不开"))
         assertTrue(manual.contains("它是**上限不是定额**：当天在这个数以内随机发几条，不超过就行"))
         assertFalse(manual.contains("人设会在**你设的时间段里随机**发来主动问候"))
         assertFalse(manual.contains("人设每晚最多一条主动问候"))
@@ -734,7 +753,8 @@ class AiPromptsTest {
         assertTrue(manual.contains("条数**填什么数字都行**，它是**上限不是定额**：当天在这个数以内随机发几条，不超过就行"))
         // ② 每个角色各一套
         assertTrue(manual.contains("主动关心是**每个角色各有一套**时间段与每天最多几条"))
-        assertTrue(manual.contains("**这个角色的发送时间段**、**这个角色每天最多几条**"))
+        // v0.94：「这个角色每天最多几条」→「每天最多几条」（前面已有「这个角色的发送时间段」）
+        assertTrue(manual.contains("外加这个角色的**发送时间段**、**每天最多几条**"))
         assertFalse(manual.contains("**发送时间段**、**每天最多几条**）——最后三项"))
         // ③ 消息页没有搜索框也没有放大镜、连"可搜人设名/身份"那句尾巴也没有；设置页那只放大镜仍在
         assertTrue(manual.contains("顶部只有标题，**既没有搜索框也没有放大镜**——消息页**不做搜索**。"))
@@ -904,7 +924,7 @@ class AiPromptsTest {
         assertFalse(manual.contains("AI 平时**读不到**你的备忘"))
         // v0.63.0 记账本流水长按编辑（同一段 replace 里补的，锚点句丢了就是整段没换上）：
         // 这一句在备忘段落**之后**，v0.73.0 换段落时特意留在锚点之外，必须还在
-        assertTrue(manual.contains("「编辑这笔」改收支方向/金额/备注"))
+        assertTrue(manual.contains("「编辑这笔」改收支方向/金额/备注/分类"))
         // 旧形状必须整段消失
         assertFalse(manual.contains("一条备忘 = 正文 + 可标的时间 + 可标的地点 + 可置顶"))
         assertFalse(manual.contains("点某条 = 打开编辑"))
@@ -980,8 +1000,9 @@ class AiPromptsTest {
         // ⚠️ 这句在 v0.67.0 被改写（那一页顶上多了一行「动作幅度」，"只做绑定"的说法不再完整）：
         // 守的是"这页不能编辑动作"这个事实还在，措辞见 `v0670 …` 那条的成对断言。
         assertTrue(manual.contains("这一页只做挑选，不做编辑动作"))
-        // 角色空间
-        assertTrue(manual.contains("**会话设置 → 「角色空间」**"))
+        // 角色空间：v0.92.0 已从会话设置搬到「我的数据」页，会话设置页本身已无此行
+        assertTrue(manual.contains("「角色空间」那一行 v0.92.0 已从这一页删掉"))
+        assertTrue(manual.contains("入口：**「我的数据」页 → 「角色空间」卡 → 选一个角色**"))
         assertTrue(manual.contains("点头部 → 摇头；点身体 → 摆手；点到旁边空白 → 随机播一个趣味动作"))
         // 动作库
         assertTrue(manual.contains("（四态默认 + 摆手 / 摇头 / 劈叉 / 翻跟斗）"))
@@ -1045,7 +1066,8 @@ class AiPromptsTest {
         assertTrue(manual.contains("清空一家也不碰另外两家"))
         assertTrue(manual.contains("**通话背景**（v0.66.0）：入口在会话设置页那行「通话背景」，点开只有两档"))
         assertTrue(manual.contains("**只有视频通话铺背景**，语音通话维持现在的页面底色"))
-        assertTrue(manual.contains("「视频通话形象」「通话背景」「角色空间」「通话动作」「聊天背景」这几行"))
+        // v0.92.0：「角色空间」已不在会话设置这几行里（搬到「我的数据」页），会话设置只剩四行纯入口
+        assertTrue(manual.contains("「视频通话形象」「通话背景」「通话动作」「聊天背景」这几行都是**一行高的纯入口**"))
         // 旧措辞（只给自定义那一家发过保证）
         assertFalse(manual.contains("自定义家有**独立的一份 Key**，切回博查 / Tavily 不会互相覆盖掉。"))
         assertFalse(manual.contains("「视频通话形象」「角色空间」「通话动作」「聊天背景」四行都是**一行高的纯入口**"))
@@ -1098,17 +1120,18 @@ class AiPromptsTest {
         assertTrue(manual.contains("设置 → 提示词库 → 每日建议策略"))
         assertFalse(manual.contains("2. 数据：顶部一张「本周卡」合并展示"))
         // ② 会话设置：行名跟着 v0.58.1 / v0.64 / v0.66 的结构走，"只存不显"必须作废
-        assertTrue(manual.contains("**视频通话形象**、**通话背景**、**角色空间**、**通话动作**"))
+        // v0.92.0：「角色空间」从会话设置搬走，视觉形象这一组只剩视频通话形象 / 通话背景 / 通话动作 / 聊天背景
+        assertTrue(manual.contains("视觉形象（视频通话形象 / 通话背景 / 通话动作 / 聊天背景）"))
         assertTrue(manual.contains("「角色立绘 / Live 2D 只存不显」这句话已经作废"))
         assertTrue(manual.contains("整页是五组平铺"))
         assertFalse(manual.contains("仍是只存不显"))
         assertFalse(manual.contains("）、角色立绘、Live 2D、聊天背景、联网（开/关）、音色、模型、"))
-        // ③ 提示词库：八段 → 九段，框架段数五 → 六
-        assertTrue(manual.contains("**九段提示词都可编辑**"))
+        // ③ 提示词库：段数与框架段数都在涨（v0.68.0 八→九、v0.87.0 九→八、v0.88.0 八→十）。
+        // ⚠️ 不钉具体数字，只钉"每日建议策略已进列表"与"旧数字不在"。
+        assertTrue(manual.contains("段提示词都可编辑"))
         assertTrue(manual.contains("每日建议策略**（v0.68.0 补上"))
-        assertTrue(manual.contains("后六段的**输出格式框架由代码硬编码不可改**"))
         assertFalse(manual.contains("**八段提示词都可编辑**"))
-        assertFalse(manual.contains("后五段的**输出格式框架"))
+        assertFalse(manual.contains("**九段提示词都可编辑**"))
         // ④ 平板 / 折叠屏：双栏与版心是自动的，没有开关
         assertTrue(manual.contains("⚠️ **平板 / 折叠屏 / 大屏**"))
         assertTrue(manual.contains("**点左边一行是切换右边，不是 push 新页面**"))
@@ -1416,6 +1439,16 @@ fun `v0_82_0 手册写明模型卡命中率与记忆待审气泡`() {
         "旧的模型卡片用量句还留在手册里",
         manual.contains("（「共消耗 X tokens」，服务商返回用量数据时才统计）；没消耗过就不显示这一句。"),
     )
+    // ① v0.91.0：用量从卡片「右侧」改成「下方」（行尾会挤成竖排单字）——
+    //     成对断言：新措辞在、「右侧」的旧措辞一次不剩
+    assertTrue(
+        "v0.91.0 用量改挂卡片下方没写进手册",
+        manual.contains("**每个模型卡片的下方直接显示这个模型本月消耗了多少**"),
+    )
+    assertFalse(
+        "旧的「每个模型卡片的右侧直接显示…」还留在手册里",
+        manual.contains("**每个模型卡片的右侧直接显示这个模型本月消耗了多少**"),
+    )
     // ② 新：记忆待审气泡
     assertTrue("记忆待审气泡没写进手册", manual.contains("💭 我记住了 N 件新事"))
     assertTrue("要写明点气泡跳记忆页", manual.contains("点它直接跳「TA 的记忆」页"))
@@ -1535,6 +1568,44 @@ fun `P3 手册写明 MCP 服务器入口与确认口径`() {
 }
 
 /**
+ * v0.83.0：记账分类 —— 手册同步。
+ *
+ * 行为变化：① 记一笔表单里多了分类滚轮（用户点名要的分类回来了，v0.42.0 定的是"不要分类"）；
+ * ② 流水长按「编辑这笔」现在也能改分类。按 §零.5 进手册。
+ *
+ * 断言写"新文案挂在锚点后面"整段子串（含 `\n` + 15 空格缩进），再补"分类进编辑项"——
+ * 只写后者是假绿陷阱（见上文纪律）。
+ */
+@Test
+fun `v0830 手册写明记账分类`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    assertTrue("分类没写进记一笔那段", manual.contains("记一笔时还能给这笔挑个**分类**"))
+    assertTrue("分类预设没举例", manual.contains("餐饮、购物、娱乐、交通这些"))
+    // v0.91.0：滚轮换成一行点选 chips —— 成对断言：新措辞在、"滑到凹槽"的旧措辞一次不剩
+    assertTrue("点选式分类没写进手册", manual.contains("点哪个哪个就选中"))
+    assertFalse("旧的分类滚轮描述还留在手册里", manual.contains("**可以一直往两边滑的**"))
+    assertFalse("旧的凹槽焦点描述还留在手册里", manual.contains("滑到正中那个凹槽里就是选中的"))
+    assertFalse("旧的滑回措辞还留在手册里", manual.contains("滑回最前面那个「未分类」"))
+    assertTrue("未分类出口没写进手册", manual.contains("点最前面那个「未分类」"))
+    assertTrue("分类不影响算法没写进手册", manual.contains("分类只显示在流水行上，不影响收支与余额的算法"))
+    // v0.91.0：流水按天分组 —— 新措辞在
+    assertTrue("流水按天分组没写进手册", manual.contains("流水**按天分段显示**"))
+    assertTrue("日期小标题的形态没写进手册", manual.contains("今天 · 10月10日"))
+    assertTrue("行内只留时分没写进手册", manual.contains("行内只留时分"))
+    assertTrue(
+        "分类条目没挂在「删除这笔」后面（replace 静默落空了）",
+        manual.contains("「删除这笔」点一下就删。\n              记一笔时还能给这笔挑个**分类**"),
+    )
+    assertEquals(
+        "分类条目在手册里出现了不止一次",
+        manual.indexOf("记一笔时还能给这笔挑个**分类**"),
+        manual.lastIndexOf("记一笔时还能给这笔挑个**分类**"),
+    )
+    // 编辑那一项的措辞（v0.63.0 那句）必须扩到含分类
+    assertTrue(manual.contains("「编辑这笔」改收支方向/金额/备注/分类（发生时间和录入来源不动）"))
+}
+
+/**
  * P4 总自检：补丁链全量命中（与 debug 包启动自检读同一份记录
  * `AiPrompts.assistantManualPatchMisses`，MenghuanApp.onCreate 失败时写崩溃日志页）。
  * 红了 = 某条 `.manualPatch` 的旧措辞没对上——多半是锚点被上游改动冲掉，
@@ -1546,6 +1617,851 @@ fun `P4 手册补丁链全部命中`() {
     assertTrue(
         "手册补丁未命中 ${misses.size} 条：\n" + misses.joinToString("\n"),
         misses.isEmpty(),
+    )
+}
+
+/**
+ * v0.84.0：AI 引用任务的口径（用户点名「聊天时老是时不时提到无关紧要的任务，
+ * 包括已经完成的和已经过时的和很久之后的」）必须写进助手手册。
+ *
+ * 断两条：① 新措辞挂在锚点后面（整段子串，含 `\n` + 12 空格缩进——只断"新措辞在"
+ * 是假绿，replace 落在别处也能过）；② 旧措辞（「未来某天要做的事」）不在——
+ * 它在补丁后仍作为锚点保留，所以这里只断新增句本身不重复。
+ */
+@Test
+fun `v0_84_0 手册补上 AI 引用任务的口径`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    assertTrue("引用口径没写进手册", manual.contains("**AI 在聊天里对任务的引用是收着的（v0.84.0）**"))
+    assertTrue("只许提今天/明天没写进手册", manual.contains("只允许顺口提「今天该做」和「明天到期」的"))
+    assertTrue("已完成不主动提没写进手册", manual.contains("已完成的任务不主动当话题"))
+    assertTrue("逾期不主动催没写进手册", manual.contains("逾期没做的不主动催（你问起才说）"))
+    assertTrue("很久以后不提没写进手册", manual.contains("3 天以后的提都不提"))
+    assertTrue("用户反馈缘由没写进手册", manual.contains("完成的、过时的、很久以后的都有"))
+    assertTrue("建议变严没写进手册", manual.contains("「多喝水」「加油」这种空泛愿望不会再进任务库"))
+    assertTrue(
+        "引用口径没挂在「3. 任务」段末（replace 静默落空了）",
+        manual.contains("\n            **AI 在聊天里对任务的引用是收着的（v0.84.0）**"),
+    )
+    assertEquals(
+        "引用口径在手册里出现了不止一次",
+        manual.indexOf("**AI 在聊天里对任务的引用是收着的（v0.84.0）**"),
+        manual.lastIndexOf("**AI 在聊天里对任务的引用是收着的（v0.84.0）**"),
+    )
+}
+
+/**
+ * v0.85.0：AI 分得清动态是谁发的（用户点名「AI 发动态分得清是谁发的吗」）必须写进助手手册。
+ *
+ * 断两条：① 新措辞挂在锚点后（整段子串，含 `\n` + `- ` 前缀）；② 不重复。
+ */
+@Test
+fun `v0_85_0 手册补上动态作者身份`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    assertTrue("动态作者身份没写进手册", manual.contains("**她分得清动态是谁发的**（v0.85.0）"))
+    assertTrue("用户标记没写进手册", manual.contains("标「用户」的是你发的"))
+    assertTrue("别的角色标记没写进手册", manual.contains("标「另一位角色」的是你别的角色（别的 AI）发的"))
+    // 动态收口（动态只存于主动关心链）后：名单里根本没有它自己的帖，
+    // 所以"标「你自己」""不会给自己回、也不会给自己点赞"换成了主动链口径
+    assertTrue(
+        "没写明她自己的帖不列进名单",
+        manual.contains("**她自己的帖子根本不会列进名单**（既不会自问自答，也不会给自己点赞）"),
+    )
+    assertFalse("旧的「标你自己」还留在手册里", manual.contains("标「你自己」的是她之前发的"))
+    assertFalse("旧的「不会给自己回、也不会给自己点赞」还留在手册里", manual.contains("她不会给自己回、也不会给自己点赞"))
+    assertTrue(
+        "动态作者身份没挂在 v0.79.0 那条产出句后（replace 静默落空了）",
+        // v0.94 在这两条之间插了一条动态子弹，收口后它改叫「一切动态动作都只在主动时」，钉它的位置
+        manual.contains("- **她的一切动态动作都只发生在主动来找你的时候**（v0.94）"),
+    )
+    assertTrue(
+        "v0.85 动态作者身份被挤离了 v0.79 那条产出句",
+        manual.indexOf("**她分得清动态是谁发的**（v0.85.0）") >
+            manual.indexOf("不会对同一条反复评论。"),
+    )
+    assertEquals(
+        "动态作者身份在手册里出现了不止一次",
+        manual.indexOf("**她分得清动态是谁发的**（v0.85.0）"),
+        manual.lastIndexOf("**她分得清动态是谁发的**（v0.85.0）"),
+    )
+    // v0.79.0 那段（「她会自己来看你的动态」）必须还在 —— 我在编辑时曾误覆盖，这条是回归钉
+    assertTrue("v0.79.0 那段被覆盖了", manual.contains("**她会自己来看你的动态**（v0.79.0）"))
+    // v0.95 把这句改全了（现在交给她的含其他角色的帖），钉新措辞；旧措辞的消失由 v0_95 那条测试钉
+    assertTrue("v0.79.0 那段被覆盖了", manual.contains("App 会把你**和其他角色**最近发的动态一并交给她"))
+}
+
+/**
+ * v0.85.0：记忆不会重复（用户点名「AI 的记忆老是重复的」）必须写进助手手册。
+ *
+ * ⚠️ 这条同时是**防覆盖回归钉**：写 v0.85.0 记忆补丁时锚点落在 v0.70.0 那条长串里，
+ * 若 old 串选错就会把 v0.70.0 整条冲掉。所以这里同时校验 v0.70.0 的原文与新增句都在。
+ */
+@Test
+fun `v0_85_0 手册补上记忆不重复`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+    assertTrue("记忆不重复没写进手册", manual.contains("**记忆不会重复堆**（v0.85.0）"))
+    assertTrue("没说清同一件事只更新原来那条", manual.contains("同一件事只会更新原来那一条"))
+    assertTrue("没解释旧条目怎么办", manual.contains("那是这版之前留下的"))
+    assertTrue(
+        "记忆补丁没挂在 v0.70.0 那句之后（replace 静默落空了）",
+        manual.contains("不是偷看了别的东西。**记忆不会重复堆**（v0.85.0）"),
+    )
+    // v0.70.0 那段必须还在（写这条补丁时曾差点把它冲掉）
+    assertTrue("v0.70.0 的「不吃香菜」示例被覆盖了", manual.contains("你怎么知道我不吃香菜"))
+    assertTrue("v0.70.0 那段被覆盖了", manual.contains("记住的内容**只属于当前这个角色**"))
+    assertEquals(
+        "记忆不重复在手册里出现了不止一次",
+        manual.indexOf("**记忆不会重复堆**（v0.85.0）"),
+        manual.lastIndexOf("**记忆不会重复堆**（v0.85.0）"),
+    )
+}
+
+/**
+ * v0.86.0：手册写明「上下文窗口」与「提炼间隔」两个按角色的新设置。
+ *
+ * 这两件事都是从**用户实际的成本质疑**里长出来的（「塞这么多上下文模型不会花费很多 token 吗」
+ * 「记忆这么频繁触发不会花费很多 token 吗」），所以手册里必须写清：**入口在会话设置**、
+ * **两个数各管什么**、以及**旧版那个 20 万是写死的、跟记忆容量无关**。
+ *
+ * ⚠️ 这条同时是**防覆盖回归钉**：v0.86.0 的补丁锚点落在 v0.85.0 那条的成品尾巴
+ * （"新记的不会再重复。"）上，old 串选错就会把 v0.85.0 整条冲掉。
+ */
+@Test
+fun `v0_86_0 手册写明上下文窗口与提炼间隔可配`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    assertTrue("上下文窗口没写进手册", manual.contains("**上下文窗口与提炼节奏现在都由你定**（v0.86.0"))
+    assertTrue("没说清入口在会话设置", manual.contains("都在**会话设置**里，每个角色各配各的"))
+    assertTrue("没写「记住最近多少字」", manual.contains("**记住最近多少字**"))
+    assertTrue("没写「每隔几轮提炼一次」", manual.contains("**每隔几轮提炼一次**"))
+    assertTrue("没说明越大越贵", manual.contains("**每一轮都要重发**（花更多钱、也更慢）"))
+    // v0.99.0：这条原本断言「手册写明手动提炼不受门槛限制」—— 但**那颗按钮 v0.42.1 就被收敛掉了**，
+    // 界面上一直不存在，手册那句属于对用户的假承诺。这版已更正，所以断言翻面。
+    assertFalse("「不受这个轮数限制，点了就立刻跑」的假承诺又回来了", manual.contains("不受这个轮数限制，点了就立刻跑"))
+    assertTrue(
+        "没写明记忆是自动提炼、没有手动按钮",
+        manual.contains("**记忆是自动提炼的，没有「马上提炼一下」的按钮**"),
+    )
+    assertTrue(
+        "没解释旧的 20 万是写死的",
+        manual.contains("以前这个窗口是**写死的 20 万字**"),
+    )
+    // v0.86.0 后续：摘要整页化（用户点名「对话摘要我也要全屏展示」）。
+    // 入口从"弹层"变成"整页"，手册这句必须跟着改 —— 不改就是骗用户。
+    assertTrue(
+        "没写摘要已整页显示",
+        manual.contains("那一行点进去是**一整个页面**（v0.86.0 起整页显示"),
+    )
+    assertTrue(
+        "没说明页面上半截是窗口、下半截是正文",
+        manual.contains("上半截是「**记住最近多少字**」") && manual.contains("下半截就是这个角色当前的摘要全文"),
+    )
+    assertTrue(
+        "还在说是「半屏弹层」（措辞过期）",
+        manual.contains("以前是个半屏弹层"),
+    )
+    assertTrue(
+        "v0.86.0 补丁没挂在 v0.85.0 那句之后（replace 静默落空了）",
+        manual.contains("新记的不会再重复。\n") && manual.contains("**上下文窗口与提炼节奏现在都由你定**"),
+    )
+    // v0.85.0 那两条必须还在（写这条补丁时最容易冲掉的就是它们）
+    assertTrue("v0.85.0 记忆不重复被覆盖了", manual.contains("**记忆不会重复堆**（v0.85.0）"))
+    assertTrue("v0.85.0 动态作者身份被覆盖了", manual.contains("**她分得清动态是谁发的**（v0.85.0）"))
+    assertEquals(
+        "上下文窗口说明在手册里出现了不止一次",
+        manual.indexOf("**上下文窗口与提炼节奏现在都由你定**"),
+        manual.lastIndexOf("**上下文窗口与提炼节奏现在都由你定**"),
+    )
+}
+
+/**
+ * v0.87.0：**AI 周报整个功能被删掉**（用户点名「如果表没有用就删掉」）。
+ *
+ * 删一个功能最难的不是删代码，是**手册里所有还在提它的句子**——漏一处，用户一问答不上来
+ * 或者照着已删功能答。这条把两个入口（数据页第 ⑤ 块、提示词库段数）+ 三处顺带提法
+ * （应用概览、任务长按菜单类比、清除数据范围、单条清理）全钉住。
+ *
+ * ⚠️ 锚点纪律：这几条的 target **必须从链上最终文案抄**，不能从 v0.38 底稿抄——
+ * 底稿里「AI 洞察策略、AI 周报策略、生图触发策略…」那一处早被 v0.68.0 改写过，
+ * 照底稿抄会 replace 落空（P4 总自检当场变红）。
+ */
+@Test
+fun `v0_87_0 手册删掉 AI 周报`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // ① 数据页第 ⑤ 块：只剩洞察一张卡，且要明说周报已删（免得助手按老结构答）
+    // ⚠️ v0.88.0 在「⑤ **AI 洞察**：」和「一张入口卡」之间插了洞察三频率的说明，
+    // 所以这里**不再断言那句连续的旧串**，改成只钉"周报没了"这个事实（数字/位置都会被下一版冲）。
+    assertTrue("没写明周报已整个删掉", manual.contains("**「AI 周报」这个功能在 v0.87.0 整个删掉了**"))
+    assertTrue("没列清删了哪些东西", manual.contains("周报全屏列表、每周日 21:30 的定时生成"))
+    assertTrue("没提醒助手别再按老结构答", manual.contains("用户问起周报就直说已经去掉，**别再按老结构答**"))
+    // 旧的合并入口卡措辞必须一次不剩（注意：新的说明段里仍会引用「AI 洞察 / AI 周报」这个旧名字，
+    // 所以只能钉"旧的入口卡定义句"，不能笼统地禁这个词）
+    assertFalse(
+        "旧的合并入口卡定义句还在",
+        manual.contains("⑤ **AI 洞察 / AI 周报**：v0.42.0 起**合并成一张入口卡**"),
+    )
+    assertFalse("旧的长按周报期次措辞还在", manual.contains("在周报历史里**长按某一期**"))
+
+    // ② 提示词库段数：删掉「AI 周报撰写策略」那一段。
+    // ⚠️ v0.88.0 起段数又变了（八 → 十，多了「AI 洞察策略」、原名改「记忆提炼策略」），
+    // 所以这里**不再钉「八段」这个数字**，只钉"周报那段没了"这个事实 —— 钉数字必被下一版冲红。
+    assertTrue("没说清删的是哪一段", manual.contains("删掉了原来的「AI 周报撰写策略」一段"))
+    assertFalse(
+        "提示词库那段里还残留「AI 周报策略」（replace 落空了）",
+        manual.contains("AI 洞察策略、AI 周报策略、**每日建议策略**"),
+    )
+
+    // ③ 三处顺带提法
+    assertTrue("应用概览里还留着「每周生成 AI 周报」", !manual.contains("并每周生成 AI 周报"))
+    assertTrue("任务长按菜单还拿周报当类比", !manual.contains("与会话列表、洞察、周报那些长按菜单"))
+    assertTrue("清除数据范围里还列着 AI 周报", !manual.contains("AI 洞察、AI 周报、用户档案"))
+    assertTrue("单条清理里还写着周报历史列表", !manual.contains("在周报历史列表里长按某一期"))
+    assertTrue("数据清单里还带着周报", !manual.contains("含人设/消息/任务/档案/洞察/周报"))
+    assertTrue("提醒体系里还带着周报生成", !manual.contains("任务提醒闹钟、每日总结、周报生成"))
+
+    // v0.87.0 补丁必须挂在 v0.86.0 那句之后（锚点选错会把上一条整段冲掉）
+    assertTrue(
+        "v0.87.0 补丁没挂在 v0.86.0 成品尾巴上（replace 静默落空了）",
+        manual.contains("觉得不够就去那一行填大一点。\n") && manual.contains("删掉了原来的「AI 周报撰写策略」一段"),
+    )
+    // v0.86.0 那段必须还在（写这条补丁时最容易冲掉的就是它）
+    assertTrue("v0.86.0 上下文窗口说明被覆盖了", manual.contains("**上下文窗口与提炼节奏现在都由你定**（v0.86.0"))
+    assertTrue("v0.86.0 摘要整页化被覆盖了", manual.contains("那一行点进去是**一整个页面**（v0.86.0 起整页显示"))
+}
+
+/**
+ * v0.88.0：**四条链路彻底拆开** —— 记忆 / 洞察 / 每日建议 / 任务建议。
+ *
+ * 这一版改的是"数据从哪来"：提炼只出记忆；洞察改按日/周/月从记忆+任务+记账归纳；
+ * 每日建议只吃昨天的洞察；任务建议改成聊天里 AI 主动标记触发。
+ * 手册里凡是描述这四条链路数据源的句子都得翻掉，漏一处助手就会照旧结构答。
+ */
+@Test
+fun `v0_88_0 手册写明洞察建议任务建议三条链路拆分`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // ① 记忆章：提炼只管记忆
+    assertTrue(
+        "记忆章的「提炼成记忆、洞察和任务建议」没被收窄成只出记忆",
+        manual.contains("提炼成记忆。填 1 = 每轮都提炼（最及时也最费）"),
+    )
+    assertTrue("没写明提炼只管记忆", manual.contains("**提炼只管记忆**（v0.88.0 起）"))
+
+    // ② 数据页 ②：每日建议只依据昨天的洞察
+    assertTrue(
+        "每日建议没改成「只依据昨天的洞察」",
+        manual.contains("**它只依据「昨天那批洞察」来写**（v0.88.0 起统筹昨天的日/周/月洞察"),
+    )
+    assertTrue("没写明昨晚没洞察就不出建议", manual.contains("**昨晚没有洞察就当天不出建议**"))
+    assertTrue(
+        "旧的说法（AI 每天早上 07:30 自动出一条）没被排除",
+        !manual.contains("今日建议是这条独立链路定时产出的一条。\n"),
+    )
+
+    // ③ 数据页 ⑤：洞察三频率 + 数据源 + 允许 0 条
+    assertTrue("洞察没改成每晚 23:00 归纳", manual.contains("**每晚 23:00 自动归纳一次**（v0.88.0 起"))
+    assertTrue("没说洞察数据源是记忆+任务+记账", manual.contains("数据源是**你的记忆 + 任务 + 记账**三样"))
+    assertTrue("没写日/周/月三频率", manual.contains("**每周日出「本周」洞察**"))
+    assertTrue("没写月洞察", manual.contains("**每月月末出「本月」洞察**"))
+    assertTrue("没写允许 0 条", manual.contains("**允许 0 条**：那天没什么值得说的就**一条都不写**"))
+    assertTrue("没写空态三态文案", manual.contains("还没有洞察"))
+    // 旧的「AI 洞察 / AI 周报 合并卡」定义句必须彻底不在（v0.87.0 只搬走了一处）
+    assertTrue("旧的合并卡措辞还在", !manual.contains("合并成一张入口卡"))
+
+    // ④ 任务章：任务建议标记驱动、只在聊天页出卡
+    assertTrue(
+        "任务建议没写成 AI 主动标记触发",
+        manual.contains("**任务建议现在由 AI 自己按需触发**（v0.88.0 起，像语音条那样）"),
+    )
+    assertTrue("没写明标记格式", manual.contains("`[建议任务:标题|备注|日期]`"))
+    assertTrue("没写明只在聊天页出卡", manual.contains("**这个卡片只在聊天页出**"))
+
+    // ⑤ 提示词库：新增 AI 洞察策略 + 记忆提炼策略（v0.98.0 又加「记忆记录策略」「主动关心策略」）
+    // ⚠️ v0.98.0 起段数又变了（十 → 十二），所以这里**不再钉段数这个数字**（钉了下一版必红），
+    // 只钉"段数说明在"与"新段内容在"；旧数字不在由下面 `v0980` 那条断言负责。
+    assertTrue("提示词库段数说明丢了", manual.contains("段提示词都可编辑"))
+    assertTrue("没写明新增记忆记录策略", manual.contains("**记忆记录策略**"))
+    assertTrue("没写明新增主动关心策略", manual.contains("**主动关心策略**"))
+    assertTrue("没写明原「AI 洞察提炼策略」改名", manual.contains("原来的「AI 洞察提炼策略」改名叫「记忆提炼策略」"))
+    assertTrue("没写明新增 AI 洞察策略", manual.contains("**另加一段「AI 洞察策略」**"))
+
+    // ⑥ 提醒体系：补上每晚 23:00 洞察归纳
+    assertTrue("提醒体系里没补上洞察归纳", manual.contains("**每晚 23:00 的洞察归纳**"))
+
+    // 每条新措辞在手册里必须只出现一次（防锚点命中两处后其中一处静默落空）
+    assertEquals(
+        "「提炼只管记忆」出现了不止一次",
+        manual.indexOf("**提炼只管记忆**"),
+        manual.lastIndexOf("**提炼只管记忆**"),
+    )
+    assertEquals(
+        "「每晚 23:00 自动归纳一次」出现了不止一次",
+        manual.indexOf("**每晚 23:00 自动归纳一次**"),
+        manual.lastIndexOf("**每晚 23:00 自动归纳一次**"),
+    )
+}
+
+/**
+ * v0.98.0：提示词库 **十段 → 十二段**，新增两段可编提示词。
+ *
+ * ① 「**主动关心策略**」：那段文字原本是 `ProactiveChat` 里一句**零引用的死代码**
+ *    （`SYSTEM_INSTRUCTION`）—— 页面上没有入口、改了也不生效；现在拆成
+ *    `HINT_FRAMEWORK`（硬约束，不可编）+ `DEFAULT_STRATEGY`（取材/语气/长度，可编），
+ *    由 `settingsRepository.proactiveStrategy`（键 `proactive_strategy`）覆盖。
+ * ② 「**记忆记录策略**」：管**聊天时 AI 随手记**（`MemoryMarker`），与「记忆提炼策略」
+ *    （攒够轮数后批量提炼）是**两条不同的入口** —— 手册必须把两者摆在一起，用户才分得清。
+ *
+ * ⚠️ 锚点全部从**真编译 + jshell dump** 出的成品手册（logs/v0980_prompt.txt）里逐字截，
+ * 五个锚点各命中 1 次；不是照源文件或旧措辞猜的 —— 对不上是**静默落空**。
+ * ⚠️ 这里**不钉"十二段"这个数字**（段数还会涨，钉了下一版必红），只钉"新内容在 + 旧数字不在"。
+ */
+@Test
+fun `v0980 手册写明新增两段可编提示词`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // 新在：两段新提示词都写进了手册
+    assertTrue("没写明新增「记忆记录策略」", manual.contains("**记忆记录策略**"))
+    assertTrue("没写明「记忆记录策略」管聊天时随手记", manual.contains("管**聊天时 AI 随手记**"))
+    assertTrue("没写明它是聊天里那条灰色提示的来源", manual.contains("💭 我记住了 N 件新事"))
+    assertTrue("没写明新增「主动关心策略」", manual.contains("**主动关心策略**"))
+    assertTrue(
+        "没写明「主动关心策略」管她主动来找你时那一条消息",
+        manual.contains("**TA 主动来找你时那一条消息**"),
+    )
+    // 顶部那段"现在是几段"的说明也要跟着更新
+    assertTrue("顶部段数说明没更新", manual.contains("**v0.98.0 又加两段**"))
+
+    // 旧不在：段数说明已换成新的，旧数字「十段」不能还留在手册里
+    // （整串断言，避免和「十二段」误撞）
+    assertFalse(
+        "提示词库段数还停在旧数字「十段」（replace 落空了）",
+        manual.contains("**十段提示词都可编辑**"),
+    )
+    assertFalse(
+        "提示词库顶部段数说明还停在旧数字（replace 落空了）",
+        manual.contains("**提示词库现在是十段**"),
+    )
+}
+
+
+/**
+ * v0.89.0：**定时消息跟着角色走**。
+ *
+ * 用户实测反馈：「我把那个人设删了，但定时消息还是每天从应用助手发过来」。
+ * 根因是 `ScheduledMessageSender.pickPersona` 的「指定人设 → 主人设 → 第一个人设」
+ * 兜底（v0.53.5 早期遗留）在找不到目标人设时把消息**静默改嫁**给了内置助手。
+ * 现在改成：目标人设没了就不发、删角色时把它的定时项一并摘掉。
+ * 手册里那句「谁发」要能回答用户"删了角色它还会发吗"。
+ */
+@Test
+fun `v0_89_0 手册写明定时消息跟着角色走`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    assertTrue(
+        "没写明定时消息由选中的角色来说",
+        manual.contains("**这条消息是发给谁，就由谁来说**"),
+    )
+    assertTrue(
+        "没写明删角色会一并删掉它的定时消息",
+        manual.contains("**删掉那个角色，它的定时消息会跟着一起删**"),
+    )
+    assertTrue(
+        "没写明留着会变成删不掉的孤儿",
+        manual.contains("留着它只会变成一条在设置里删不掉的孤儿"),
+    )
+    // 旧措辞（带 v0.53.5 版本号的入口写法）必须已经被收掉
+    assertTrue(
+        "入口句里还挂着 v0.53.5 的版本号（锚点没命中）",
+        !manual.contains("- 定时主动消息（v0.53.5，入口"),
+    )
+
+    // 两条新措辞各只能出现一次（防锚点命中两处后其中一处静默落空）
+    assertEquals(
+        "「这条消息是发给谁」出现了不止一次",
+        manual.indexOf("**这条消息是发给谁，就由谁来说**"),
+        manual.lastIndexOf("**这条消息是发给谁，就由谁来说**"),
+    )
+    assertEquals(
+        "「它的定时消息会跟着一起删」出现了不止一次",
+        manual.indexOf("**删掉那个角色，它的定时消息会跟着一起删**"),
+        manual.lastIndexOf("**删掉那个角色，它的定时消息会跟着一起删**"),
+    )
+}
+
+/**
+ * v0.92.0：**角色空间入口从会话设置页搬到数据页**（用户点名「把角色空间卡片入口移到数据页」）。
+ *
+ * 为什么手册必须跟着改：角色空间是**按角色**的功能，而数据页是全局页 ——
+ * 中间多了一步选人。手册要是还写「会话设置 → 角色空间」，用户按它找过去
+ * 会发现那一行**已经不在了**，得到的是一条指错路的死答案。
+ *
+ * ⚠️ 手册里有**四处**提到这个入口（入口句 / 会话设置页的串行名 / 五组平铺的括注 /
+ * 「会话设置页这几行长什么样」那段描述），只改第一处会留下三处互相矛盾的说法。
+ * 所以这四条各断一对「新措辞在 + 旧措辞不在」（只写后者是假绿）。
+ */
+@Test
+fun `v0_92_0 手册写明角色空间入口搬到数据页`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // ① 入口句：新写法（数据页 → 选角色）
+    assertTrue(
+        "没写明入口搬到了数据页",
+        manual.contains("入口：**「我的数据」页 → 「角色空间」卡 → 选一个角色**"),
+    )
+    assertTrue(
+        "没写明会话设置页已经没有这一行",
+        manual.contains("会话设置页已经没有这一行了"),
+    )
+    // 旧写法（会话设置 → 角色空间）必须已经收掉
+    assertTrue(
+        "入口句还指着会话设置（锚点没命中）",
+        !manual.contains("入口：单聊页右上角 ⋯ → **会话设置 → 「角色空间」**。"),
+    )
+
+    // ② 五组平铺的括注里不再挂「角色空间」
+    assertTrue(
+        "五组平铺没改成四项",
+        manual.contains("（视频通话形象 / 通话背景 / 通话动作 / 聊天背景）→ 声音（音色 / 铃声）"),
+    )
+    assertTrue(
+        "五组平铺里还挂着角色空间",
+        !manual.contains("（视频通话形象 / 通话背景 / 角色空间 / 通话动作 / 聊天背景）"),
+    )
+
+    // ③ 会话设置页的串行名里不再挂「角色空间」
+    assertTrue(
+        "串行名没改成四项",
+        manual.contains("**视频通话形象**、**通话背景**、**通话动作**、聊天背景、"),
+    )
+    assertTrue(
+        "串行名里还挂着角色空间",
+        !manual.contains("**视频通话形象**、**通话背景**、**角色空间**、**通话动作**、聊天背景、"),
+    )
+
+    // ④ 「这几行长什么样」那段描述：删掉角色空间 + 补一句"别再来这里找"
+    assertTrue(
+        "没写明角色空间那一行已从这一页删掉",
+        manual.contains("**「角色空间」那一行 v0.92.0 已从这一页删掉，搬去了「我的数据」页**"),
+    )
+    assertTrue(
+        "这几行的描述里还挂着角色空间",
+        !manual.contains("「角色空间」「通话动作」「聊天背景」这几行都是**一行高的纯入口**"),
+    )
+    // 补的那一句不能插在句子中间把句子截成两段（v0.66.0 原句要完整保留）
+    assertTrue(
+        "v0.66.0 原句被截断了",
+        manual.contains("行上不带小标题说明（「通话背景」「音色」「铃声」的**右边会直接写当前选的是哪个**）；"),
+    )
+
+    // 每条新措辞在手册里必须只出现一次（防锚点命中两处后其中一处静默落空）
+    assertEquals(
+        "「我的数据」页入口出现了不止一次",
+        manual.indexOf("入口：**「我的数据」页 → 「角色空间」卡 → 选一个角色**"),
+        manual.lastIndexOf("入口：**「我的数据」页 → 「角色空间」卡 → 选一个角色**"),
+    )
+    assertEquals(
+        "「已从这一页删掉」出现了不止一次",
+        manual.indexOf("**「角色空间」那一行 v0.92.0 已从这一页删掉，搬去了「我的数据」页**"),
+        manual.lastIndexOf("**「角色空间」那一行 v0.92.0 已从这一页删掉，搬去了「我的数据」页**"),
+    )
+}
+
+/**
+ * v0.93.0：手册里两处会**把用户指去一个已经变了的地方**。
+ *
+ * ① 流水页顶部多了单日日期栏 —— 手册原来只写「按天分段」，用户想看某一天只能一路翻；
+ *    现在得写明"点日期能挑某天、右边是那天的净额、有「全部」能回来"。
+ * ② 语音识别切「在线接口」后，那页下面的离线模型一整块不显示了 ——
+ *    手册要是还让人去那儿下模型，用户会以为没下就不能用在线识别。
+ *
+ * ⚠️ 两条都断一对「新措辞在 + 旧措辞不在」：只写"旧的不在"是假绿（改坏了也过）。
+ * 另外各断一次「只出现一次」，防锚点命中两处后其中一处静默落空。
+ */
+@Test
+fun `v0_93_0 手册写明流水页日期栏与在线模式不用下离线模型`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // ① 流水页顶部日期栏
+    assertTrue(
+        "没写明流水页顶部有日期栏",
+        manual.contains("流水页**顶部有一条日期栏**（v0.93.0）：**左边是日期、点它会弹出日历**"),
+    )
+    assertTrue(
+        "没写明右侧金额是净额口径",
+        manual.contains("右边是**这一天的净额**（收入 − 支出，带 +/−，"),
+    )
+    assertTrue(
+        "没写明挑了某天后列表只显示那天",
+        manual.contains("挑了某一天后**列表只显示那天的账**"),
+    )
+    // 旧说法（只能按天分组地翻）必须完整保留，不能被插进来的句子截断
+    assertTrue(
+        "v0.91.0 那句按天分段被截断了",
+        manual.contains("行内只留时分（`14:05`），日期不重复写。"),
+    )
+
+    // ② 在线接口：离线模型那一整块不显示
+    assertTrue(
+        "没写明切在线后离线模型那块不显示",
+        manual.contains("**切到「在线接口」后**（v0.93.0），这一页下面**离线模型那一整块都不显示了**"),
+    )
+    assertTrue(
+        "没写明切回离线会原样回来",
+        manual.contains("**切回「离线（本机）」，它们原样回来。**"),
+    )
+    // 旧说法（离线模型要在本机下载）仍然成立，不能被改没了
+    assertTrue(
+        "离线那条路的说法被改坏了",
+        manual.contains("默认「离线（本机）」= SenseVoice，模型要在本机下载"),
+    )
+
+    // 每条新措辞在手册里必须只出现一次
+    assertEquals(
+        "「顶部有一条日期栏」出现了不止一次",
+        manual.indexOf("流水页**顶部有一条日期栏**（v0.93.0）"),
+        manual.lastIndexOf("流水页**顶部有一条日期栏**（v0.93.0）"),
+    )
+    assertEquals(
+        "「离线模型那一整块都不显示了」出现了不止一次",
+        manual.indexOf("**离线模型那一整块都不显示了**"),
+        manual.lastIndexOf("**离线模型那一整块都不显示了**"),
+    )
+}
+
+/**
+ * v0.94：会话设置大收拢（用户拍板）——
+ * ① 「电话」行删除（主动电话并进「主动关心」三开关、定时电话并进「定时」）；
+ * ② 「人设主动关心」更名「主动关心」，弹层 = 三开关 + 每天几通电话；「几天没聊就主动打」下线；
+ * ③ 「定时消息」更名「定时」，消息与电话同一张列表；
+ * ④ AI 发新帖只在主动链；聊天链回过/赞过的帖子不再摆回它面前。
+ *
+ * ⚠️ 每条补丁都断一对「新措辞在 + 旧措辞不在」；关键新措辞各断一次「只出现一次」。
+ */
+@Test
+fun `v0_94_0 手册写明主动关心三开关与定时合并与动态新规`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // ① 主动电话并入主动关心（三开关 + 次数 + 电话优先）
+    assertTrue(
+        "没写明主动电话并入主动关心",
+        manual.contains("- AI 主动打电话（v0.94 起**并进「主动关心」**"),
+    )
+    assertTrue(
+        "没写明一次触发只做一件事（电话优先）",
+        manual.contains("**同一时刻不会又打电话又发消息**（电话优先），次数用完自动只发消息"),
+    )
+    assertTrue(
+        "没写明每天最多几通",
+        manual.contains("**每天最多几通**，同一个弹层里填，1–9"),
+    )
+    assertTrue(
+        "没写明旧机制下线",
+        manual.contains("以前那套「几天没聊就主动打」已经下线"),
+    )
+    // 旧机制的说法必须整段消失
+    assertFalse(
+        "「几天没聊」那套还在手册里",
+        manual.contains("几天没聊就主动打**（自己填 1–30 天"),
+    )
+    assertFalse(
+        "「电话」弹层的说法还在手册里",
+        manual.contains("弹层里两块（**点标题才展开**"),
+    )
+
+    // ② 主动关心弹层 = 三个独立开关
+    assertTrue(
+        "没写明三开关",
+        manual.contains("**三个各自独立的开关**——主动发消息 / 主动发动态 / 主动打电话"),
+    )
+    assertTrue(
+        "没写明全关即不触发",
+        manual.contains("**全关 = 这个角色完全不主动找你**"),
+    )
+
+    // ③ 定时消息与定时电话合并
+    assertTrue(
+        "没写明定时合并",
+        manual.contains("定时消息与定时电话**合在同一张列表里**——电话条目标着「电话」"),
+    )
+    assertTrue(
+        "没写明分组枚举跟着改",
+        manual.contains("→ 主动互动（主动关心 / 定时）→ 「查看聊天记录」在列表底部。"),
+    )
+    assertFalse(
+        "旧分组枚举还在手册里",
+        manual.contains("→ 电话与定时（电话 / 定时消息）→"),
+    )
+
+    // ④ 动态：一切动态动作都只在主动链（聊天链现已完全不碰动态）
+    assertTrue(
+        "没写明动态动作只在主动时",
+        manual.contains("- **她的一切动态动作都只发生在主动来找你的时候**（v0.94）"),
+    )
+    assertTrue(
+        "没写明聊天时她完全不碰动态",
+        manual.contains("**跟你聊天时她完全不碰动态**"),
+    )
+
+    // 关键新措辞各只出现一次
+    assertEquals(
+        "「并进主动关心」出现了不止一次",
+        manual.indexOf("v0.94 起**并进「主动关心」**"),
+        manual.lastIndexOf("v0.94 起**并进「主动关心」**"),
+    )
+    assertEquals(
+        "「合在同一张列表里」出现了不止一次",
+        manual.indexOf("合在同一张列表里**"),
+        manual.lastIndexOf("合在同一张列表里**"),
+    )
+}
+
+/**
+ * v0.95：人设之间也能互相看动态、回帖、点赞（用户点名「人设之间也能互相回复动态，跟真人一样」）
+ * 必须写进助手手册。
+ *
+ * 两条补丁各钉一对：新措辞在 + 旧措辞不在。
+ * ① v0.79.0 那句「把你最近发的动态一并交给她」改成「把你和其他角色最近发的动态一并交给她」；
+ * ② v0.94 动态子弹后面补「角色之间也会互相看动态」那条说明。
+ */
+@Test
+fun `v0_95 手册写明人设之间互相看动态回帖点赞`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // ① 主动链看到的名单含其他角色的帖
+    assertTrue(
+        "没写明主动链含其他角色的动态",
+        manual.contains("App 会把你**和其他角色**最近发的动态一并交给她，她想接话就回一句、觉得好就点个赞。"),
+    )
+    assertFalse(
+        "「只看用户动态」的旧措辞还在手册里",
+        manual.contains("App 会把你**最近发的动态**一并交给她"),
+    )
+
+    // ② 角色互相回帖是正常现象 + 不会互聊个没完
+    assertTrue(
+        "没写明角色之间互相回帖点赞",
+        manual.contains("- **角色之间也会互相看动态、回帖、点赞**（v0.95）"),
+    )
+    assertTrue(
+        "没写明同一条帖同一角色最多表态一次",
+        manual.contains("同一条帖子同一个角色最多表态一次，它们不会在你的帖子下面聊个没完。"),
+    )
+
+    // 关键新措辞只出现一次
+    assertEquals(
+        "「角色之间也会互相看动态」出现了不止一次",
+        manual.indexOf("**角色之间也会互相看动态、回帖、点赞**（v0.95）"),
+        manual.lastIndexOf("**角色之间也会互相看动态、回帖、点赞**（v0.95）"),
+    )
+}
+
+/**
+ * 用户拍板「聊天链的参考上下文里不要再出现动态，动态只存于主动关心那条链」。
+ *
+ * 手册必须跟着改口：v0.79.0 / v0.94 / v0.85.0 那三条动态子弹原本描述的是
+ * **聊天链也会看动态、回帖、点赞**，现在全部收口到主动关心链。
+ *
+ * 成对断言（§零.5）：新措辞在 + 旧措辞一次不剩 —— 只写"新话在"守不住静默落空。
+ */
+@Test
+fun `手册写明聊天链不再碰动态`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // ① 看动态的时机收成「只在主动时」
+    assertTrue(
+        "没写明只在主动时看动态",
+        manual.contains("**只在**她**主动来找你**的那几次（就是你在角色的「主动关心」里设的时间段）"),
+    )
+    assertFalse("旧的「不只是在聊天的时候」还在手册里", manual.contains("不只是在聊天的时候"))
+
+    // ② 聊天链完全不碰动态
+    assertTrue(
+        "没写明一切动态动作只在主动时",
+        manual.contains("- **她的一切动态动作都只发生在主动来找你的时候**（v0.94）"),
+    )
+    assertTrue("没写明聊天时她完全不碰动态", manual.contains("**跟你聊天时她完全不碰动态**"))
+    assertTrue(
+        "没写明聊天里不会冒出动态动作",
+        manual.contains("也不会在聊天里突然说「我刚回了你的动态」。"),
+    )
+    assertFalse(
+        "旧的「聊天时她只会回你的帖、点赞」还在手册里",
+        manual.contains("跟你聊天时她只会回你的帖、点赞"),
+    )
+
+    // ③ 作者身份的说明换成主动链口径（名单里没有它自己的帖）
+    assertTrue("没写明她自己的帖不列进名单", manual.contains("**她自己的帖子根本不会列进名单**"))
+    assertFalse("旧的「标你自己的是她之前发的」还在手册里", manual.contains("标「你自己」的是她之前发的"))
+    assertFalse(
+        "旧的「她不会给自己回、也不会给自己点赞」还在手册里",
+        manual.contains("她不会给自己回、也不会给自己点赞"),
+    )
+
+    // 关键新措辞只出现一次
+    assertEquals(
+        "「她的一切动态动作都只发生在主动来找你的时候」出现了不止一次",
+        manual.indexOf("- **她的一切动态动作都只发生在主动来找你的时候**（v0.94）"),
+        manual.lastIndexOf("- **她的一切动态动作都只发生在主动来找你的时候**（v0.94）"),
+    )
+}
+
+/**
+ * v0.99.0：**删掉「手动提炼」那颗按钮的一切说法**（用户拍板「本来就没有的东西不要补回」）。
+ *
+ * 背景：数据页那颗「提炼」按钮在 **v0.42.1 就被收敛掉了**，界面上一直不存在 ——
+ * `DataViewModel.refreshInsights()` 从那天起零调用、`AiEntryCard` 收了 `extracting`/`apiReady`
+ * 也没用过，全工程「同款病」扫描时才被翻出来。但 v0.86.0 / v0.88.0 两次改版把
+ * 「手动点『提炼』」写回了手册 → **对用户的假承诺**。这版代码链与手册措辞一起更正。
+ *
+ * ⚠️ 断言**故意不钉版本号**（更正句里也没写）：钉了下一版升号就当场红。
+ */
+@Test
+fun `v0_99_0 手册不再提手动提炼按钮`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // 新说法在
+    assertTrue(
+        "没写明记忆是自动提炼、没有手动按钮",
+        manual.contains("**记忆是自动提炼的，没有「马上提炼一下」的按钮**"),
+    )
+    assertTrue(
+        "没写清「想更及时就把轮数填小」",
+        manual.contains("想让它更及时就**把这个数填小**（填 1 = 每轮都提炼）"),
+    )
+    assertTrue("没写明「记忆里只会多出或改掉条目」", manual.contains("所以记忆里只会多出或改掉条目"))
+
+    // 旧的两处假承诺必须彻底不在
+    assertFalse("「手动点『提炼』」的假承诺还在", manual.contains("手动点「提炼」"))
+    assertFalse("「不受这个轮数限制，点了就立刻跑」还在", manual.contains("不受这个轮数限制，点了就立刻跑"))
+    assertFalse("「数据页那颗按钮」还在", manual.contains("数据页那颗按钮"))
+    assertFalse("「你点『提炼』」还在", manual.contains("你点「提炼」"))
+
+    // 新措辞只出现一次
+    assertEquals(
+        "提炼更正说明出现了不止一次",
+        manual.indexOf("**记忆是自动提炼的，没有「马上提炼一下」的按钮**"),
+        manual.lastIndexOf("**记忆是自动提炼的，没有「马上提炼一下」的按钮**"),
+    )
+}
+
+@Test
+fun `手册写明 Agent 后台保活与电池白名单`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // 新说法在：保活开关 + 电池白名单引导
+    assertTrue(
+        "没写明「后台保活」开关与用途",
+        manual.contains("「**后台保活**」开关（默认开）：首次用过 Agent 后会挂一条静默常驻通知把进程钉住"),
+    )
+    assertTrue(
+        "没写明电池白名单引导",
+        manual.contains("点弹层里的「**电池白名单**」把它加进系统电池优化白名单"),
+    )
+    // 旧的围栏句必须还完整保留（整句保留、句末补新内容）
+    assertTrue(
+        "原有围栏描述被改丢了",
+        manual.contains("悬浮「■ 停止」按钮、15 步上限、执行期间的进度通知（通知设置里可关）。"),
+    )
+    // 旧段落不再以那句直接收尾（后面必须接上了保活说明）
+    assertFalse(
+        "保活说明没接上（旧句仍是段尾）",
+        manual.contains("（通知设置里可关）。\n"),
+    )
+    // 新措辞只出现一次
+    assertEquals(
+        "保活说明出现了不止一次",
+        manual.indexOf("「**后台保活**」开关"),
+        manual.lastIndexOf("「**后台保活**」开关"),
+    )
+}
+
+@Test
+fun `手册写明 Agent 执行模型与已学脚本`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // 新说法在：执行模型配置项
+    assertTrue(
+        "没写明「执行模型」配置项与留空语义",
+        manual.contains("同一弹层里还能指定「**执行模型**」：留空 = 跟随所选接口自带的模型"),
+    )
+    // 新说法在：已学脚本 + 清除入口 + 失效不盲重放
+    assertTrue(
+        "没写明已学脚本与「清除」入口",
+        manual.contains("下面还有「**已学脚本**」一行显示学到的条数、并可点「清除」删掉"),
+    )
+    assertTrue(
+        "没写明本地重放能省掉模型往返",
+        manual.contains("直接本地重放上次成功的步骤，**不再逐步问模型**"),
+    )
+    assertTrue(
+        "没写明脚本失配不会瞎点",
+        manual.contains("**绝不会照着旧坐标瞎点**"),
+    )
+
+    // 旧内容必须仍完整保留（本次是句末追加，不是改写）
+    assertTrue(
+        "M1 的保活说明被改丢了",
+        manual.contains("「**后台保活**」开关（默认开）：首次用过 Agent 后会挂一条静默常驻通知把进程钉住"),
+    )
+    assertTrue(
+        "M1 的白名单引导被改丢了",
+        manual.contains("点弹层里的「**电池白名单**」把它加进系统电池优化白名单"),
+    )
+    // 旧段落不再以 M1 那句收尾（后面必须接上了 M3 的说明）
+    assertFalse(
+        "M3 说明没接上（M1 那句仍是段尾）",
+        manual.contains("（国产 ROM 杀后台是无障碍总被关的主因）。\n"),
+    )
+    // 新措辞只出现一次
+    assertEquals(
+        "已学脚本说明出现了不止一次",
+        manual.indexOf("下面还有「**已学脚本**」一行"),
+        manual.lastIndexOf("下面还有「**已学脚本**」一行"),
+    )
+}
+
+@Test
+fun `手册写明 Agent 屏幕截图开关与隐私口径`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // 新说法在：开关 + 能力 + 代价 + 生效条件
+    assertTrue(
+        "没写明「发送屏幕截图」开关",
+        manual.contains("同一个弹层里还有个「**发送屏幕截图**」开关（默认开）"),
+    )
+    assertTrue(
+        "没写明截图带来的能力提升",
+        manual.contains("于是它看得懂图标、卡片和布局（准确率明显更高）"),
+    )
+    assertTrue(
+        "没写明要多花图片 token / 需要模型支持看图 / 低版本不生效",
+        manual.contains("代价是**每步多花一点图片 token**，并且**需要所用模型支持看图**，Android 11 以下系统不生效"),
+    )
+    // 隐私口径必须在（用户会问"会不会偷偷截屏"）
+    assertTrue(
+        "没写明图只发给用户自己配置的接口",
+        manual.contains("图只发给**用户自己配置的那个接口**"),
+    )
+    assertTrue(
+        "没写明关掉开关就完全不截图",
+        manual.contains("关掉开关就完全不再截图"),
+    )
+
+    // 旧内容仍完整保留（本次是句末追加）
+    assertTrue(
+        "M3 的已学脚本说明被改丢了",
+        manual.contains("下面还有「**已学脚本**」一行显示学到的条数、并可点「清除」删掉"),
+    )
+    // M3 那句不再以"脚本只存在手机本地。"收尾（后面必须接上 M4 的说明）
+    assertFalse(
+        "M4 说明没接上（M3 末尾仍是段尾）",
+        manual.contains("脚本只存在手机本地。\n"),
+    )
+    // 新措辞只出现一次
+    assertEquals(
+        "截图说明出现了不止一次",
+        manual.indexOf("「**发送屏幕截图**」开关"),
+        manual.lastIndexOf("「**发送屏幕截图**」开关"),
     )
 }
 }

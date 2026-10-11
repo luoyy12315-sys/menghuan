@@ -4,24 +4,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * **一个人设**的「主动打电话」规则（v0.53.6：从"全局一套"改成"每人设一套"）。
+ * **一个人设**的「打电话」规则（v0.53.6：从"全局一套"改成"每人设一套"）。
  *
- * 三条配置项一一对应用户的要求：
- * - [enabled]：是否允许 TA 主动给我打电话；
- * - [time]：每天几点**检查**一次（`HH:mm`）；
- * - [idleDays]：距上次聊天多久没交流才打（天）。
+ * ⚠️ **v0.94：这套规则的语义已经大部分下线** ——
+ * 「几天没聊就主动打」（[time]/[idleDays]/[lastCallDay]）与「定时电话总开关」（[scheduledEnabled]）
+ * 都不再被读取（主动电话并入主动关心的随机时刻，定时电话只看条目自己的启用状态）。
+ * 字段保留只为**兼容老数据**（codec 要能读懂 v0.93 及更早写出的 JSON）。
  *
- * 三者是**与**的关系（[time] 到点 → 看 [idleDays] 够不够 → 打），
- * 这样"每天固定时间"不会被理解成"每天准点骚扰"：
- * 到点时如果你刚聊过（没到 [idleDays]），TA 就不打。
- * 想"到点必打"的话把 [idleDays] 设成 1 天即可（只要不是今天聊过就会打）。
- *
- * [lastCallDay] 是**该人设各自**的"今天打过没"记录（epochDay），
- * 所以人设之间天然互不影响：小美今天打过，不影响教练今晚也打一次。
- *
- * v0.54.7：新增 [instruction]（**打电话过来时想让我说什么**）——
- * 用户要求"跟定时消息一样可以设定一个时间让 AI 打电话过来、说什么"。
- * 留空 = 沿用原来的做法（AI 按档案/任务/最近聊天自己组织开场白）。
+ * 还活着的用途只有两个：
+ * - [enabled]：老装机「主动电话」开关的存量 —— 新键没写过时，
+ *   由 `SettingsRepository.proactiveCallEnabled` **读取时推断**成新的「主动打电话」开关；
+ * - [instruction]：老装机在弹层里写过的「接通后说什么」，主动/定时电话的开场白继续生效。
  */
 data class AiCallRule(
     val personaId: Long,
@@ -86,31 +79,5 @@ object AiCallRuleCodec {
     }
 }
 
-/** 按人设规则判定"这一通该不该打"（纯函数，时间与"上次聊天"都作参数传入，便于单测） */
-object AiCallRuleLogic {
-
-    /**
-     * 到点后的判定：
-     * ① 这个规则得是开着的；
-     * ② 今天还没为**这个人设**打过；
-     * ③ 不在静默时段（22:30–08:00）；
-     * ④ 距上次跟 TA 聊天 ≥ [AiCallRule.idleDays] 天（从没聊过也算）。
-     *
-     * 注意 ④ 用的是**该人设会话**的最后一条消息时间，
-     * 所以"A 人设刚聊过、B 人设三天没聊"时只有 B 会打 —— 这就是"互不影响"的核心。
-     */
-    fun shouldRing(
-        rule: AiCallRule,
-        minuteOfDay: Int,
-        today: Long,
-        lastChatAt: Long,
-        now: Long,
-    ): Boolean {
-        if (!rule.enabled) return false
-        if (rule.lastCallDay == today) return false
-        if (AiCallLogic.inQuietHours(minuteOfDay)) return false
-        if (lastChatAt <= 0L) return true
-        val idleMs = rule.idleDays.toLong() * 24 * 60 * 60 * 1000L
-        return now - lastChatAt >= idleMs
-    }
-}
+// v0.94：AiCallRuleLogic.shouldRing（"每天检查一次 + 几天没聊"判定）已随那条触发链整条删除 ——
+// 主动电话并入主动关心的随机时刻（ProactiveChat.decideAction），不再有这套判定。

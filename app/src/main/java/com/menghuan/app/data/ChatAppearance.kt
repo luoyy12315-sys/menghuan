@@ -130,7 +130,6 @@ data class MyProfile(
     /** 昵称兜底：没填过就叫「我」，不至于让名字那行是空的 */
     val displayNickname: String get() = nickname.trim().ifBlank { "我" }
 
-    val hasAny: Boolean get() = nickname.isNotBlank() || bio.isNotBlank()
 }
 
 /**

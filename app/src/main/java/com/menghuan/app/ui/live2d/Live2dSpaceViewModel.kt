@@ -151,9 +151,6 @@ class Live2dSpaceViewModel(
         _ui.update { it.copy(actions = list) }
     }
 
-    /** 空间动作条里显示的那些：**排除四态默认动作**（它们是通话用的，摆在空间里只会占位） */
-    fun stageActions(): List<Live2dAction> = stageActionsOf(_ui.value.actions)
-
     // ---- 播放 ----
 
     /** 播一条动作（动作条点击 / 动作库里的"预览" / 点击互动都走这里） */
@@ -421,10 +418,6 @@ class Live2dSpaceViewModel(
             )
         }
     }
-
-    /** 动作库里"用 AI 生成的那条"有没有重复名字（提示用户可以改） */
-    fun namesOf(source: ActionSource): List<String> =
-        _ui.value.actions.filter { it.source == source }.map { it.name }
 
     // ---- 生命周期 ----
 

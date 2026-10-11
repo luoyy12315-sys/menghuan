@@ -1,17 +1,24 @@
 package com.menghuan.app.ui.common
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -141,19 +148,52 @@ fun MarkdownText(
     fontFamily: androidx.compose.ui.text.font.FontFamily? = null,
     /** v0.80.0：气泡字重；null = 常规。标题行仍至少半粗（见 ParaText） */
     fontWeight: androidx.compose.ui.text.font.FontWeight? = null,
+    /**
+     * 超过这个字符数就折叠（v0.97.0，审查 U19）；null = 永不折叠（默认，非聊天气泡调用点不受影响）。
+     *
+     * 折叠只**截高度**（`heightIn(max)` + `clipToBounds`）而**不改文本**，所以展开后拿到的
+     * 是一模一样的原文；也没有内层竖向滚动 —— 内层滚动会和外面消息列表的 LazyColumn 抢手势，
+     * 那是比"长消息撑长列表"更糟的体验。
+     */
+    collapseOverChars: Int? = null,
+    /** 折叠时最多显示多高（约 20 行正文） */
+    collapsedMaxHeight: androidx.compose.ui.unit.Dp = 420.dp,
 ) {
     // 解析+合并一次性记忆化：气泡内容不变时，重组/滚动重入零重复计算
     val nodes = remember(text) { buildRenderNodes(text) }
     val codeBg = NeuTrack
     // 行高跟着字号走（约 1.4 倍），否则放大字号后行会"贴着"
     val lineHeight = fontSize * 1.4f
+    val collapsible = collapseOverChars != null && text.length > collapseOverChars
+    // 按 text 记忆：换一条消息（流式期间 text 一直变）应当重新处于折叠态
+    var expanded by remember(text) { mutableStateOf(false) }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        nodes.forEach { node ->
-            when (node) {
-                is RenderNode.Gap -> Spacer(Modifier.height(4.dp))
-                is RenderNode.CodeBlock -> CodeLines(node.lines, color)
-                is RenderNode.Para -> ParaText(node, color, codeBg, fontSize, lineHeight, fontFamily, fontWeight)
+        Column(
+            Modifier
+                .then(
+                    if (collapsible && !expanded) {
+                        Modifier.heightIn(max = collapsedMaxHeight).clipToBounds()
+                    } else {
+                        Modifier
+                    },
+                ),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            nodes.forEach { node ->
+                when (node) {
+                    is RenderNode.Gap -> Spacer(Modifier.height(4.dp))
+                    is RenderNode.CodeBlock -> CodeLines(node.lines, color)
+                    is RenderNode.Para -> ParaText(node, color, codeBg, fontSize, lineHeight, fontFamily, fontWeight)
+                }
             }
+        }
+        if (collapsible && !expanded) {
+            // 用事实短语而不是"点击展开更多内容"这类说明性小字；括号里给出真实长度，
+            // 用户能判断"要不要点"（有些回复确实只值得看开头）。
+            NeuTextButton(
+                "展开全文（共 ${text.length} 字）",
+                onClick = { expanded = true },
+            )
         }
     }
 }
@@ -233,12 +273,16 @@ private fun ParaText(
 
 @Composable
 private fun ColumnScope.CodeLines(lines: List<String>, color: Color) {
-    // 代码块：凹陷纸面 + 等宽字体，与气泡内嵌语言一致
+    // 代码块：凹陷纸面 + 等宽字体，与气泡内嵌语言一致。
+    //
+    // v0.97.0（审查 U19）：代码行现在**横向滚动**而不是自动折行 —— 折行会把缩进结构
+    // 撕碎（Python 靠缩进表意，一折行整段读不懂）。`softWrap = false` 关掉折行，
+    // 外层 horizontalScroll 提供横向滑动（放不下时手指横滑看后半行）。
     Column(
         Modifier
             .fillMaxWidth()
             .neuSurface(12.dp, color = MaterialTheme.colorScheme.background, elevation = 3.dp, inset = true)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(vertical = 8.dp),
     ) {
         Text(
             buildAnnotatedString {
@@ -247,9 +291,13 @@ private fun ColumnScope.CodeLines(lines: List<String>, color: Color) {
                     if (i < lines.lastIndex) append('\n')
                 }
             },
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 10.dp),
             fontSize = 13.sp,
             lineHeight = 19.sp,
             fontFamily = FontFamily.Monospace,
+            softWrap = false,
             color = color,
         )
     }

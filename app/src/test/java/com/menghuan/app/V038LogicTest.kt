@@ -1,7 +1,6 @@
 package com.menghuan.app
 
 import com.menghuan.app.data.ProfileExtractor
-import com.menghuan.app.data.TaskSuggestion
 import com.menghuan.app.data.UsageTracker
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.llm.OpenAiClient
@@ -86,19 +85,20 @@ class V038LogicTest {
     }
 
     @Test
-    fun `parse 读取任务建议的 date 字段`() {
-        val raw = """
-            {"facts":[],"insights":[],
-             "taskSuggestions":[{"title":"周五面试","note":"带简历","daily":false,"date":"2026-10-09"}]}
-        """.trimIndent()
-        val s = ProfileExtractor.parse(raw).taskSuggestions.first()
+    fun `建议任务标记能带出到期日`() {
+        // v0.88.0：日期从「提炼 JSON 的 date 字段」挪到标记第三段
+        // 格式 [建议任务:标题|备注|日期]，日期由 ProfileExtractor.normalizeDueDate 宽容解析
+        val raw = "面试加油[建议任务:周五面试|带简历|2026-10-09]"
+        val s = com.menghuan.app.data.TaskSuggestionMarker.parse(raw).suggestions.first()
+        assertEquals("周五面试", s.title)
+        assertEquals("带简历", s.note)
         assertEquals("2026-10-09", s.dueDate)
     }
 
     @Test
-    fun `parse 无 date 字段仍兼容`() {
-        val raw = """{"facts":[],"insights":[],"taskSuggestions":[{"title":"早睡"}]}"""
-        val s: TaskSuggestion = ProfileExtractor.parse(raw).taskSuggestions.first()
+    fun `建议任务标记不带日期时为空`() {
+        val raw = "[建议任务:早睡]"
+        val s = com.menghuan.app.data.TaskSuggestionMarker.parse(raw).suggestions.first()
         assertEquals("", s.dueDate)
     }
 

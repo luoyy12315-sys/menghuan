@@ -196,6 +196,9 @@ fun ImageViewerOverlay(path: String, onDismiss: () -> Unit) {
  *
  * [fromUser] 决定靠边（v0.42.3）：用户发的图必须靠右（自己那侧），
  * 只有 AI 生图才靠左。此前无脑左对齐，用户发图会跑到 AI 那一侧。
+ *
+ * [modifier]（v0.89.0）：由调用处置入长按菜单的锚点记录 —— 必须挂在**气泡自己这一层**
+ * （而不是外层的整行容器），否则菜单箭头会按行边缘对齐、离气泡老远。
  */
 @Composable
 fun ImageBubble(
@@ -205,9 +208,12 @@ fun ImageBubble(
     failed: Boolean,
     onClick: (() -> Unit)? = null,
     fromUser: Boolean = false,
+    /** 失败态文案（v0.97.0）：失败有两种——生图没出来、或图曾经在但文件已失效，说法不该一样 */
+    failedText: String = "图片生成失败",
+    modifier: Modifier = Modifier,
 ) {
     Column(
-        Modifier.widthIn(max = maxWidth),
+        modifier.widthIn(max = maxWidth),
         horizontalAlignment = if (fromUser) Alignment.End else Alignment.Start,
     ) {
         Box(
@@ -245,7 +251,7 @@ fun ImageBubble(
                         modifier = Modifier.size(22.dp),
                     )
                     Spacer(Modifier.height(8.dp))
-                    Text("图片生成失败", fontSize = 13.sp, color = TextSecondary)
+                    Text(failedText, fontSize = 13.sp, color = TextSecondary)
                 }
             } else {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -288,8 +294,11 @@ val STICKER_BUBBLE_SIZE = 120.dp
 fun StickerBubble(
     bitmap: ImageBitmap?,
     fromUser: Boolean,
+    /** v0.89.0：长按菜单锚点（挂气泡自己这一层，见 [ImageBubble] 说明） */
+    modifier: Modifier = Modifier,
 ) {
     Column(
+        modifier,
         horizontalAlignment = if (fromUser) Alignment.End else Alignment.Start,
     ) {
         if (bitmap != null) {
@@ -454,10 +463,6 @@ fun ApiSwitchSheet(
     }
 }
 
-/** 会话预览用：取图片消息的可读摘要（「[图片] 提示词」） */
-fun imageMessagePreview(content: String, hasImage: Boolean): String =
-    if (hasImage && content.isNotBlank()) "[图片] $content" else "[图片]"
-
 /**
  * 语音条气泡（v0.43.0）：微信式——播放键 + 声波条 + 时长，点击播放/暂停。
  *
@@ -480,6 +485,8 @@ fun VoiceBubble(
     onToggle: () -> Unit,
     onLongPress: () -> Unit = {},
     isUser: Boolean = true,
+    /** v0.89.0：长按菜单锚点（挂气泡自己这一层，见 [ImageBubble] 说明） */
+    modifier: Modifier = Modifier,
 ) {
     val sec = (durationMs / 1000).coerceAtLeast(1)
     val ratio = (0.30f + (sec.coerceAtMost(30) - 1) / 29f * 0.26f).coerceIn(0.30f, 0.56f)
@@ -487,7 +494,7 @@ fun VoiceBubble(
     // 否则整屏只有 AI 语音条是黑块，跟 AI 文字气泡不是一家人。
     val ink = if (isUser) AccentInk else TextPrimary
     Row(
-        Modifier
+        modifier
             .widthIn(max = maxWidth * ratio, min = maxWidth * 0.30f)
             .then(
                 if (isUser) Modifier.clip(RoundedCornerShape(18.dp)).background(NeuAccent)
@@ -602,11 +609,13 @@ fun CallRecordCard(
     maxWidth: Dp,
     onClick: () -> Unit,
     onLongPress: () -> Unit = {},
+    /** v0.89.0：长按菜单锚点（挂卡片自己这一层，见 [ImageBubble] 说明） */
+    modifier: Modifier = Modifier,
 ) {
     val missed = duration.startsWith("0分00秒")
     val press = rememberNeuPressState()
     Row(
-        Modifier
+        modifier
             .widthIn(max = maxWidth)
             .scale(press.scale)
             .neuSurface(16.dp, color = NeuSurface, elevation = 2.dp)
@@ -695,9 +704,11 @@ fun FileBubble(
     hasExtractedText: Boolean,
     maxWidth: Dp,
     onLongPress: () -> Unit = {},
+    /** v0.89.0：长按菜单锚点（挂气泡自己这一层，见 [ImageBubble] 说明） */
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        Modifier
+        modifier
             .widthIn(max = maxWidth)
             .clip(RoundedCornerShape(18.dp))
             .background(NeuAccent)

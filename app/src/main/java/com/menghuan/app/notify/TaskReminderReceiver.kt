@@ -186,77 +186,13 @@ class DailySummaryReceiver : BroadcastReceiver() {
 }
 
 /**
- * AI 周报（每周日 21:30）：到点生成「本周」周报 + 静默补生成上周缺口（周末没开机）。
- * 生成经 LLM（API 未配置则静默跳过）；开关打开时新生成完毕发一条通知（点击直达数据页）。
- */
-class WeeklyReportReceiver : BroadcastReceiver() {
-
-    override fun onReceive(context: Context, intent: Intent) {
-        val pending = goAsync()
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                // 到点自排下一个周日 21:30（三重自愈之一）
-                AlarmScheduler.scheduleWeeklyReport(context)
-                val app = context.applicationContext as MenghuanApp
-                val zone = java.time.ZoneId.systemDefault()
-                val monday = java.time.LocalDate.now(zone).with(java.time.DayOfWeek.MONDAY)
-                var generated = 0
-                // 本周（周日 21:30 = 即将收尾的一周）先生成，失败不阻断补生成
-                if (runCatching { app.weeklyReportGenerator.generateForWeek(monday, zone) }.getOrNull() != null) {
-                    generated++
-                }
-                // 上周若因没开机缺报 → 补生成
-                if (app.weeklyReportGenerator.ensureReport(monday.minusDays(7), zone) != null) {
-                    generated++
-                }
-                // 通知开关在 IO 线程复查（默认关：周报静默生成，数据页可看）
-                if (generated == 0) return@launch
-                val notifyEnabled = runCatching { app.settingsRepository.notificationsEnabled.first() }
-                    .getOrDefault(false) &&
-                    runCatching { app.settingsRepository.weeklyReportNotifyEnabled.first() }.getOrDefault(false)
-                if (!notifyEnabled) return@launch
-
-                val manager = NotificationManagerCompat.from(context)
-                if (Build.VERSION.SDK_INT >= 33 &&
-                    context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-                    PackageManager.PERMISSION_GRANTED
-                ) {
-                    return@launch
-                }
-                manager.createNotificationChannel(
-                    NotificationChannel(CHANNEL_ID_WEEKLY, "AI 周报", NotificationManager.IMPORTANCE_DEFAULT)
-                )
-                val openData = PendingIntent.getActivity(
-                    context,
-                    WEEKLY_NOTIF_ID,
-                    Intent(Intent.ACTION_VIEW, Uri.parse("menghuan://open/data"), context, MainActivity::class.java)
-                        .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-                    PendingIntent.FLAG_IMMUTABLE,
-                )
-                val notification = NotificationCompat.Builder(context, CHANNEL_ID_WEEKLY)
-                    .setSmallIcon(android.R.drawable.ic_menu_my_calendar)
-                    .setContentTitle("AI 周报已生成")
-                    .setContentText(if (generated > 1) "本周与上周各补了一期，点开看看" else "本周回顾写好了，点开看看")
-                    .setCategory(NotificationCompat.CATEGORY_REMINDER)
-                    .setAutoCancel(true)
-                    .setContentIntent(openData)
-                    .build()
-                manager.notify(WEEKLY_NOTIF_ID, notification)
-            } finally {
-                pending.finish()
-            }
-        }
-    }
-
-    companion object {
-        private const val CHANNEL_ID_WEEKLY = "weekly_report"
-        private const val WEEKLY_NOTIF_ID = 2_000_000_003
-    }
-}
-
-/**
  * 每日建议（v0.42.0）：每天早上 07:30 生成今天的建议。
- * 生成经 LLM（API 未配置则静默跳过）；开关打开时新生成完毕发一条通知（点击直达数据页）。
+ * 生成经 LLM（API 未配置则静默跳过）；**只静默落库，不发通知** —— 用户第二天打开数据页就看得到。
+ *
+ * ⚠️ 这里原本还有一段「生成完发一条通知」，挂在 `dailySuggestionNotifyEnabled` 开关后面。
+ * 但那个开关**从 v0.42.0 引入起就没有任何 UI 写入口**（setter 零调用，默认 `false` 永久生效），
+ * 所以那段通知代码**一次都没执行过**。已整段删除（连同 `CHANNEL_ID_DAILY` / `DAILY_NOTIF_ID`），
+ * 与「洞察不发通知」的处理保持一致。
  */
 class DailySuggestionReceiver : BroadcastReceiver() {
 
@@ -270,40 +206,50 @@ class DailySuggestionReceiver : BroadcastReceiver() {
                 val today = java.time.LocalDate.now()
                 // 昨天若因没开机缺了建议 → 一并补上（保证历史不断档）
                 runCatching { app.dailySuggestionGenerator.ensureToday(today.minusDays(1)) }
-                val generated = runCatching { app.dailySuggestionGenerator.ensureToday(today) }.getOrNull()
-                if (generated == null) return@launch
+                runCatching { app.dailySuggestionGenerator.ensureToday(today) }
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+}
 
-                val notifyEnabled = runCatching { app.settingsRepository.notificationsEnabled.first() }
-                    .getOrDefault(false) &&
-                    runCatching { app.settingsRepository.dailySuggestionNotifyEnabled.first() }.getOrDefault(false)
-                if (!notifyEnabled) return@launch
+/**
+ * AI 洞察（v0.88.0）：日 / 周 / 月三条子链共用这一个接收器，靠 extra 里的 period 区分。
+ *
+ * 到点做两件事，顺序不能反：
+ * 1. **先自排下一次**（三重自愈之一，另两处是 App 启动与 BootReceiver）——
+ *    生成可能因为没配 API / 网络失败而静默返回，但调度绝不能因为一次失败就断掉；
+ * 2. 再跑对应周期的生成（幂等：同周期同归属日只生成一次）。
+ *
+ * 洞察**不发通知**（用户没要求，且 23:00 打扰没必要）——它落库，用户第二天打开数据页就看到。
+ * 唯一的可见反馈是次日 07:30 的每日建议会引用它。
+ */
+class InsightReceiver : BroadcastReceiver() {
 
-                val manager = NotificationManagerCompat.from(context)
-                if (Build.VERSION.SDK_INT >= 33 &&
-                    context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-                    PackageManager.PERMISSION_GRANTED
-                ) {
-                    return@launch
+    override fun onReceive(context: Context, intent: Intent) {
+        val period = intent.getStringExtra(EXTRA_PERIOD) ?: PERIOD_DAILY
+        val pending = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val app = context.applicationContext as MenghuanApp
+                // 先排下一次：用"未来的下一个"重排同一颗，今天这颗已被消费
+                runCatching {
+                    val at = when (period) {
+                        PERIOD_WEEKLY -> AlarmScheduler.nextWeeklyInsightAtForTest()
+                        PERIOD_MONTHLY -> AlarmScheduler.nextMonthlyInsightAtForTest()
+                        else -> AlarmScheduler.nextDailyInsightAtForTest()
+                    }
+                    AlarmScheduler.scheduleInsight(context, period, at)
                 }
-                manager.createNotificationChannel(
-                    NotificationChannel(CHANNEL_ID_DAILY, "每日建议", NotificationManager.IMPORTANCE_DEFAULT)
-                )
-                val openData = PendingIntent.getActivity(
-                    context,
-                    DAILY_NOTIF_ID,
-                    Intent(Intent.ACTION_VIEW, Uri.parse("menghuan://open/data"), context, MainActivity::class.java)
-                        .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
-                    PendingIntent.FLAG_IMMUTABLE,
-                )
-                val notification = NotificationCompat.Builder(context, CHANNEL_ID_DAILY)
-                    .setSmallIcon(android.R.drawable.ic_menu_my_calendar)
-                    .setContentTitle("今天的建议来了")
-                    .setContentText(generated.title)
-                    .setCategory(NotificationCompat.CATEGORY_REMINDER)
-                    .setAutoCancel(true)
-                    .setContentIntent(openData)
-                    .build()
-                manager.notify(DAILY_NOTIF_ID, notification)
+                val today = java.time.LocalDate.now()
+                runCatching {
+                    when (period) {
+                        PERIOD_WEEKLY -> app.insightEngine.ensureWeekly(today)
+                        PERIOD_MONTHLY -> app.insightEngine.ensureMonthly(today)
+                        else -> app.insightEngine.ensureDaily(today)
+                    }
+                }
             } finally {
                 pending.finish()
             }
@@ -311,8 +257,13 @@ class DailySuggestionReceiver : BroadcastReceiver() {
     }
 
     companion object {
-        private const val CHANNEL_ID_DAILY = "daily_suggestion"
-        private const val DAILY_NOTIF_ID = 2_000_000_007
+        const val EXTRA_PERIOD = "insightPeriod"
+        const val PERIOD_DAILY = "DAILY"
+        const val PERIOD_WEEKLY = "WEEKLY"
+        const val PERIOD_MONTHLY = "MONTHLY"
+
+        /** 顺序即 requestCode 偏移，别调（见 AlarmScheduler.insightPendingIntent） */
+        val ALL_PERIODS = listOf(PERIOD_DAILY, PERIOD_WEEKLY, PERIOD_MONTHLY)
     }
 }
 
@@ -350,13 +301,11 @@ class BootReceiver : BroadcastReceiver() {
                 // 每日总结（21:30）重排；开关在 Receiver 内复查
                 AlarmScheduler.scheduleDailySummary(context)
                 // 人设主动关心重排（v0.56.8：在用户设的时间段里随机取时刻）；开关在 Receiver 内复查
-                com.menghuan.app.data.ProactiveChat.scheduleNext(app.settingsRepository, context)
-                // AI 周报闹钟重排 + 上周缺报补生成（如周末没开机）
-                AlarmScheduler.scheduleWeeklyReport(context)
-                val monday = java.time.LocalDate.now().with(java.time.DayOfWeek.MONDAY)
-                app.weeklyReportGenerator.ensureReport(monday.minusDays(7))
+                com.menghuan.app.data.ProactiveChat.scheduleNext(app.db, app.settingsRepository, context)
                 // 每日建议闹钟重排（补生成由到点 Receiver 做，这里不主动发请求，避免开机风暴）
                 AlarmScheduler.scheduleDailySuggestion(context)
+                // AI 洞察三条链重排（v0.88.0）；同样只排钟，不在这儿发请求
+                AlarmScheduler.scheduleInsights(context)
                 // AI 主动打电话（v0.53.5）：定时 + 智能检查两个闹钟一起重排（只排钟，不发请求）
                 runCatching { com.menghuan.app.data.AiCall.rearm(app.settingsRepository, context) }
                 // 定时主动消息（v0.53.5）：每条一个闹钟，全部重排
@@ -392,7 +341,7 @@ class ProactiveReceiver : BroadcastReceiver() {
                 // v0.56.8：下一次同样是**随机时刻**（今天窗口没用完就还在今天）
                 runCatching {
                     if (personaId >= 0L) ProactiveChat.schedulePersona(app.settingsRepository, context, personaId)
-                    else ProactiveChat.scheduleNext(app.settingsRepository, context)
+                    else ProactiveChat.scheduleNext(app.db, app.settingsRepository, context)
                 }
                 runCatching { ProactiveChat.maybeGreet(app.db, app.settingsRepository, context, personaId) }
             } finally {

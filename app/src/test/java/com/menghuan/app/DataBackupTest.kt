@@ -2,7 +2,6 @@ package com.menghuan.app
 
 import com.menghuan.app.data.DataBackup
 import com.menghuan.app.data.model.AiInsight
-import com.menghuan.app.data.model.AiWeeklyReport
 import com.menghuan.app.data.model.ChatMessage
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.data.model.ProfileFact
@@ -16,7 +15,7 @@ import org.junit.Test
 
 /**
  * 数据导出/导入编解码（纯 JVM）：build → parse 往返一致；畸形输入返回 null；
- * 周报段落（v0.22.0 新增）参与导出与解析。
+ * 洞察段落参与导出与解析。
  */
 class DataBackupTest {
 
@@ -35,11 +34,8 @@ class DataBackupTest {
         )
         val facts = listOf(ProfileFact(id = 1, key = "作息", value = "00:30-07:45", source = "ai", updatedAt = 9L))
         val insights = listOf(AiInsight(id = 1, title = "熬夜与短视频相关", detail = "晚睡 82 分钟", createdAt = 8L))
-        val reports = listOf(
-            AiWeeklyReport(id = 1, weekStart = 100L, weekEnd = 106L, content = "本周稳步推进", createdAt = 7L),
-        )
 
-        val json = DataBackup.buildExportJson(personas, messages, tasks, facts, insights, reports)
+        val json = DataBackup.buildExportJson(personas, messages, tasks, facts, insights)
         val parsed = DataBackup.parseImport(json)
 
         assertNotNull(parsed)
@@ -68,12 +64,6 @@ class DataBackupTest {
 
             assertEquals(1, data.aiInsights.size)
             assertEquals("熬夜与短视频相关", data.aiInsights[0].title)
-
-            // v0.22.0：周报段参与导出与解析
-            assertEquals(1, data.aiWeeklyReports.size)
-            assertEquals(100L, data.aiWeeklyReports[0].weekStart)
-            assertEquals(106L, data.aiWeeklyReports[0].weekEnd)
-            assertEquals("本周稳步推进", data.aiWeeklyReports[0].content)
         }
     }
 
@@ -82,11 +72,11 @@ class DataBackupTest {
         // 非 JSON → null
         assertNull(DataBackup.parseImport("这不是 JSON"))
         assertNull(DataBackup.parseImport("[]"))
-        // 空 JSON → 全空结构而非 null（旧版本导出的文件没有周报段，仍可导入）
+        // 空 JSON → 全空结构而非 null（旧版本导出的文件缺段落，仍可导入）
         val empty = DataBackup.parseImport("{}")
         assertNotNull(empty)
-        assertTrue(empty!!.personas.isEmpty() && empty.aiWeeklyReports.isEmpty() && empty.tasks.isEmpty())
-        // 无周报段的旧导出文件：其余段落正常解析
+        assertTrue(empty!!.personas.isEmpty() && empty.aiInsights.isEmpty() && empty.tasks.isEmpty())
+        // 缺段落的旧导出文件：其余段落正常解析
         val legacy = DataBackup.parseImport(
             "{\"personas\":[{\"name\":\"严格教练\",\"title\":\"教练\"}],\"tasks\":[]}",
         )

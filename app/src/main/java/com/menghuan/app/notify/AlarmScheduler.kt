@@ -18,9 +18,6 @@ object AlarmScheduler {
     /** 每日总结闹钟专用 requestCode（避免与 taskId 撞号） */
     private const val SUMMARY_REQUEST_CODE = 2_000_000_001
 
-    /** AI 周报闹钟专用 requestCode */
-    private const val WEEKLY_REPORT_REQUEST_CODE = 2_000_000_002
-
     /**
      * 人设主动关心：v0.56.7 及更早那条**全局**闹钟（固定 20:30，v0.38.0）的 requestCode。
      * v0.56.8 第二阶段起改成**每个角色一个闹钟**（[PROACTIVE_PERSONA_BASE]），
@@ -39,6 +36,12 @@ object AlarmScheduler {
 
     /** 每日建议闹钟专用 requestCode（每天早上 07:30，v0.42.0） */
     private const val DAILY_SUGGESTION_REQUEST_CODE = 2_000_000_006
+
+    /** AI 洞察闹钟基底 requestCode（v0.88.0：日/周/月三条，+ index） */
+    private const val INSIGHT_REQUEST_BASE = 2_000_000_010
+
+    /** 洞察统一触发时刻：23:00（用户选的「排法 A」——晚上跑洞察，次日 07:30 的建议读昨天的洞察） */
+    private const val DAY_INSIGHT_HOUR = 23
 
     /**
      * AI 主动打电话（v0.53.6 起**按人设独立**）：
@@ -115,41 +118,6 @@ object AlarmScheduler {
         )
 
     /**
-     * AI 周报（每周日 21:30）：对齐下一个周日，到点由 WeeklyReportReceiver 自排下周。
-     * 生成在 Receiver 内做 API 开关检查（未配置则静默），无用户开关。
-     */
-    fun scheduleWeeklyReport(context: Context, at: Long? = null) {
-        val zone = java.time.ZoneId.systemDefault()
-        var next = java.time.LocalDate.now(zone)
-            .with(java.time.temporal.TemporalAdjusters.nextOrSame(java.time.DayOfWeek.SUNDAY))
-            .atTime(21, 30)
-        at?.let {
-            next = java.time.Instant.ofEpochMilli(it).atZone(zone).toLocalTime().let { t ->
-                java.time.LocalDate.now(zone).atTime(t)
-            }
-        }
-        if (next.atZone(zone).toInstant().toEpochMilli() <= System.currentTimeMillis()) {
-            next = next.plusWeeks(1)
-        }
-        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = weeklyReportPendingIntent(context)
-        val canExact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
-        if (canExact) {
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atZone(zone).toInstant().toEpochMilli(), pi)
-        } else {
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, next.atZone(zone).toInstant().toEpochMilli(), pi)
-        }
-    }
-
-    private fun weeklyReportPendingIntent(context: Context): PendingIntent =
-        PendingIntent.getBroadcast(
-            context,
-            WEEKLY_REPORT_REQUEST_CODE,
-            Intent(context, WeeklyReportReceiver::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-
-    /**
      * 人设主动关心（v0.38.0；v0.56.8 改成"在用户设的时间段里随机取时刻"；
      * **第二批起每个角色一个闹钟**，因为时间段/条数都是按角色一套）。
      *
@@ -186,33 +154,6 @@ object AlarmScheduler {
         am.cancel(legacyProactivePendingIntent(context))
     }
 
-    /**
-     * AI 主动打电话（v0.53.6，**按人设独立**）：**每个人设一个闹钟**，在它自己设定的时刻触发；
-     * 到点由 [AiCallReceiver] 按"那个人的规则"判定打不打，并自己排明天。
-     */
-    fun scheduleAiCallForPersona(context: Context, personaId: Long, hhmm: String) {
-        val minuteOfDay = com.menghuan.app.data.AiCallLogic.minuteOfDayOf(hhmm) ?: return
-        val zone = java.time.ZoneId.systemDefault()
-        var next = java.time.LocalDate.now(zone).atTime(minuteOfDay / 60, minuteOfDay % 60)
-        if (next.atZone(zone).toInstant().toEpochMilli() <= System.currentTimeMillis()) {
-            next = next.plusDays(1)
-        }
-        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val pi = aiCallPendingIntent(context, personaId, once = false)
-        val at = next.atZone(zone).toInstant().toEpochMilli()
-        val canExact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
-        if (canExact) {
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
-        } else {
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
-        }
-    }
-
-    fun cancelAiCallForPersona(context: Context, personaId: Long) {
-        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        am.cancel(aiCallPendingIntent(context, personaId, once = false))
-    }
-
     /** 口头约定那一路（同样**按人设**排）：用户在聊天里让 TA"待会打给我"，到点一次性触发 */
     fun scheduleAiCallOnce(context: Context, personaId: Long, at: Long) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -223,11 +164,6 @@ object AlarmScheduler {
         } else {
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
         }
-    }
-
-    fun cancelAiCallOnce(context: Context, personaId: Long) {
-        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        am.cancel(aiCallPendingIntent(context, personaId, once = true))
     }
 
     private fun aiCallPendingIntent(context: Context, personaId: Long, once: Boolean): PendingIntent {
@@ -306,6 +242,95 @@ object AlarmScheduler {
             Intent(context, DailySuggestionReceiver::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+
+    /**
+     * AI 洞察闹钟（v0.88.0）：日 / 周 / 月三条链**共用时刻 23:00**，
+     * 靠 requestCode 区分，各自的 PendingIntent 上带周期 extra。
+     *
+     * 为什么要分三颗而不是一颗「每晚跑一遍、自己判断今天是不是周日/月末」：
+     * 三条链的**幂等键是"周期 + 归属日"**（见 [InsightEngine.ensureWeekly] 等），
+     * 分开排在补跑场景下更干净 —— 用户周三才发现 App 没开过，日洞察补周三日那一颗，
+     * 周洞察补上一颗周日那一颗，互不牵扯。
+     *
+     * 排的是"下一个还没到的 23:00"：日链 = 今晚/明晚；周链 = 下个周日；
+     * 月链 = 下个月末。到点由 [InsightReceiver] 跑完再自排下一次。
+     */
+    fun scheduleInsights(context: Context) {
+        scheduleInsight(context, InsightReceiver.PERIOD_DAILY, nextDailyInsightAt())
+        scheduleInsight(context, InsightReceiver.PERIOD_WEEKLY, nextWeeklyInsightAt())
+        scheduleInsight(context, InsightReceiver.PERIOD_MONTHLY, nextMonthlyInsightAt())
+    }
+
+    /** 单独重排某一条（Receiver 到点自排下一次用） */
+    fun scheduleInsight(context: Context, period: String, at: Long) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = insightPendingIntent(context, period)
+        val canExact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
+        if (canExact) {
+            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        } else {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+        }
+    }
+
+    private fun insightPendingIntent(context: Context, period: String): PendingIntent =
+        PendingIntent.getBroadcast(
+            context,
+            INSIGHT_REQUEST_BASE + InsightReceiver.ALL_PERIODS.indexOf(period),
+            Intent(context, InsightReceiver::class.java)
+                .putExtra(InsightReceiver.EXTRA_PERIOD, period),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    /** 下一个 23:00（今天还没到就是今天） */
+    private fun nextDailyInsightAt(zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): Long {
+        var next = java.time.LocalDate.now(zone).atTime(DAY_INSIGHT_HOUR, 0)
+        if (next.atZone(zone).toInstant().toEpochMilli() <= System.currentTimeMillis()) {
+            next = next.plusDays(1)
+        }
+        return next.atZone(zone).toInstant().toEpochMilli()
+    }
+
+    /** [InsightReceiver] 到点自排下一次用（同一个算法，别在两处各写一遍） */
+    fun nextDailyInsightAtForTest(): Long = nextDailyInsightAt()
+
+    fun nextWeeklyInsightAtForTest(): Long = nextWeeklyInsightAt()
+
+    fun nextMonthlyInsightAtForTest(): Long = nextMonthlyInsightAt()
+
+    /**
+     * 下一个周日的 23:00。
+     *
+     * 注意：「今天就是周日、但 23:00 还没到」时应该排今天 —— 否则这一周就被跳过了。
+     * 所以判据是"周日 && (今天还没到 23:00 || 今天不是周日)"，写成循环更不容易出错。
+     */
+    private fun nextWeeklyInsightAt(zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): Long {
+        val now = System.currentTimeMillis()
+        var day = java.time.LocalDate.now(zone)
+        // 最多找 8 天必然撞上（一周），这里用 while 不用取模，逻辑一眼可验
+        var guard = 0
+        while (guard++ < 8) {
+            if (day.dayOfWeek == java.time.DayOfWeek.SUNDAY) {
+                val at = day.atTime(DAY_INSIGHT_HOUR, 0).atZone(zone).toInstant().toEpochMilli()
+                if (at > now) return at
+            }
+            day = day.plusDays(1)
+        }
+        return day.atTime(DAY_INSIGHT_HOUR, 0).atZone(zone).toInstant().toEpochMilli()
+    }
+
+    /** 下个月末（当月最后一天）的 23:00；今天是月末且未到 23:00 → 就是今天 */
+    private fun nextMonthlyInsightAt(zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): Long {
+        val now = System.currentTimeMillis()
+        var last = java.time.LocalDate.now(zone).withDayOfMonth(
+            java.time.LocalDate.now(zone).lengthOfMonth()
+        )
+        if (last.atTime(DAY_INSIGHT_HOUR, 0).atZone(zone).toInstant().toEpochMilli() <= now) {
+            val nextMonth = last.plusMonths(1)
+            last = nextMonth.withDayOfMonth(nextMonth.lengthOfMonth())
+        }
+        return last.atTime(DAY_INSIGHT_HOUR, 0).atZone(zone).toInstant().toEpochMilli()
+    }
 
     /** 每个角色一颗：requestCode 按人设 id 拉开，PendingIntent 上带 id，到点知道该发给谁 */
     private fun proactivePendingIntent(context: Context, personaId: Long): PendingIntent =

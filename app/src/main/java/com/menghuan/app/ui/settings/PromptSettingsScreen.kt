@@ -25,8 +25,8 @@ import com.menghuan.app.data.AiPrompts
 import com.menghuan.app.data.DailySuggestionMath
 import com.menghuan.app.data.ASSISTANT_PERSONA_NAME
 import com.menghuan.app.data.ASSISTANT_PERSONA_TITLE
+import com.menghuan.app.data.InsightMath
 import com.menghuan.app.data.ProfileExtractor
-import com.menghuan.app.data.WeeklyReportMath
 import com.menghuan.app.data.model.Persona
 import com.menghuan.app.ui.chat.AGENT_CHAT_DEFAULT_STRATEGY
 import com.menghuan.app.ui.chat.AGENT_CHAT_HINT_FRAMEWORK
@@ -48,7 +48,8 @@ private data class PromptDraft(
     val base: String = AiPrompts.DEFAULT_BASE_PROMPT,
     val preamble: String = AiPrompts.DEFAULT_PROFILE_PREAMBLE,
     val extraction: String = ProfileExtractor.DEFAULT_STRATEGY,
-    val weekly: String = WeeklyReportMath.DEFAULT_STRATEGY,
+    // v0.88.0：洞察策略从提炼策略里拆出来（洞察改从记忆+任务+记账归纳，选材口径无关了）
+    val insight: String = InsightMath.DEFAULT_STRATEGY,
     val daily: String = DailySuggestionMath.DEFAULT_STRATEGY,
     val image: String = IMAGE_HINT_DEFAULT_STRATEGY,
     val agentEnabled: Boolean = true,
@@ -57,14 +58,28 @@ private data class PromptDraft(
     // v0.82.0 P1-1：滚动摘要（总开关默认开 + 摘要策略）
     val summaryEnabled: Boolean = true,
     val summary: String = com.menghuan.app.data.SummaryExtractor.DEFAULT_STRATEGY,
+    // v0.98.0：主动关心策略。这一段以前在 `ProactiveChat` 里是**零引用的死代码**，
+    // 用户既改不了、约束也没生效；现在接上并开放编辑。
+    val proactive: String = com.menghuan.app.data.ProactiveChat.DEFAULT_STRATEGY,
+    // v0.98.0：记忆记录策略（管"聊天时 AI 随手记"，与上面的 extraction「批量提炼」是两条入口）
+    val memoryMarker: String = com.menghuan.app.data.MemoryMarker.DEFAULT_STRATEGY,
 )
 
 /**
- * 设置 · AI 提示词：**九段**可编辑（手风琴布局）。
+ * 设置 · AI 提示词：**十二段**可编辑（手风琴布局）。
+ *
+ * v0.98.0 加第十一段「主动关心策略」—— 那段提示词原本是 `ProactiveChat` 里一句
+ * **零引用的死代码**（连"不超过 60 字"都没生效过），这次既接上又开放编辑。
+ * 同版加第十二段「记忆记录策略」—— 它管"聊天时 AI 随手记"，与旁边那段「记忆提炼策略」
+ * （批量提炼）是记忆的两条入口，摆在一起是为了让用户看得出区别。
  *
  * v0.68.0 补上第九段「每日建议策略」—— DataStore 键与生成链路的读取从 v0.42.0 就在了，
  * `DailySuggestionGenerator` 的注释也一直写着"用户可在设置里覆盖"，**唯独页面里没有这一格**：
  * 用户看得见别的段、改不了今日建议的口径，而代码那句承诺是假的。
+ *
+ * v0.88.0 加第十段「AI 洞察策略」，并把原来那段「AI 洞察提炼策略」**改名为「记忆提炼策略」**
+ * —— 洞察从提炼副产品变成独立链路（每天 23:00 从记忆+任务+记账归纳）之后，
+ * 原来那一段其实只控记忆，继续叫"洞察"会让用户改错地方。
  *
  * 分层语义不变：框架（硬编码只读，改了 parse 会崩）+ 策略（可编可恢复）。
  *
@@ -106,7 +121,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             base = app.settingsRepository.basePrompt.first(),
             preamble = app.settingsRepository.profilePreamble.first(),
             extraction = app.settingsRepository.extractionStrategy.first(),
-            weekly = app.settingsRepository.weeklyReportStrategy.first(),
+            insight = app.settingsRepository.insightStrategy.first(),
             daily = app.settingsRepository.dailySuggestionStrategy.first(),
             image = app.settingsRepository.imageHintStrategy.first(),
             agentEnabled = app.settingsRepository.agentChatEnabled.first(),
@@ -114,6 +129,8 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             voiceNote = app.settingsRepository.voiceNoteStrategy.first(),
             summaryEnabled = app.settingsRepository.rollingSummaryEnabled.first(),
             summary = app.settingsRepository.summaryStrategy.first(),
+            proactive = app.settingsRepository.proactiveStrategy.first(),
+            memoryMarker = app.settingsRepository.memoryMarkerStrategy.first(),
         )
         draft = initial
         persisted = initial
@@ -145,7 +162,7 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                 app.settingsRepository.setBasePrompt(current.base)
                 app.settingsRepository.setProfilePreamble(current.preamble)
                 app.settingsRepository.setExtractionStrategy(current.extraction)
-                app.settingsRepository.setWeeklyReportStrategy(current.weekly)
+                app.settingsRepository.setInsightStrategy(current.insight)
                 app.settingsRepository.setDailySuggestionStrategy(current.daily)
                 app.settingsRepository.setImageHintStrategy(current.image)
                 app.settingsRepository.setAgentChatEnabled(current.agentEnabled)
@@ -153,6 +170,8 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                 app.settingsRepository.setVoiceNoteStrategy(current.voiceNote)
                 app.settingsRepository.setRollingSummaryEnabled(current.summaryEnabled)
                 app.settingsRepository.setSummaryStrategy(current.summary)
+                app.settingsRepository.setProactiveStrategy(current.proactive)
+                app.settingsRepository.setMemoryMarkerStrategy(current.memoryMarker)
             }
             persisted = current
         }
@@ -238,7 +257,9 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
         }
 
         SettingsSectionRow(
-            title = "AI 洞察提炼策略",
+            // v0.88.0：段名从「AI 洞察提炼策略」改成「记忆提炼策略」——
+            // 它现在只管记忆（facts），叫"洞察"会让用户以为改这里能影响数据页的洞察。
+            title = "记忆提炼策略",
             titleSize = 17.sp,
             customized = customized(draft.extraction, ProfileExtractor.DEFAULT_STRATEGY),
             expanded = openSection == "extraction",
@@ -254,19 +275,40 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
             )
         }
 
+        // v0.98.0：记忆记录策略。**紧挨着「记忆提炼策略」是有意的** —— 两者是记忆的两条入口，
+        // 用户极易搞混"我改的到底是哪个"。这段管**聊天时 AI 随手记**（每轮注入 system prompt），
+        // 上面那段管**攒够轮数后批量提炼**（只在提炼请求里发给提炼模型）。
         SettingsSectionRow(
-            title = "AI 周报撰写策略",
+            title = "记忆记录策略",
             titleSize = 17.sp,
-            customized = customized(draft.weekly, WeeklyReportMath.DEFAULT_STRATEGY),
-            expanded = openSection == "weekly",
-        ) { toggle("weekly") }
-        if (openSection == "weekly") {
+            customized = customized(draft.memoryMarker, com.menghuan.app.data.MemoryMarker.DEFAULT_STRATEGY),
+            expanded = openSection == "memoryMarker",
+        ) { toggle("memoryMarker") }
+        if (openSection == "memoryMarker") {
             LayeredEditor(
-                framework = WeeklyReportMath.FRAMEWORK,
-                strategy = draft.weekly,
-                dirty = draft.weekly != persisted.weekly,
-                onStrategyChange = { draft = draft.copy(weekly = it) },
-                onReset = { draft = draft.copy(weekly = WeeklyReportMath.DEFAULT_STRATEGY) },
+                framework = com.menghuan.app.data.MemoryMarker.HINT_FRAMEWORK,
+                strategy = draft.memoryMarker,
+                dirty = draft.memoryMarker != persisted.memoryMarker,
+                onStrategyChange = { draft = draft.copy(memoryMarker = it) },
+                onReset = { draft = draft.copy(memoryMarker = com.menghuan.app.data.MemoryMarker.DEFAULT_STRATEGY) },
+                onSave = { save() },
+            )
+        }
+
+        SettingsSectionRow(
+            // v0.88.0 新增：洞察策略（每天 23:00 从记忆+任务+记账归纳）
+            title = "AI 洞察策略",
+            titleSize = 17.sp,
+            customized = customized(draft.insight, InsightMath.DEFAULT_STRATEGY),
+            expanded = openSection == "insight",
+        ) { toggle("insight") }
+        if (openSection == "insight") {
+            LayeredEditor(
+                framework = InsightMath.FRAMEWORK,
+                strategy = draft.insight,
+                dirty = draft.insight != persisted.insight,
+                onStrategyChange = { draft = draft.copy(insight = it) },
+                onReset = { draft = draft.copy(insight = InsightMath.DEFAULT_STRATEGY) },
                 onSave = { save() },
             )
         }
@@ -366,6 +408,25 @@ fun PromptSettingsScreen(onBack: () -> Unit) {
                 dirty = draft.summary != persisted.summary || draft.summaryEnabled != persisted.summaryEnabled,
                 onStrategyChange = { draft = draft.copy(summary = it) },
                 onReset = { draft = draft.copy(summary = com.menghuan.app.data.SummaryExtractor.DEFAULT_STRATEGY) },
+                onSave = { save() },
+            )
+        }
+
+        // v0.98.0：主动关心策略。它管的是「她主动来找你时说什么」的取材/语气/长度
+        // —— 改长一点会显得更黏人，改短一点更清爽，属于用户口味，所以放可编这半。
+        SettingsSectionRow(
+            title = "主动关心策略",
+            titleSize = 17.sp,
+            customized = customized(draft.proactive, com.menghuan.app.data.ProactiveChat.DEFAULT_STRATEGY),
+            expanded = openSection == "proactive",
+        ) { toggle("proactive") }
+        if (openSection == "proactive") {
+            LayeredEditor(
+                framework = com.menghuan.app.data.ProactiveChat.HINT_FRAMEWORK,
+                strategy = draft.proactive,
+                dirty = draft.proactive != persisted.proactive,
+                onStrategyChange = { draft = draft.copy(proactive = it) },
+                onReset = { draft = draft.copy(proactive = com.menghuan.app.data.ProactiveChat.DEFAULT_STRATEGY) },
                 onSave = { save() },
             )
         }

@@ -155,19 +155,43 @@ object VoiceCloner {
     private const val QUIET_RATIO = 0.06f
 
     /**
+     * 直解 WAV 的输入上限（v0.97.0）：超过它就交给 [MediaAudioDecoder]
+     * （那条路有 MAX_SAMPLES 与 30 秒墙钟双重保护），不赌一次 `readBytes()`。
+     */
+    private const val MAX_WAV_INPUT_BYTES = 64L * 1024 * 1024
+
+    /**
      * @return (单声道 PCM16, 采样率)；容器不认 / 没有音轨返回 null。
      * WAV 先走 [WavPcm] 直解（不依赖系统解码器，JVM 单测也能跑），其余交给
      * [MediaAudioDecoder]（v0.52.0：旧的 Mp3Decoder 把输入格式硬写成 24kHz/单声道，
      * 真实流不符就吐 0 帧，克隆因此谎报"只支持 mp3/wav"）。
      */
     private fun decodeToPcm(source: File): Pair<ShortArray, Int>? {
-        WavPcm.parse(source.readBytes(), OUT_RATE)?.let { floats ->
-            val shorts = ShortArray(floats.size) { (floats[it].coerceIn(-1f, 1f) * 32767f).toInt().toShort() }
-            return shorts to OUT_RATE
+        // v0.97.0：**先探魔数，再决定要不要整个读进内存**。
+        // 以前无条件 `source.readBytes()` —— 用户挑一个几百 MB 的 mp4 当克隆样本时，
+        // 还没判断出"这不是 RIFF"就先把整个文件读进堆，OOM 风险是实打实的
+        // （后面 MediaAudioDecoder 有自己的上限保护，但前面这一步没有）。
+        if (looksLikeRiff(source) && source.length() <= MAX_WAV_INPUT_BYTES) {
+            WavPcm.parse(source.readBytes(), OUT_RATE)?.let { floats ->
+                val shorts = ShortArray(floats.size) { (floats[it].coerceIn(-1f, 1f) * 32767f).toInt().toShort() }
+                return shorts to OUT_RATE
+            }
         }
         MediaAudioDecoder.decodeFile(source)?.let { return it.samples to it.sampleRate }
         return null
     }
+
+    /**
+     * 只读前 12 字节判 RIFF/WAVE 魔数（v0.97.0）。
+     * 为一次格式判断把整个文件读进内存，是"选错文件就崩"的直接原因。
+     */
+    private fun looksLikeRiff(file: File): Boolean = runCatching {
+        val head = ByteArray(12)
+        val n = java.io.FileInputStream(file).use { it.read(head) }
+        n >= 12 &&
+            String(head, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+            String(head, 8, 4, Charsets.US_ASCII) == "WAVE"
+    }.getOrDefault(false)
 
     /** 端侧转写样本，拿到上传接口必填的 `text`。识别模型没下载 / 转不出来返回 null，由 UI 让用户手填 */
     suspend fun transcribeSample(context: Context, sample: File): String? =

@@ -157,9 +157,3 @@ object Live2dActionMapper {
         )
     }
 }
-
-/**
- * 四个状态槽在库里的展示顺序（用户要求里列的顺序：待机 → 倾听 → 思考 → 说话）。
- * 单独抽出来是因为通话设置页与角色空间都要按这个顺序排。
- */
-val ActionSlotDisplayOrder: List<ActionSlot> = ActionSlot.entries.toList()

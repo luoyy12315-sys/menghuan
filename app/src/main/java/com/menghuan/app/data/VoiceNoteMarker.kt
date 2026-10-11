@@ -11,9 +11,6 @@ package com.menghuan.app.data
  */
 object VoiceNoteMarker {
 
-    /** 提示词里要求的写法 */
-    const val MARK = "【语音条】"
-
     /**
      * 一并认下半角方括号写法：模型经常把中文全角括号自动"纠正"成半角，
      * 只认全角会让语音条时不时失灵，而这种失灵用户看不出原因。

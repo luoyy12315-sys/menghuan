@@ -24,6 +24,16 @@ object MemoryScope {
     const val GLOBAL_PERSONA_ID = 0L
 
     /**
+     * 注入顺序：`core`（永久记忆）置顶，其余**按 id 倒序**（新的在前）。
+     *
+     * 用 id 而不是 `updatedAt`：编辑一次内容就会让 `updatedAt` 变动、整个列表重新洗牌，
+     * 而注入列表是 system prompt 前缀的一部分 —— 顺序一抖，缓存全废（口径见 AGENTS.md §零.9）。
+     * 三个入口（[visible] / [visibleGlobal] / [Split]）共用这一个口径，别再各写一遍。
+     */
+    private val INJECT_ORDER: Comparator<ProfileFact> =
+        compareBy<ProfileFact> { if (it.lifecycle == "core") 0 else 1 }.thenByDescending { it.id }
+
+    /**
      * 这个角色这一轮**能读到**的记忆。
      *
      * - `core`（永久记忆）与 `active` 都算；`staging` / `rejected` / `archived` 一律不进 prompt
@@ -31,8 +41,17 @@ object MemoryScope {
      * - 基础档案（`personaId = 0`）只在 [sharedReadable] 为真时给。关掉之后，
      *   每个角色只剩自己聊出来的那部分。
      *
-     * 顺序稳定：`core` 置顶，其余按 id。按 updatedAt 排会让注入内容每次编辑后整体跳动
-     * —— 前缀一抖，缓存就白丢（口径见 AGENTS.md §零.9）。
+     * 顺序稳定：`core` 置顶，其余**按 id 倒序**（新的在前）。按 updatedAt 排会让注入内容
+     * 每次编辑后整体跳动 —— 前缀一抖，缓存就白丢（口径见 AGENTS.md §零.9）；
+     * 所以排序键必须是不随编辑变动的 `id`，不能用 `updatedAt`。
+     *
+     * ⚠️ v0.98.0：由**升序**改为**倒序**（新的在前）。理由：这个列表的**尾部会被上限截掉**
+     * （见下），而最近才记住的（用户刚说的新目标、刚发生的事）恰恰最可能在当前这轮对话里被提到。
+     *
+     * **需要"注入给模型"的场合请用 [split]**：它在上面这个列表之上再拆成
+     * "基础档案 / 角色记忆"两条线，免得用户档案把角色记忆挤光。本函数现在服务的是
+     * 检索池（[search] / [searchHybrid]）与 [split] 自身 —— 这两个场合都**不该**受上限影响，
+     * 要的就是全量。
      */
     fun visible(all: List<ProfileFact>, personaId: Long, sharedReadable: Boolean): List<ProfileFact> =
         all.filter { f ->
@@ -40,18 +59,56 @@ object MemoryScope {
                 f.personaId == personaId ||
                     (f.personaId == GLOBAL_PERSONA_ID && sharedReadable && personaId != GLOBAL_PERSONA_ID)
                 )
-        }.sortedWith(
-            compareBy<ProfileFact> { if (it.lifecycle == "core") 0 else 1 }.thenBy { it.id }
-        )
+        }.sortedWith(INJECT_ORDER)
 
-    /** 只取用户本人的基础档案（不属于任何角色的全局链路用，如每日建议） */
+    /** 只取用户本人的基础档案（不属于任何角色的全局链路用，如每日建议）；排序口径与 [visible] 一致 */
     fun visibleGlobal(all: List<ProfileFact>): List<ProfileFact> =
-        all.filter { it.injectable && it.personaId == GLOBAL_PERSONA_ID }
-            .sortedWith(compareBy<ProfileFact> { if (it.lifecycle == "core") 0 else 1 }.thenBy { it.id })
+        all.filter { it.injectable && it.personaId == GLOBAL_PERSONA_ID }.sortedWith(INJECT_ORDER)
 
-    /** 只取属于某个角色自己的那部分（记忆页列本体用；不含基础档案、不过滤生命周期） */
-    fun ownedBy(all: List<ProfileFact>, personaId: Long): List<ProfileFact> =
-        all.filter { it.personaId == personaId }.sortedBy { it.id }
+    /** 档案的两条线（见 [split]） */
+    data class Split(val base: List<ProfileFact>, val owned: List<ProfileFact>) {
+        val isEmpty: Boolean get() = base.isEmpty() && owned.isEmpty()
+
+        /** 最终注入列表：基础档案**全带** + 角色自己的记忆截到 [ownedLimit] */
+        fun forInject(ownedLimit: Int): List<ProfileFact> = base + owned.take(ownedLimit)
+
+        /** 被折叠掉的角色记忆条数（聊天链写"另有 N 条记忆没有列出"那行用） */
+        fun folded(ownedLimit: Int): Int = (owned.size - ownedLimit).coerceAtLeast(0)
+    }
+
+    /**
+     * 把可见记忆拆成**两条独立的线**（v0.98.0）。
+     *
+     * ## 为什么必须拆
+     * [visible] 把「用户手填的基础档案」与「这个角色聊出来的记忆」合成**一条**列表，
+     * 上层再 `take(30)`。两者性质完全不同：前者是用户明示的"请你知道我是谁"（条数稳定、天然小），
+     * 后者是她自己积累的（会一直增长）。挤在同一条上限里，**用户补几条档案就能把她的记忆整个挤出去**
+     * （`take` 认不出谁是谁）—— 而这两件事本来没有任何理由共用一个数。
+     *
+     * ## 拆法
+     * - [Split.base]：基础档案（`personaId = 0`）。**不设上限**，全带 —— 它是用户自己写的，
+     *   与人设设定词同性质（用户写多长就发多长），不该由代码替他决定"记几条"。
+     * - [Split.owned]：这个角色自己的记忆。上限留给调用方（聊天链是 `MEMORY_INJECT_LIMIT`，
+     *   三条后台链是 `PromptBlocks.PROFILE_FACTS_MAX`）。
+     *
+     * ## 去重
+     * 同一个 `key` 在两条线都有时（用户档案写了"作息"、她后来也提炼出一条"作息"），
+     * 只留 **id 更大的一条**（后写进库的）—— 后写的通常是对先前的修正。规则只看 id、不引额外状态。
+     * 不去重的话 prompt 里会出现两行同名条目，还可能自相矛盾。
+     *
+     * `personaId = 0` 时（全局链路自己看自己）两条线是同一个东西：base 恒为空，全部归 owned。
+     */
+    fun split(all: List<ProfileFact>, personaId: Long, sharedReadable: Boolean): Split {
+        val pool = visible(all, personaId, sharedReadable)
+        val deduped = pool.groupBy { it.key }.map { (_, rows) -> rows.maxByOrNull { it.id }!! }
+        val owned = deduped.filter { it.personaId == personaId }.sortedWith(INJECT_ORDER)
+        val base = if (personaId == GLOBAL_PERSONA_ID) {
+            emptyList<ProfileFact>()
+        } else {
+            deduped.filter { it.personaId == GLOBAL_PERSONA_ID }.sortedWith(INJECT_ORDER)
+        }
+        return Split(base, owned)
+    }
 
     // ===== 词法检索 =====
 

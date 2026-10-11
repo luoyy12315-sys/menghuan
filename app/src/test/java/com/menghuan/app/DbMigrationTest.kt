@@ -47,6 +47,10 @@ class DbMigrationTest {
         AppDatabase.MIGRATION_22_23,
         AppDatabase.MIGRATION_23_24,
         AppDatabase.MIGRATION_24_25,
+        AppDatabase.MIGRATION_25_26,
+        AppDatabase.MIGRATION_26_27,
+        AppDatabase.MIGRATION_27_28,
+        AppDatabase.MIGRATION_28_29,
     )
 
     /** 读 `app/schemas/<version>.json`，返回 (表名 → 建表 SQL) */
@@ -317,6 +321,201 @@ class DbMigrationTest {
             db.query("SELECT lastRecalledAt FROM profile_facts WHERE id = 1").use { c ->
                 c.moveToFirst()
                 assertEquals(1700000001000L, c.getLong(0))
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    /**
+     * v25 → 26（v0.83.0 记账分类）。
+     *
+     * **断言的事**：① 存量流水一条不动，`category` 落空串（= 未分类，列表不显示标签，
+     * 老数据与升级前看起来完全一致）；② 新列能写能读（滚轮选完要落库）。
+     *
+     * **反向验尸**：把 `AppDatabase.MIGRATION_25_26` 那条 ALTER 删掉，本测试必须变红
+     * （Room identityHash 校验抛 "Migration didn't properly handle"）。
+     */
+    @Test
+    fun migrate25To26_keepsEntriesAndAddsCategoryColumn() {
+        val name = "mig25.db"
+        createVersionedDb(25, name) { db ->
+            db.execSQL(
+                "INSERT INTO ledger_entries (id, isIncome, amountCents, note, source, occurredAt, createdAt) " +
+                    "VALUES (1, 0, 3580, '午餐', 'image', 1700000000000, 1700000000000)"
+            )
+            db.execSQL(
+                "INSERT INTO ledger_entries (id, isIncome, amountCents, note, source, occurredAt, createdAt) " +
+                    "VALUES (2, 1, 80000, '月薪到账', 'manual', 1700000001000, 1700000001000)"
+            )
+        }
+
+        val room = openWithRoom(name)
+        try {
+            val db = room.openHelper.writableDatabase
+            // 存量流水原样保留，新列落空串
+            db.query("SELECT note, amountCents, category FROM ledger_entries WHERE id = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("午餐", c.getString(0))
+                assertEquals(3580L, c.getLong(1))
+                assertEquals("", c.getString(2))
+            }
+            db.query("SELECT COUNT(*) FROM ledger_entries WHERE category = ''").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(2, c.getInt(0))
+            }
+            // 新列能写：滚轮选完落库不该在老装机上炸
+            db.execSQL("UPDATE ledger_entries SET category = '餐饮' WHERE id = 1")
+            db.query("SELECT category FROM ledger_entries WHERE id = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("餐饮", c.getString(0))
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    /**
+     * v26 → 27（v0.87.0 删掉 AI 周报）。
+     *
+     * **断言的事**：① `ai_weekly_reports` 表被整个删掉（DROP TABLE）；② 别的数据一字不动
+     * —— 洞察、档案、流水这些老数据必须原样在，删表不能误伤。
+     *
+     * **反向验尸**：把 `AppDatabase.MIGRATION_26_27` 里那条 DROP 删掉，本测试的第一条断言
+     * 会立刻变红（表还在）——这条专门抓"迁移写了但没生效"。
+     */
+    @Test
+    fun migrate26To27_dropsWeeklyReportTableAndKeepsOtherData() {
+        val name = "mig26.db"
+        createVersionedDb(26, name) { db ->
+            db.execSQL(
+                "INSERT INTO ai_weekly_reports (id, weekStart, weekEnd, content, createdAt) " +
+                    "VALUES (1, 100, 106, '本周稳步推进', 7)"
+            )
+            db.execSQL("INSERT INTO ai_insights (id, title, detail, createdAt) VALUES (1, '入睡偏晚', '近 7 天有 5 天超过 1 点', 8)")
+            // profile_facts 的 personaId / category / lifecycle 都是 NOT NULL，必须给全
+            db.execSQL(
+                "INSERT INTO profile_facts (id, key, value, source, updatedAt, personaId, category, lifecycle) " +
+                    "VALUES (1, '作息', '00:30-07:45', 'ai', 9, 1, 'general', 'active')"
+            )
+        }
+
+        val room = openWithRoom(name)
+        try {
+            val db = room.openHelper.writableDatabase
+            // ① 周报表必须已被删掉
+            db.query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'ai_weekly_reports'"
+            ).use { c ->
+                assertTrue("ai_weekly_reports 应已被 MIGRATION_26_27 删掉", !c.moveToFirst())
+            }
+            // ② 别的数据一字不动
+            db.query("SELECT COUNT(*) FROM ai_insights").use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0))
+            }
+            db.query("SELECT title FROM ai_insights WHERE id = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("入睡偏晚", c.getString(0))
+            }
+            db.query("SELECT value FROM profile_facts WHERE id = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("00:30-07:45", c.getString(0))
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    /**
+     * v27 → 28（v0.88.0：洞察加 period / day 两列 + day 索引）。
+     *
+     * **断言的事**：① `ai_insights` 多了 `period` / `day` 两列；② 老洞察行的默认值
+     * 是 `period='DAILY'`、`day=0`（ALTER 带的 DEFAULT 生效，旧行能读出值而不是 NULL）；
+     * ③ `index_ai_insights_day` 索引真的建出来了（实体里写了 indices，迁移不建就会
+     * 在 onValidateSchema 抛错——那是"升级即崩"，比数据错还严重）。
+     *
+     * **反向验尸**：把 `MIGRATION_27_28` 里那条 CREATE INDEX 注释掉，
+     * Room 打开旧库时 onValidateSchema 立刻抛错 → 本测试变红。
+     */
+    @Test
+    fun migrate27To28_addsInsightPeriodDayAndIndex() {
+        val name = "mig27.db"
+        createVersionedDb(27, name) { db ->
+            // 旧库的 ai_insights 只有 id/title/detail/createdAt
+            db.execSQL(
+                "INSERT INTO ai_insights (id, title, detail, createdAt) " +
+                    "VALUES (1, '入睡偏晚', '近 7 天有 5 天超过 1 点', 8)"
+            )
+        }
+
+        val room = openWithRoom(name)
+        try {
+            val db = room.openHelper.writableDatabase
+            // ① 老行能读出默认值（不是 NULL、不是查询失败）
+            db.query("SELECT period, day FROM ai_insights WHERE id = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("DAILY", c.getString(0))
+                assertEquals(0L, c.getLong(1))
+            }
+            // ② 索引必须存在（实体 indices 与迁移逐项一致的硬要求）
+            db.query(
+                "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'index_ai_insights_day'"
+            ).use { c ->
+                assertTrue("index_ai_insights_day 应已建出", c.moveToFirst())
+            }
+            // ③ 新列可写：插一条周洞察，能按 period+day 查回来
+            db.execSQL(
+                "INSERT INTO ai_insights (title, detail, createdAt, period, day) " +
+                    "VALUES ('本周支出偏高', '外卖比上周多一倍', 9, 'WEEKLY', 123)"
+            )
+            db.query("SELECT title FROM ai_insights WHERE period = 'WEEKLY' AND day = 123").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("本周支出偏高", c.getString(0))
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    /**
+     * v28 → 29（v0.97.0）：给 `profile_facts` 补三个索引，**不改表结构、不动数据**。
+     *
+     * **断言的事**：① 老行原样还在（纯加索引，一个字段都不该动）；
+     * ② 三个索引真的建出来了 —— 实体 `ProfileFact` 里写了 `indices`，
+     *    迁移若不建，Room 在 `onValidateSchema` 会直接抛错（"升级即崩"）。
+     *
+     * **反向验尸**：把 `MIGRATION_28_29` 里任意一条 CREATE INDEX 注释掉，
+     * Room 打开旧库时立刻抛错 → 本测试变红。
+     */
+    @Test
+    fun migrate28To29_addsProfileFactIndices() {
+        val name = "mig28.db"
+        createVersionedDb(28, name) { db ->
+            db.execSQL(
+                "INSERT INTO profile_facts " +
+                    "(id, `key`, value, source, updatedAt, personaId, category, lifecycle, lastRecalledAt) " +
+                    "VALUES (1, '口味', '爱吃辣', 'ai', 1, 2, '', 'active', 0)"
+            )
+        }
+
+        val room = openWithRoom(name)
+        try {
+            val db = room.openHelper.writableDatabase
+            // ① 老数据仍在，且按新索引能查回来
+            db.query("SELECT value FROM profile_facts WHERE `key` = '口味' AND personaId = 2").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("爱吃辣", c.getString(0))
+            }
+            // ② 三个索引必须存在（实体 indices 与迁移逐项一致的硬要求）
+            listOf(
+                "index_profile_facts_key_personaId",
+                "index_profile_facts_personaId",
+                "index_profile_facts_lifecycle",
+            ).forEach { idx ->
+                db.query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = '$idx'").use { c ->
+                    assertTrue("$idx 应已建出", c.moveToFirst())
+                }
             }
         } finally {
             room.close()

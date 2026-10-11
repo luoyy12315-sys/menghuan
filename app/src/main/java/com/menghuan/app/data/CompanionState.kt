@@ -106,10 +106,16 @@ object CompanionLogic {
                     else min(0f, s.pride + PRIDE_REGRESS * minutes)
         }
 
-        // ③ 情绪：想念会让愉悦度**锁在基准附近**（越急越平静），其余时候缓慢回落到基准
+        // ③ 情绪：想念很浓时，日常漂移几乎停住（越急越平静 —— 不会因为想着你而高兴/难过到失控）；
+        // 但**不是完全冻死**：只把回落速度降到 1/4。
+        // ⚠️ v0.98.0 前这里是 `if (locked) s.valence else toward(...)`，即"完全不动"。
+        // 那时 valence 没有输入端（applyDelta 是死代码），锁不锁看不出来；
+        // 接上 `CompanionMarker` 之后后果变了：模型一次写成负值，就会在想念高峰的**整个窗口里永久卡在低谷**，
+        // 且低愉悦会经 VALENCE_DAMPEN 反过来压制连接增速 —— 一条谁也不想要的反馈。
         val locked = connection >= 0.6f
-        val valence = if (locked) s.valence else toward(
-            s.valence, VALENCE_SETPOINT, VALENCE_REGRESS * minutes
+        val valence = toward(
+            s.valence, VALENCE_SETPOINT,
+            VALENCE_REGRESS * (if (locked) 0.25f else 1f) * minutes,
         )
         val arousal = toward(s.arousal, 0.2f, AROUSAL_REGRESS * minutes)
 
@@ -150,7 +156,6 @@ object CompanionLogic {
         }
         val busy = if (s.immersion > 0.5f) "手头正忙着事，注意力不全在这边" else ""
         val parts = listOf(mood.label, want, busy, mood.nudge).filter { it.isNotBlank() }
-        // å¹³æ·¡ï¼åªå©ä¸å¥ãæç»ªå¹³å¹³ãï¼å°±è¿åç©ºä¸²ï¼ä¸ç¶æ¯è½®é½å¤ä¸æ®µæ²¡ä¿¡æ¯çè¯å  token
         // 平淡（只剩一句情绪平平）就返回空串：否则每一轮白占一段没信息的 token
         if (want.isEmpty() && busy.isEmpty() && tier.prose.isEmpty() && mood.nudge.isEmpty() &&
             mood.label == NEUTRAL_LABEL) return ""
@@ -212,7 +217,15 @@ object CompanionLogic {
         immersion = min(s.immersion, 0.2f),
     )
 
-    /** 用户倾诉/吵架等：把一次交互对状态的影响落在轴上（纯函数，可测） */
+    /**
+     * 把一次交互对状态的影响落在轴上（纯函数，可测）。
+     *
+     * ⚠️ [connection] 这个参数**刻意没有调用方**（v0.98.0 确认，不是漏接）：
+     * 情绪标记（`[心情:…]`）只驱动 valence / arousal，「想不想找人」是**时间漂移**的量
+     * （`tick` 按沉默时长爬升），不该被一句"开心"直接改写 —— 否则模型多写几次情绪词
+     * 就能把"想念度"推满，主动来找你变成可被提示词操纵的开关。
+     * 留着这个参数是给"用户倾诉/吵架"这类**明确事件**用的入口（如已有 `onUserMessage`）。
+     */
     fun applyDelta(s: CompanionState, connection: Float = 0f, valence: Float = 0f, arousal: Float = 0f) =
         s.copy(
             connection = clamp(s.connection + connection, 0f, 1f),

@@ -1,6 +1,7 @@
 package com.menghuan.app
 
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.test.core.app.ApplicationProvider
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onRoot
@@ -29,7 +30,9 @@ class UiRenderTabletTest {
     /** v0.31.0 起无预置导师种子：测试自建夹具（同 UiRenderTest.seedFixtures） */
     @Before
     fun seedFixtures() {
-        val app = compose.activity.application as MenghuanApp
+        // 关掉冷启动开屏（同 UiRenderTest）：必须在碰 compose.activity 之前关
+        val app = ApplicationProvider.getApplicationContext<MenghuanApp>()
+        app.coldStartSplashEnabled = false
         kotlinx.coroutines.runBlocking {
             app.db.personaDao().upsert(
                 com.menghuan.app.data.model.Persona(
@@ -74,14 +77,14 @@ class UiRenderTabletTest {
         snap("20-tablet-chat-twopane")
     }
 
-    /** 数据页（宽版心 840dp）：本周回顾条置顶 + 今日建议 + 记账本入口 + AI 合并入口（v0.42.0） */
+    /** 数据页（宽版心 840dp）：本周回顾条置顶 + 今日建议 + 记账本入口 + AI 洞察入口（v0.42.0 / v0.87.0） */
     @Test
     fun tablet2DataWide() {
         awaitText("阿布")
         compose.onNodeWithTag("bottom_tab_1").performClick()
         awaitText("本周回顾")
         awaitText("今日建议")
-        awaitText("AI 洞察与周报")
+        awaitText("AI 洞察")
         snap("21-tablet-data")
     }
 

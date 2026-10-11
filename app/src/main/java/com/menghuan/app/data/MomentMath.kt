@@ -112,6 +112,24 @@ object MomentMath {
 
     fun likedBy(raw: String, who: String): Boolean = who in likedByIds(raw)
 
+    /**
+     * 某个角色对这条帖子是否**已经表达过态度**（回过一条，或赞过）。
+     *
+     * 原本是 v0.79.0 主动关心链里的一段内联过滤（"真人不会对同一条反复评论"）；
+     * v0.93.x 真机发现聊天链缺了同一条规则 —— 每轮聊天都把已回过的帖子带着编号
+     * 摆回模型面前，它就再回一次，用户看到同一人设对同一条动态连回三四条。
+     * 于是抽成纯函数，当时**两条链共用**。
+     *
+     * 现在只剩主动关心链在用它（聊天链随「动态只存于主动关心链」整块退出动态），
+     * 判定口径与形状不动 —— 将来真加回第二条链，直接复用这一份，别再各写一遍。
+     *
+     * 注意判定范围是"这个角色自己"：别人回过/赞过不算 —— 那是别人的事，
+     * 不该挡住这个角色第一次表态。
+     */
+    fun engagedBy(all: List<MomentEntry>, post: MomentEntry, personaId: Long): Boolean =
+        all.any { it.parentId == post.id && it.personaId == personaId } ||
+            likedBy(post.likedBy, personaId.toString())
+
     fun likeCountOf(m: MomentEntry): Int = likedByIds(m.likedBy).size
 
     // ===== 相对时间 =====

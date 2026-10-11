@@ -54,6 +54,12 @@ class AgentAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    /** 系统解绑（服务被杀/被关）时立即清掉单例引用，别等 onDestroy——期间 isRunning() 必须说真话 */
+    override fun onUnbind(intent: Intent?): Boolean {
+        if (instance === this) instance = null
+        return super.onUnbind(intent)
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         when (event?.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
@@ -105,11 +111,4 @@ class AgentAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** 跳系统无障碍设置（服务未开启时的引导） */
-    fun openAccessibilitySettings() {
-        startActivity(
-            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
-    }
 }

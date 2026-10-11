@@ -97,6 +97,16 @@ sealed interface StreamEvent {
      * 再决定调工具；调用方拿到本事件后执行工具、回灌结果、发起下一轮。
      */
     data class ToolCalls(val calls: List<PendingToolCall>) : StreamEvent
+
+    /**
+     * **流被提前掐断**（v0.97.0）：连接结束但既没见过 `[DONE]`、也没见过任何
+     * `finish_reason` —— 网关/代理在 `[DONE]` 之前干净关闭了连接。
+     *
+     * 为什么必须单列一个事件：以前 EOF 与 `[DONE]` 走的是同一条 break 路径，
+     * 半截回复会被**当成完整回复**静默落库，用户看到一句说到一半的话且**毫无报错**。
+     * 现在由调用方决定怎么处置（保留已收内容 + 明确告知，而不是假装正常）。
+     */
+    data object Incomplete : StreamEvent
 }
 
 /** collectReply 的返回：全量回复文本 + 思考链 + 该次调用的 token 用量（拿不到为 null） */
@@ -109,6 +119,11 @@ data class CollectedReply(
     val promptTokens: Int = 0,
     /** 输入里被缓存命中的 token 数（服务商没回时为 0，不猜） */
     val cachedPromptTokens: Int = 0,
+    /**
+     * 流是否被提前掐断（v0.97.0）：true = 没见过 `[DONE]` 也没见过 `finish_reason`，
+     * [text] 可能是半截。调用方应把它当成"这次结果不完整"处理，而不是当成正常完成。
+     */
+    val truncated: Boolean = false,
 )
 
 /**
@@ -117,7 +132,7 @@ data class CollectedReply(
  *
  * v0.38.0：
  * - 流式解析抽成 [streamEvents]（Delta / Usage 两类事件）——chat() 只要正文，
- *   ChatViewModel / AgentLoop / 提炼 / 周报可顺带拿 usage 记账；
+ *   ChatViewModel / AgentLoop / 提炼可顺带拿 usage 记账；
  * - 支持 vision 输入：用户消息带 imagePath 时经 [buildMessagesJson] 转多段 content
  *   （image_url data URL + 可选 text），是否看得到图由模型能力决定。
  */
@@ -131,7 +146,7 @@ class OpenAiClient(
     fun chat(systemPrompt: String, history: List<ChatMessage>): Flow<String> =
         streamEvents(systemPrompt, history).mapNotNull { (it as? StreamEvent.Delta)?.text }
 
-    /** 全量收集（Agent / 提炼 / 周报 / 主动关心等非流式调用点），顺带返回 usage 与思考链 */
+    /** 全量收集（Agent / 提炼 / 主动关心等非流式调用点），顺带返回 usage 与思考链 */
     suspend fun collectReply(
         systemPrompt: String,
         history: List<ChatMessage>,
@@ -143,6 +158,7 @@ class OpenAiClient(
         var usage: Int? = null
         var prompt = 0
         var cached = 0
+        var truncated = false
         streamEvents(systemPrompt, history, runtimeContext, imageDataUrl).collect { ev ->
             when (ev) {
                 is StreamEvent.Delta -> text.append(ev.text)
@@ -153,12 +169,16 @@ class OpenAiClient(
                     cached = ev.cachedPromptTokens
                 }
 
-                // collectReply 的调用点（提炼/周报/主动关心）不带 tools，不会收到这个事件；
+                // collectReply 的调用点（提炼/主动关心）不带 tools，不会收到这个事件；
                 // 收到也说明模型想调工具而非给正文——忽略，别把调用请求当成回复文本
                 is StreamEvent.ToolCalls -> Unit
+
+                // 被掐断：不抛（已收到的正文仍然有价值，提炼/摘要场景宁可留半截也别整条作废），
+                // 只在返回值里如实标注，由调用方决定要不要重试
+                StreamEvent.Incomplete -> truncated = true
             }
         }
-        return CollectedReply(text.toString(), usage, reasoning.toString(), prompt, cached)
+        return CollectedReply(text.toString(), usage, reasoning.toString(), prompt, cached, truncated)
     }
 
     /**
@@ -202,27 +222,41 @@ class OpenAiClient(
             .post(body)
             .build()
 
-        val call = http.newCall(request)
+        // TLS 兼容回退（v0.97.0）：与生图 / ASR / 联网搜索 / 能力探测同一条纪律。
+        // 以前只有聊天链没接 [callWithTlsFallback]——部分中转网关（new-api 一类）不认
+        // Android 默认 ClientHello，于是出现"测试连接/生图都通过、唯独聊天 SSLHandshakeException"
+        // 的怪现象，用户根本无从下手。这里补上，握手失败就用兼容规格重试一次。
+        var call = http.newCall(request)
+        val response = try {
+            call.execute()
+        } catch (e: javax.net.ssl.SSLHandshakeException) {
+            call = NetworkStack.compatClient(http).newCall(request)
+            call.execute()
+        }
         val toolAccumulator = ToolCallAccumulator()
         try {
-            call.execute().use { resp ->
+            response.use { resp ->
                 // 非 2xx 一律抛 ApiException：错误文本绝不混进回复流（否则会被当作 AI 回复落库）
                 if (!resp.isSuccessful) {
                     throw ApiException(resp.code, resp.body?.string())
                 }
                 val source = resp.body?.source() ?: return@use
+                // v0.97.0：终态标记。**任何**一个都算正常收尾，否则流是被掐断的。
+                var sawTerminal = false
                 while (!source.exhausted()) {
                     val line = source.readUtf8Line() ?: break
                     if (!line.startsWith("data:")) continue
                     val payload = line.removePrefix("data:").trim()
-                    if (payload == "[DONE]") break
+                    if (payload == "[DONE]") {
+                        sawTerminal = true
+                        break
+                    }
                     // 只接受 String 类型的 content：推理类模型（deepseek-reasoner / GLM-4.5 /
                     // qwen-thinking 等）思考阶段发 "content": null，org.json 会把 JSON null
                     // 读成字面量 "null"，optString 会把这些垃圾逐个 emit 成屏幕上的 nullnull…
                     val json = runCatching { JSONObject(payload) }.getOrNull() ?: continue
-                    val delta = json.optJSONArray("choices")
-                        ?.optJSONObject(0)
-                        ?.optJSONObject("delta")
+                    val choice = json.optJSONArray("choices")?.optJSONObject(0)
+                    val delta = choice?.optJSONObject("delta")
                     val content = delta?.opt("content")
                     if (content is String && content.isNotEmpty()) emit(StreamEvent.Delta(content))
                     // 思考链（v0.41.4）：字段名各家不一——官方 deepseek / 智谱用 reasoning_content，
@@ -233,16 +267,24 @@ class OpenAiClient(
                     }
                     // 工具调用分片（P3-1）：只攒不发，流结束一次性给全量（见下方）
                     delta?.optJSONArray("tool_calls")?.let { toolAccumulator.accept(it) }
+                    // finish_reason 非空 = 模型正常收尾。很多兼容网关压根不回 [DONE]，
+                    // 只靠 [DONE] 判终态会把它们全部误判成"被掐断"。
+                    val finish = choice?.opt("finish_reason")
+                    if (finish is String && finish.isNotEmpty()) sawTerminal = true
                     // 用量块（部分服务商最后一块带 usage，choices 为空）：有就记账
                     parseUsage(json.optJSONObject("usage"))?.let {
                         emit(StreamEvent.Usage(it.totalTokens, it.promptTokens, it.cachedPromptTokens))
                     }
                 }
-                // 流自然结束（[DONE] 或连接耗尽）：有聚合到的 tool_calls 才发事件。
+                // 流结束：有聚合到的 tool_calls 才发事件（模型要求调工具 = 正常收尾）。
                 // 不依赖 finish_reason=="tool_calls"——部分兼容网关根本不回这个值。
                 if (!toolAccumulator.isEmpty) {
+                    sawTerminal = true
                     emit(StreamEvent.ToolCalls(toolAccumulator.result()))
                 }
+                // v0.97.0：没见过任何终态 = 连接被提前掐断。**必须说出来**，
+                // 否则半截回复会被当成完整回复静默落库（用户只看到一句说到一半的话）。
+                if (!sawTerminal) emit(StreamEvent.Incomplete)
             }
         } catch (e: CancellationException) {
             call.cancel() // 收集端已取消：中断底层连接，别让阻塞读滞留 IO 线程

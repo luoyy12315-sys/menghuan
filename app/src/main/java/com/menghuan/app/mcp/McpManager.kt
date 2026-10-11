@@ -40,6 +40,20 @@ class McpManager(
     )
 
     private val mutex = Mutex()
+    /**
+     * 守护下面三张表的**读写**（v0.97.0）。
+     *
+     * 以前 `execute()` 裸读 `routeTable`、`clientFor()` 裸读写 `clients`，而 `invalidate()`
+     * 在协程锁下 `clear()` 它们 —— 并发工具调用 + 用户同时改配置时，可能出现
+     * "读到半重建的路由表"或"新建的客户端被 clear 掉、谁也没关"。
+     * 临界区里只有 Map 操作、没有挂起点，所以用普通对象锁（`synchronized` 不允许挂起，天然安全）。
+     */
+    private val stateLock = Any()
+    /**
+     * 握手串行化（v0.97.0）：两个并发工具调用不该给同一台服务器握两次手。
+     * 与 [mutex] 是两个不同的锁，绝不在持有 [mutex] 时再用它，避免自锁。
+     */
+    private val clientMutex = Mutex()
     private val clients = HashMap<String, McpClient>()
     private val toolsByServer = HashMap<String, List<McpTool>>()
     private val routeTable = HashMap<String, Pair<String, String>>() // openAiName -> (serverId, originName)
@@ -55,21 +69,23 @@ class McpManager(
     suspend fun resolveTools(): List<ResolvedTool> = mutex.withLock {
         val servers = settings.mcpServers().filter { it.enabled }
         val out = ArrayList<ResolvedTool>()
-        routeTable.clear()
+        // v0.97.0：先在**本地表**里建好，最后一次性换上去。以前是边算边往 routeTable 里塞，
+        // 与 execute() 的读并发时它能看见一张建到一半的表。
+        val newRoutes = HashMap<String, Pair<String, String>>()
         for (server in servers) {
             val tools = runCatching { toolsFor(server) }.getOrNull() ?: continue
             val usedNames = HashSet<String>()
             for (tool in tools) {
                 var openAiName = server.namespacedPrefix + McpServerCodec.sanitizeToolName(tool.name)
                 var suffix = 2
-                while (openAiName in usedNames || routeTable.containsKey(openAiName)) {
+                while (openAiName in usedNames || openAiName in newRoutes) {
                     // 消毒后撞名（如 a.b 与 a:b）：追加序号区分，保证路由表一一对应
                     openAiName = (server.namespacedPrefix + McpServerCodec.sanitizeToolName(tool.name))
                         .take(60) + "_$suffix"
                     suffix++
                 }
                 usedNames += openAiName
-                routeTable[openAiName] = server.id to tool.name
+                newRoutes[openAiName] = server.id to tool.name
                 out += ResolvedTool(
                     serverId = server.id,
                     serverName = server.name,
@@ -80,6 +96,10 @@ class McpManager(
                     readOnly = tool.readOnly,
                 )
             }
+        }
+        synchronized(stateLock) {
+            routeTable.clear()
+            routeTable.putAll(newRoutes)
         }
         out
     }
@@ -103,7 +123,8 @@ class McpManager(
      * 让模型拿到"这次没成"的事实继续走，而不是整条聊天链路崩掉。
      */
     suspend fun execute(openAiName: String, argumentsJson: String): String {
-        val route = routeTable[openAiName]
+        // v0.97.0：读表加锁（写入方在 resolveTools / invalidate，跨线程）
+        val route = synchronized(stateLock) { routeTable[openAiName] }
         val rawText = if (route == null) {
             "未知工具 $openAiName（可能服务器已被停用或移除）"
         } else {
@@ -123,26 +144,39 @@ class McpManager(
 
     /** 服务器清单变了（增删改/开关）就叫这个：丢客户端与工具缓存，下次 resolve 重连 */
     suspend fun invalidate() = mutex.withLock {
-        clients.values.forEach { runCatching { it.close() } }
-        clients.clear()
-        toolsByServer.clear()
-        routeTable.clear()
+        // v0.97.0：先原子地摘走整份表，再在锁外 close —— 避免"清表中途被读到半张空表"，
+        // 也避免把正在被其它协程使用的新客户端连坐清掉。
+        val stale = synchronized(stateLock) {
+            val snapshot = clients.values.toList()
+            clients.clear()
+            toolsByServer.clear()
+            routeTable.clear()
+            snapshot
+        }
+        stale.forEach { runCatching { it.close() } }
     }
 
     suspend fun close() = invalidate()
 
     /** 工具清单：本进程内按服务器缓存（一轮 App 生命周期里服务器侧极少变，省得每次回复都握手） */
-    private suspend fun toolsFor(server: McpServerConfig): List<McpTool> =
-        toolsByServer.getOrPut(server.id) { clientFor(server).listTools() }
+    private suspend fun toolsFor(server: McpServerConfig): List<McpTool> {
+        synchronized(stateLock) { toolsByServer[server.id] }?.let { return it }
+        val tools = clientFor(server).listTools()
+        synchronized(stateLock) { toolsByServer[server.id] = tools }
+        return tools
+    }
 
     private suspend fun clientFor(server: McpServerConfig): McpClient {
-        val existing = clients[server.id]
-        if (existing != null && existing.initialized) return existing
-        val token = settings.mcpTokenFor(server.id).ifBlank { null }
-        val client = clientFactory(server.url, token)
-        client.initialize()
-        clients[server.id] = client
-        return client
+        synchronized(stateLock) { clients[server.id] }?.let { if (it.initialized) return it }
+        // 双重检查 + 串行握手：并发调用不会给同一台服务器握两次手，也不会把新客户端丢在锁外
+        return clientMutex.withLock {
+            synchronized(stateLock) { clients[server.id] }?.let { if (it.initialized) return@withLock it }
+            val token = settings.mcpTokenFor(server.id).ifBlank { null }
+            val client = clientFactory(server.url, token)
+            client.initialize()
+            synchronized(stateLock) { clients[server.id] = client }
+            client
+        }
     }
 
     companion object {

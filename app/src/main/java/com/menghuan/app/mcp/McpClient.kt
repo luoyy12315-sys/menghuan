@@ -204,8 +204,9 @@ class McpClient(
             .put("params", params)
         return post(payload) { resp ->
             val session = resp.header("Mcp-Session-Id")
-            val body = resp.body?.string().orEmpty()
-            val message = extractResponse(resp.header("Content-Type").orEmpty(), body, id)
+            val contentType = resp.header("Content-Type").orEmpty()
+            val body = readBodyBounded(resp, id, contentType)
+            val message = extractResponse(contentType, body, id)
                 ?: throw McpException("服务器没有返回 id=$id 的响应")
             val error = message.optJSONObject("error")
             if (error != null) {
@@ -216,6 +217,38 @@ class McpClient(
             }
             message.optJSONObject("result") to session
         }
+    }
+
+    /**
+     * 有界读取响应体（v0.97.0）。
+     *
+     * **为什么不用 `body.string()`**：MCP 的 Streamable HTTP 允许服务器用
+     * `text/event-stream` **一直挂着连接**（长任务、保活心跳）。`string()` 会读到连接关闭为止，
+     * 最坏被 `callTimeout(5min)` 吊住好几分钟，期间这台服务器的所有工具都不可用。
+     * 这里改成逐行读：SSE 每读完一个事件块就问一次"这是我们要的 id 吗"，
+     * 命中就立刻收工，不必等服务器主动断开；同时用 [MAX_RESPONSE_CHARS] 兜住内存。
+     */
+    private fun readBodyBounded(resp: Response, id: Int, contentType: String): String {
+        val source = resp.body?.source() ?: return ""
+        val isSse = contentType.contains("event-stream", ignoreCase = true)
+        val all = StringBuilder()
+        val block = StringBuilder()
+        try {
+            while (all.length < MAX_RESPONSE_CHARS) {
+                val line = source.readUtf8Line() ?: break
+                all.append(line).append('\n')
+                if (!isSse) continue
+                if (line.isBlank()) {
+                    if (extractResponse(contentType, block.toString(), id) != null) break
+                    block.setLength(0)
+                } else {
+                    block.append(line).append('\n')
+                }
+            }
+        } catch (_: java.io.IOException) {
+            // 读到一半连接断了：把已读部分交出去，extractResponse 会做兜底解析
+        }
+        return all.toString()
     }
 
     /** 统一 POST：鉴权头 / 会话头 / 协议版本头在这里集中加；非 2xx 翻译成 [McpException] */
@@ -249,6 +282,12 @@ class McpClient(
     companion object {
         /** 我们提议的协议版本：2025-06-18 是 Streamable HTTP 定型版，现役服务器普遍支持 */
         const val PROTOCOL_VERSION = "2025-06-18"
+
+        /**
+         * 响应体读取上限（v0.97.0）：正常 MCP 响应是几 KB 的 JSON，
+         * 2MB 足够覆盖任何合法应答；超出说明对端在灌流，直接停手交给兜底解析。
+         */
+        private const val MAX_RESPONSE_CHARS = 2_000_000
 
         private const val RPC_INITIALIZE = "initialize"
         private const val RPC_INITIALIZED = "notifications/initialized"

@@ -1,194 +1,125 @@
 # 梦欢 · 项目长期记忆
 
-> 仅保留仍有约束力的结论；版本细节见 `docs/CHANGELOG.md` 与 `.workbuddy/memory/2026-*.md`。
+> 只留仍有约束力的结论。版本见 `docs/CHANGELOG.md`；流水见 `.workbuddy/memory/2026-*.md`；命令行与脚本细节见 `PLAYBOOK.md`。
 
-## 最高优先级
-- 新功能/疑难修复先搜 GitHub 成熟案例（中英文关键词、`android ... sample`、`awesome-android ...`），再适配；没把握先说明，不做试错式连改。
-- 有歧义或多条路线先问清效果、场景、代价，让用户选；讲方案先描述/画出结果，不先抛实现术语。
-- 测试、编译、打包由用户决定；默认改完源码即停。一批需求只算一个版本，不拆版本。
-  ⚠️ **版本号用两段式**（`0.57`、`0.58`… 每次第二位 +1）——**不要再出 `0.56.17` 这种三段补丁号**
-  （2026-10-07 用户拍板，原话"应该是0.57这样的啊。哪有0.56.17这么神奇的东西"；
-  已出货的 0.56.17 / versionCode 138 保持不动，不重命名不重出）。
-- 功能入口/行为变化必须同步 `AiPrompts.DEFAULT_ASSISTANT_PROMPT`；外部服务地址必须查证官方来源。
-- 键盘与语音现行栈未经点名不动；数据当前只存本机。
+## 铁律
+- **用户意图不一定正确，按最优方案答，不迎合。** 不用 A/B/C 选项回避判断；用户直觉可推翻我的错误方案，但不顺着说；前提有误先纠前提。只有**真等价**（口味/风格/成本）才给选项。
+- **看到常量/参数先问「它凭什么」**，改前先 grep 有没有被读。
+- 「源页有、目标页没有」的上下文先问（按角色的功能搬到全局页 → 进谁的角色？）。
+- 新功能/疑难修复先搜 GitHub 成熟案例；没把握先说明，不试错式连改。
+- 测试/编译/打包由用户决定，**一批需求=一个版本**。**UI 改动编译即停；要跑测试先问一句**；版本号/CHANGELOG/出包一律等点名。例外：动到 `manualPatch` 链/迁移/断言这类**静默失效**处，锚点核对要做，但**只跑那一个类**。
+- 版本号**两段式**（0.57、0.58），绝不三段补丁号。
+- 功能入口/行为变化必须同步 `AiPrompts.DEFAULT_ASSISTANT_PROMPT` + `AiPromptsTest`。
+- 键盘与语音现行栈未经点名不动；数据只存本机；**改交互/动效前必须先问**。
+- 禁止 `git checkout -- <文件>`（工作区长期大量未提交改动，曾冲掉 replace 链）。
+- 「只能/只在…」先问清是"要限制"还是"描述现状"。
+- **删声明要连上方紧邻 KDoc + 注解行一起删**（`@Query`/`@Composable` 在上方，漏删 → KSP 报 `Not sure how to convert a Cursor…`）。
 
-## 构建
-- JDK17：`C:/Users/16621/.workbuddy/toolchains/jdk17`；Android SDK 同级；Gradle 8.14.3 用本机分发，项目无 wrapper，勿用 `gradlew`。
-- ⚠️ **`gradle` 不在 PATH**（直接敲会 `command not found`）：用
-  `C:/Users/16621/.gradle/wrapper/dists/gradle-8.14.3-all/10utluxaxniiv4wxiphsi49nj/gradle-8.14.3/bin/gradle`。
-- `JAVA_HOME` 必须 `export`，`PATH` 加 `$JAVA_HOME/bin`；日志写 `logs/`。
-- 中文路径 JVM 构建先 `subst X: "C:\Users\16621\Desktop\梦欢"`，再从 `X:` 构建。
-- Compose 静态检查不能替代 `:app:compileDebugKotlin`；`scrollBy` 需导入 `androidx.compose.foundation.gestures.scrollBy`。
-- 本版本 Compose 的**导入路径坑**（都踩过）：`pointerInput` = `androidx.compose.ui.input.pointer.pointerInput`；
-  `Modifier.blur` = `androidx.compose.ui.draw.blur`；`boundsInRoot()` 要 `import androidx.compose.ui.layout.boundsInRoot`；
-  **没有 `positionInParent()`**；`androidx.compose.ui.unit.lerp` 只有 **Dp** 重载，
-  Float 插值直接写 `a + (b-a)*f`，别去找 util.lerp。
-- 勿删 `local.properties`、`android.overridePathCheck=true`、阿里云 Maven 镜像。
-- 出包：升版本 → assembleRelease → 根目录 `梦欢-v<版本>-release.apk` → 上版入 `archive/` → CHANGELOG/助手手册/断言同步。
-- 出包命令里 `java -version` 报 `java: command not found` 是**假警报**（该 subshell 的 PATH 没生效），
-  Gradle 走 `JAVA_HOME` 照常跑通 —— 判据只看 gradle 的 `BUILD SUCCESSFUL`。
-- `aapt` 读不了中文路径（`Illegal byte sequence`）：要验版本就 dump `app/build/outputs/apk/release/app-release.apk`，
-  再用 md5 确认根目录那份与之逐字节一致。
+## 构建与测试
+- **命令细节（JDK/Gradle 路径、subst、出包顺序、抓栈）见 `PLAYBOOK.md`**；勿删 `local.properties`、`android.overridePathCheck=true`、阿里云镜像；日志写 `logs/`。
+- APK 字节数不能当重建判据（zip 对齐凑长度），认 md5；证改动编进去比 `classes.dex` md5。
+- **dex 搜中文必须用 Python 数 UTF-8 字节**：`strings -e l` / `utf-16-le` 全 0 是**假阴性**，`grep` 对中文失效；短串防误命中，以长串锚点为准。
+- ⚠️ **手册类旧措辞在 dex 里恒有命中** —— 那是 `manualPatch` 的 **target 参数**（补丁要拿它做匹配），不代表手册最终文案里还有。**判手册文案只认 jshell dump**；dex 只能证明"新串编进去了"。
+- **测试基线 v0.88.0：719 项 / 64 类 / 0 红**；唯一 flaky `UiRenderTest.render25VoiceModeBlockedByMissingModel`（单跑必绿）。
+- 测试红了先分"实现 bug / 断言过期"（看注释里是否写着"用户点名不要 XXX"）。
+- 重写大文件前先列顶层声明清单，搬完与 `git show HEAD:<文件>` 对账。
+
+## Room / 迁移
+- **实体 `indices` 必须与迁移建的索引逐项一致**，否则 onValidateSchema 抛错 → 打开库即崩。
+- 改实体形状后必须重跑 KSP 重导 schema（identityHash 变）并同步迁移测试。
+- `DbMigrationTest.kt` 从 `app/schemas/<v>.json` 建旧库；Robolectric 下必须显式 `db.execSQL("PRAGMA user_version = $v")`；新迁移必须反向验证。
+- **删功能的迁移**：建表那条历史迁移**原样保留**，只加「已废弃」注释（老库要一路重放，少一环报"找不到迁移路径"）；DROP 用 `IF EXISTS`。
+- 金额以分存 Long，余额由流水累加。库版本：v26=记账分类列、v27=删周报表、v28=洞察 period/day+索引。
 
 ## UI / Compose
-- Figma 风：黑白骨架；品牌色只作内容点缀。令牌与组件统一走 `ui/common/Neu.kt`；图标只用 `MIcons`。
-- 核心色：背景/表面白，轨道 `#F2F3F5`，发丝线黑 8%，主强调黑，危险 `#F24E1E`；强调色上文字/图标跟随 `AccentInk`。
-- 动效弹簧优先；进出场避免边缩边 `fadeOut`；比例尺寸用 `LocalContentWidth`。
-- `neuSurface(intensity=0f)` 会整条透明；凹陷灰槽用 `inset=true`。
-- 颜色令牌在 composable 先取局部变量再进绘制 lambda；自绘描边内缩半个线宽。
-- 独立 composable 不直接用 `Modifier.weight`；流程状态放 UiState；过滤节点直接不组合，不用 alpha=0。
-- 动画容器不直接挂 `imePadding`；小尺寸自绘图标最终需截图放大验收。
-- **底栏可横滑切页**（v0.56.9 定稿，用户点名"黑色块可以滑动切换屏幕"）：
-  底栏加 `detectHorizontalDragGestures`，手指**每跨过一格**（`cellPx`）就
-  `animateScrollToPage(startPage + 已跨格数)`；黑块跟手 = **整数页号的弹簧位置 + 拖动残余位移**
-  （松手残余回 0）。⚠️ 两条别再踩：`dispatchRawDelta` 在这里**根本不生效**（只在 Pager 自己的
-  滚动流程里有效）；黑块位置**不许**改成 `currentPage + currentPageOffsetFraction` 连续跟随
-  —— 那会把弹簧过冲吃掉，用户点名要的"Q 弹感"就没了。
-- **编辑人设的 emoji 头像**（v0.56.10 定稿）：`Int.MAX_VALUE` 格子的惰性列表做**循环滚动**
-  （`index % size`；起点 `(Int.MAX_VALUE/2/size)*size` 保证对齐）；
-  **放大镜 = 左边那个头像框**（不是那排 emoji！）：滑到的 emoji 以
-  `NeuAvatar(emojiScaleX/Y)` 从放大态（1.42/1.16）**压回** 1.0，弹簧过冲 = "挤进去"；
-  那排 emoji **只做大小/透明度渐变，绝不加模糊**（用户点名"不要模糊"）；
-  **焦点锚点 = 头像框自己的中心**（NeuAvatar 量 `boundsInRoot().center.x`），emoji 排
-  **从头像框底下穿过**（LazyRow 铺满、框画上层），滚到框位的那一个 = focus=1 = 被选中
-  （`contentPadding(start=6dp)` 让静止时中心正好落框心：56/2−44/2）——
-  "滚进框里 = 最大 = 选中"三合一，别再拆成两个锚点；
-  头像名单 `avatarPresets` 已含外星人/机器人/幽灵等幻想形象（v0.53.4 那条"只用人的形象"已被放宽）。
-- **改交互/动效前必须先问**（v0.56.9 教训）：我自己拍的 90ms 延迟、中间圆环镜框、
-  把弹簧改成连续跟随 —— 三处都被否，用户质问"改之前为什么不问我"。
-  涉及观感（延迟、模糊、弹性、动画幅度）一律先问再做，别拿默认参数硬上。
-- 异步数据必须区分「未加载/空/有数据」；loaded 从主数据流派生，不另发 Room 全表查询。
-- 页面 pop 时底栏显隐与 push 过渡同步，避免导航状态先切导致闪跳。
-- **聊天页那条浅灰线：至今未定位，源码已回退干净（不要再猜着改）**。已量到的两条常驻横线
-  （AI 气泡上一条的底边 y≈676、下一条的顶边 y≈883）用户都明确说"不是"；
-  顶栏下沿那条全屏线用户明确**要保留**。它是**间歇**出现的（"有时候有有时候没有"），
-  用户给的**裁剪图里没有那条线**（逐像素扫过：气泡左侧全白）→ 裁掉了。
-  ⚠️ **下一步必须先拿到"线出现瞬间的整屏截图（不裁剪）"**，定位到具体绘制元素前不动任何渲染代码。
-  已试过并已回退的两版：①AI 气泡改浅灰面+去描边 ②`neuSurface` 加 `stroke=false`。
-  诊断手段记牢：**PIL 逐像素扫 + 灰度骨架图 + 每条线灰度统计**（看缩略图肉眼会看错）。
-- **依赖"被组合"触发的动画在 Pager 里必然失效**：四 tab 同时组合，动画在屏外播完。
-  金额滚动（`RollingAmountText.restartKey`）、本周回顾、整页错峰一律由外部可见信号驱动。
-  ⚠️ `RollingAmountText` 的重播实现是**外层 `key(restartKey)` 重新挂载 + 内层 `LaunchedEffect(Unit)` 播种**，
-  两条调用点（数据页卡片 / 记账本页）走**同一段代码** —— 不要再改回"改自身状态那套"（重组时机一变就被跳过）。
-- 自绘组件带"可选装饰层"时，**装饰层不能决定容器尺寸**（否则有/无装饰时内容位移）；
-  尺寸钉在容器上（如通话页头像画布 196dp）。
-- 只在渲染层消费的动画值（如头像呼吸）用 `graphicsLayer` 延迟读，避免逐帧重组；不要为省事把它换成"按状态开关"，那是两态尺寸不一致的来源。
+- Figma 风黑白骨架；令牌/组件走 `ui/common/Neu.kt`；图标只用 MIcons；轨道 `#F2F3F5`，危险 `#F24E1E`。
+- 动效弹簧优先；渲染层动画值用 `graphicsLayer` 延迟读；独立 composable 不用 `Modifier.weight`；过滤节点直接不组合；异步数据区分未加载/空/有数据。
+- 弹层可点区域一律 `clickable(indication=null)`；界面不写说明性小字。
+- 复用件：`NeuAvatar(emoji, size, ringBrush=personaBrush(id), imagePath, modifier)`；底部弹层 `NeuSheetScaffold(title, onDismiss){ColumnScope}`。
+- 已定稿（别走回头路）：底栏横滑=整数页号弹簧+拖动残余；emoji 头像排只做大小/透明度渐变绝不模糊；Pager 内动画由外部可见信号驱动；记账金额静态不滚动；「按住说话」按屏幕位置划档；聊天页浅灰线未定位不要猜着改。
+- ⚠️ **`LaunchedEffect(Unit)` 在 Pager 里会在屏外跑**（四 tab 预组合）：刷新/入场一律由 `visible` 信号驱动。
+- `Modifier.onGloballyPositioned` 报的是**整个 LayoutNode** 尺寸，`padding` 前后一样 —— 量"内容自己"必须挂更内层节点（长按菜单锚点栽过）。
+- 导入坑：`pointerInput`→`ui.input.pointer`；`blur`→`ui.draw`；`boundsInRoot`→`ui.layout`；无 `positionInParent/Window`；`ui.unit.lerp` 只有 Dp 重载；`TextOverflow.MiddleEllipsis` 在 bom 2024.12.01 **不存在**。
 
 ## 对话滚动 / 键盘
-- 首次定位 `scrollToItem`；后续仅 nearBottom 时跟随。流式末项变长要按高度差 `scrollBy` 补滚，不能只靠 LazyColumn 锚定。
-- `KeyboardInsets.kt` 是唯一键盘避让实现：导航条基线 + `WindowInsetsAnimationCompat` 逐帧 inset；不二次插值、不双层避让、不把面板高度混进 bottomInset。
-- 面板/键盘互斥由统一入口及 `ImeDismissesPanels` 兜底；不拿焦点变化当键盘显隐信号。有弹层页面需分层处理返回键。
+- 首次 `scrollToItem`，后续仅 nearBottom 跟随；流式末项变长按高度差 `scrollBy` 补滚。
+- `KeyboardInsets.kt` 是唯一键盘避让实现（导航条基线+逐帧 inset），不二次插值、不双层避让；面板/键盘互斥 + `ImeDismissesPanels` 兜底。
 
 ## 语音硬约束
-- ASR 唯一实现 `SherpaAsr`（SenseVoice 离线非流式）；语音消息与通话共用实例。模型由 `AsrModelManager` 下载到 `filesDir/asr_sensevoice/`，就绪靠 `.verified` + 文件字节数。
-- 采集仅 `VoiceRecorder`（AudioRecord 16k/mono/PCM16 + WAV），不使用 MediaRecorder。
-- TTS 三家协议分别实现；CALL=WAV/24000，NOTE=MP3；采样率唯一常量 `TTS_CALL_SAMPLE_RATE`。
-- 音色名单统一由 `TtsVoices.library()`；克隆音频走 `MediaAudioDecoder`，重采样必须 `WavPcm.resample`，样本先 `trimToSpeech`；服务端名称用 `asciiVoiceName`。
-- `WavPcm` 保持支持 PCM 8/16/24/32、float、EXTENSIBLE；勿收窄。
-- 构建保持：`noCompress` 仅 `onnx`、ABI 仅 `arm64-v8a`、sherpa JNI keep 规则不动。
+- ASR：`SherpaAsr`（离线 SenseVoice）与 `OnlineAsr`（OpenAI 兼容）**两条并列、手动切换、绝不自动回退**；通话逐段喂 PCM **始终走端侧**；采集仅 `VoiceRecorder`。
+- TTS 三家协议分别实现；CALL=WAV/24000、NOTE=MP3，采样率唯一常量 `TTS_CALL_SAMPLE_RATE`；音色名单 `TtsVoices.library()`；重采样必须 `WavPcm.resample`；`customName` 只收 ASCII，中文名存本机显示。
+- `WavPcm` 保持 PCM 8/16/24/32、float、EXTENSIBLE；构建 `noCompress` 仅 onnx、ABI 仅 arm64-v8a、sherpa JNI keep 不动。
+- 朗读：`ChatViewModel.readAloud()` 复用语音条链；同一时刻只念一条；复位不能只靠 `onCompletion`（按 `probeDurationMs` 兜底）；每次打断 `readToken++`；AI 已发语音条的回复跳过自动朗读。
 
-## 结构与业务不变量
-- 四 tab：消息/数据/任务/我的；平板判定唯一来自 `LocalWindowWidthClass`。
-- 对话页三点菜单固定九项：编辑人设、聊天记录、主动打电话、角色立绘、Live 2D、聊天背景、联网、音色、模型。
-- 数据页顺序固定：本周回顾 → 今日建议 → 记账本 → AI 洞察/周报。
-- 「通话行为」页两张同级卡：**语音通话铃声** 与 **接听延迟**（路由 `call_answer_delay`）；
-  接听延迟**不再挂在铃声页里**（v0.56.5 起）。铃声页只管铃声。接听延迟是**自定义秒数 0~600**（v0.56.6，非档位）。
-- **电话 = 「主动电话」+ 「定时电话」**（v0.56.7 起更名/改结构）：
-  电话弹层**两行都点标题才展开**、**页内不留说明小字**；
-  「主动电话」= `AiCallRule.enabled` + 展开后的「几天没聊就主动打」（`idleDays` 1–30）与「每天几点检查」（`rule.time`，默认 21:00）
-  —— 到点检查一次，够天数就主动打（静默时段 22:30–08:00 不打、每人设每天最多一次），规则闹钟在 `AiCall.rearm` 里排；
-  「定时电话」= `AiCallRule.scheduledEnabled` + 一条条 `ScheduledMessage(kind = "call")`（与定时消息**共用存储/闹钟/编辑表单**），
-  `ScheduledMessageReceiver` 按 kind 分流到 `ScheduledMessageSender` 或 `AiCall.ring`；
-  `AiCall.ring(byExplicitSchedule = true)` 只看那两个开关，**不看静默时段、不占每天一次名额**。
-- **数据页「记账本」卡片金额 = 滚法照搬记账本页 + 切页也重播**（v0.56.10 定稿，用户拍板：
-  "切到数据页要跳，跳法就是**从 0 滚到余额**"）：
-  `LedgerEntryCard(rollKey = ledgerRollKey)`，`ledgerRollKey` 由 `visible` 驱动、**可见即 +1
-  不加延迟**（"延后 90ms"那版被否：盯着一串 0 停一下才滚，观感更差）。
-  滚动时长 = **620ms**（v0.56.10 用户点名，与记账本页现金余额卡同一档；520ms 那版被嫌丑）；
-  **`LedgerEntryCard` 不套 `staggerEnter`**（v0.56.10 用户点名"不需要错峰入场动画"，
-  金额滚动就是这张卡的全部动效；错峰只留 0/1/3 三块）。
-  ⚠️ 前几版各栽各的，别走回头路：v0.56.5 直接拿 visible 当 `restartKey` → **没生效**；
-  v0.56.7 `key(restartKey)` 立刻重挂载 → 生效但**在切页那一帧开滚**，观感"卡着在那跳"；
-  v0.56.8 不传 → 只在屏外播一次，**切页永不跳**。
-- **弹层里不要"点击之后的灰色条"**（v0.56.8 用户强调"我都强调多少遍了"）：
-  可点区域一律 `clickable(interactionSource = …, indication = null)`，不画 ripple；
-  **`SettingsLineRow` 的按压灰条已删**（只剩箭头按压时轻微右移），不要再加回来。
-  展开/收起要有**箭头提示**（收起朝右、展开朝下，带旋转过渡）。
-- **人设主动关心 = 随机时刻 + 按角色一套 + 条数是上限**（v0.56.8 第二批）：
-  **每个角色各一套**时间段与条数（`persona_proactive_window` / `persona_proactive_limit` 两张 id 表；
-  全局那两个键已删），**每个角色一颗闹钟**（`PROACTIVE_PERSONA_BASE + id%10000`，extra 带人设 id，
-  旧全局闹钟重排时 `cancelProactive` 取消）；`ProactiveChat.nextFireAt` 在它自己的窗口里随机取下一次
-  （纯函数、支持跨零点），发完在剩余窗口继续随机，窗口过完或当天计划发完就排明天；
-  **「每天最多几条」是上限不是定额**：什么数字都能填（上限 999），当天第一次要发时在 `1..上限` 里
-  随机摇一个计划条数落盘、当天不再重摇；计数按角色存 `day:已发:计划`（老数据 `day` 按 1 条读）；
-  提示词里带上当前时刻与"早上/中午/下午/晚上/深夜"，让它说贴合时间的话；
-  **开关在会话设置的「人设主动关心」弹层里**（弹层还放这个角色的时间段与条数）；
-  弹层容器 = `NeuSheetScaffold`（跟「模型选择」同一个**从底部升上来**的弹层，用户点名要的就是这个，
-  **不是排版**——别再照「模型配置编辑弹窗」改字段布局）。
-- **搜索只在设置页**（v0.56.8 第二批）：**消息页不做搜索** —— 顶栏放大镜也一并删了
-  （`SearchOverlay`/`SearchResultUi`/`SearchResultRow`/`runSearch` 全删）；
-  设置页保留顶栏**常驻**放大镜，点一下直接进搜索态并自动聚焦 + 弹键盘
-  （`SettingsSearchField` 有 `focusRequester` 参数）。
-- **「按住说话」档位按屏幕位置划区**（v0.56.7）：左半区 = 取消、右半区 = 转文字、
-  正中间与蒙层缺口同宽的灰带 = 录音中；手指动过 `touchSlop` 才开始判档（否则一按就取消）。
-  取录音条在屏幕上的左边距用 `boundsInRoot()`（本项目 Compose 版本里 **`positionInWindow()` 不可用**，编译会报 Unresolved）。
-- **API 用量按模型分别记**（v0.56.7）：`usage_by_model` 表（`月键\t模型\ttokens`）+ `monthlyUsageByModel`；
-  六个记账点（对话/提炼/周报/每日建议/Agent/识图）都必须传 `ApiConfig.model`。
-- 音色弹层（`PersonaVoiceSheet`）是**纯展示**、**无说明小字**：名单由会话设置页**打开前预加载**（克隆音色读本机缓存）后传入。
-- 会话设置「模型」弹层**没有「跟随全局」**（v0.56.6）；没单独选过时列表里勾的是全局默认那条。
-- 加号面板的**相册 / 文件**：选中后落在输入框上方的 `PendingAttachment` 待发送条（可补文字一起发/直接发，✕ 丢掉，**条上不写说明文字**），
-  **不再选完即发**；`sendFile` 带 `caption`（用户的话在前、抽出正文在后）并清空输入框。
-- **会话联网的查询串取"最后一条用户消息"**，绝不读 `_uiState.value.input`
-  —— `send()` 在建 prompt 之前就把输入框清空了，读 input 等于永远不搜（v0.56.5 修）。
-- 联网搜索测试用 `WebSearchClient.searchOrThrow`（失败抛异常带服务端原文）；
-  业务链路用 `search`（吞异常返回空表，绝不编内容）。
-- 音色名单在服务商克隆音色上**先读本机缓存 `tts_cloned_cache`（按服务商各一份）再后台刷新**，
-  否则克隆那几条永远晚一个网络往返才冒出来。
-- deep link 域名是 `menghuan`；编辑人设是独立路由页。
-- AI 语音条合成成功后原地升级原消息；播放结束必须主动复位。
-- Room 变更同步实体、版本/迁移、注册迁移与 schema；金额以分存 Long，余额由流水累加。
-- LLM 历史必须带角色与虚拟角色背景；上下文预算按字数，封顶 20 万。
+## 业务不变量
+### 全局
+- 四 tab：消息/数据/任务/我的；对话页三点菜单固定九项；接听延迟独立路由 0~600 秒。
+- **数据页顺序**：本周回顾→今日建议→记账本→任务→**角色空间**→AI 洞察；角色空间入口在「我的数据」页，点开先弹选人层（没导入 Live2D 模型包的仍列出但不可点）。
+- **四条 AI 产出链路**：记忆←对话转录（手动/每 N 轮）；洞察←**记忆+任务+记账**（`InsightEngine`，不读转录，允许 0 条，MAX 3，日/周/月）；每日建议←**昨天的洞察**（只静默落库、**不发通知**）；任务建议←聊天当下（`TaskSuggestionMarker`，**只在聊天页出卡**）。周报已删。
+- **AI 引用任务口径**：唯一出料口 `data/TaskContext.kt`，按归属日分桶 —— 今天该做 ≤8 / 明天到期 ≤4 / 今天已完成(给名字) / 逾期只给件数 / 3 天以后不进；判定一律 `isEffectivelyDone/Failed`，绝不裸用 `isDone`。**任务块只留聊天链**（`ChatViewModel.taskStatusBlock`），后台三链全砍、不加开关。**根因教训：模型提到不该提的东西，多半是宿主喂的料里带着它 —— 改提示词不如改出料。**
+- **记账分类**：`ledger_entries.category` 只存**名字**不存 emoji（`LedgerCategory.PRESETS`）；**第一项必须是「未分类」**；只在非空时显示标签；分类**不进统计口径**；选择器是**一行点选 chips**；流水按天分段。
+- API 用量按模型分别记（`usage_by_model`，六个记账点都必须传 `ApiConfig.model`）。联网查询串取"最后一条用户消息"，绝不读 `_uiState.value.input`；业务链路用 `search`（吞异常返空表），测试用 `searchOrThrow`。
+- **动态只存于主动关心链**（用户拍板）：聊天链不看名单、不回帖/赞/不发帖、**连剥标记都不做**（`MomentMarker` 在 `ChatViewModel` 已零引用）。落库唯一实现 `data/MomentActions.apply`（`Limits.PROACTIVE` 1/1/1；点赞幂等只加不取消）；**feed 里已表态的帖子不再列**（`MomentMath.engagedBy`）。
+- 人设写作规范单一来源 `data/PersonaPromptSpec.TEXT`；AI 看动态只剩一个时机（角色主动来找时喂未回未赞 ≤5 条，**不列自己发的帖**）。
+- 加号面板相册/文件=落 `PendingAttachment` 待发送条；`sendFile` 带 caption 并清空输入框。
+- 音色弹层纯展示；会话「模型」弹层无「跟随全局」；deep link 域名 `menghuan`；编辑人设独立路由页。
+- **滚动摘要**：`conversation_summaries` 水位线 + `SummaryEngine`（掉出窗口超 3 万字触发、单次 ≤4 万字、助手会话跳过）；只拼 system prompt 尾部；默认开；**摘要与历史必须读同一来源**。
+- **上下文窗口与提炼节奏（按角色，都在会话设置）**：窗口默认 **12_000**（`history_budget_<id>`，2000..200000，入口在**「对话摘要」弹层**）；提炼间隔默认 **6 轮**（`extract_every_<id>`，1..50，**只数用户侧**，入口在**「TA 的记忆」小层**）；都**只在改过时才落盘**；删角色走 `removeSessionTuning`。口径：窗口是「防 400 的硬上限」不是目标用量；无状态 API **历史每轮全量重发、每轮全价**才是真正花钱处。
+- **启动图标**：logo=黑气泡 `#0C0C0C`+白手写「mh」；`ic_launcher_background` 浅色 `#FBFBFA`；单色图标另存 `ic_launcher_monochrome`；冷启动（Activity 静态标记判）播逐笔绘制约 1.5s；`ui/common/MhLogoPaths.kt` 是**生成文件**（`tools/logo/` 脚本），别手改坐标串。
 
-## 助手手册 replace 链
-- 新 `.replace()` 只追加链尾，目标使用前序处理后的最终文本且不带版本号。
-- 每条 replace 在 `AiPromptsTest` 同时断言新文案存在、旧文案不存在；中文词用中文引号。
-- 启动升级机制保持 `refreshAssistantPromptIfNeeded` + `assistant_prompt_customized` 三态，不恢复历史全文比对。
-- **手册 replace 的目标子串必须"从最终文案里抄"，不许凭印象写**：v0.56.8 第二批就写出过 2 条
-  **静默落空**的 replace（目标那两句早被更早的链改掉了，手册里根本没有）。
-  核对办法（不用跑测试、30 秒）：编译后用 jshell 反射把最终文案 dump 出来逐句查——
-  `jshell --class-path "app/build/tmp/kotlin-classes/debug;<kotlin-stdlib-2.2.20.jar>"` 里执行
-  `AiPrompts.class.getMethod("getDEFAULT_ASSISTANT_PROMPT").invoke(AiPrompts.INSTANCE)`，
-  用 `Files.write(..., getBytes("UTF-8"))` 写到 `logs/manual-vX.txt` 再 grep。
-  注意 dump 出来的是**最终**文案，中间态的目标串要在链里按替换顺序推。
-- **改措辞时必须回头修"被影响的历史断言"**：v0.56.5/v0.56.6 就撞到过 4 条老断言
-  （v0536 的「卡片右边就是开关」、v0536b 的「聊天背景只存不显」、v0538 的「右边直接选…」、
-  v0542 的「通话行为里是语音通话铃声」）——断言不跟着改，套件会一直红，后来人就不看了。
-- **出包前值得跑的验尸官**：`gradle :app:testDebugUnitTest --tests "com.menghuan.app.AiPromptsTest"`
-  （2~3 分钟；它直接编译真实 replace 链，能抓出"静默落空"）。只改 `src/test/**` 不需要重新出包。
+### 电话 / 主动关心
+- **主动电话并入主动关心**（随机时刻、电话优先一次只做一件事、每天最多几通按角色 1–9、守静默 22:30–08:00；「几天没聊」整套已删）；**定时消息+定时电话合并为「定时」**（同存储以 kind 区分，只看条目 enabled，无总开关）。老 `ai_call_rules` 只剩：enabled 推断成新「主动打电话」开关 + instruction 存量；兼容推断读的 `keyAiCallTime`/`keyAiCallIdleDays`/`keyAiCallPersonaId` **只读保留**。
+- 定时消息**跟着角色走**：目标人设没了就不发，删角色时一并摘掉它的定时项+取消闹钟。
+- **主动关心提示词已接上并开放编辑**：原 `SYSTEM_INSTRUCTION`（死代码、零引用）拆成 `HINT_FRAMEWORK`（不可编）+ `DEFAULT_STRATEGY`（可编）+ `systemPrompt(persona, strategy)`，由 `settingsRepository.proactiveStrategy` 覆盖（键 `proactive_strategy`）→ 那段里的「≤60 字」「别出戏」第一次真的生效。「AI 提示词」页现为**十二段**（第十一段「主动关心策略」）。
+- ⚠️ 三条后台链（主动关心/定时消息/来电开场白）的 `【用户档案】` 都套 `profilePreamble`（原来那句"别复述档案"只有聊天/通话认）。
+
+### 角色的「心情」（五轴）
+- `data/CompanionMarker.kt` 的 `[心情:情绪词]` 标记是 **valence/arousal 的唯一输入源**（词表→写死增量，单轮最多 ±0.25；**用词不用数字**）。落轴唯一实现 `ChatViewModel.maybeUpdateMood`（落库后）；**主动关心/定时消息/通话只剥标记、不解析**；说明段**只注入聊天 system prompt**；剥离正则**不设词长上限**（否则超长词漏给用户；剥离必须比识别宽松）。
+- **心情两个出口**：① `ProactiveChat`（她主动找你那次）把 `promptContext()` 拼进用户上下文；② 普通聊天走**易变上下文** —— `ChatViewModel.runtimeContextNow()` 尾部的 `companionMoodBlock()`（**绝不进 system prompt 前缀**，否则每轮作废缓存）。valence 在 `tick` 里当 `moodFactor`（<−0.2 时连接需求增速 ×0.4）。
+- **两处刻意设计**：`applyDelta` 的 `connection` 参数**无调用方**（情绪词不该改写"想念度"，否则"主动来找你"变成可被提示词操纵的开关）；`tick` 里 `connection ≥ 0.6` 锁 valence 由"完全冻结"改为**回落速度 ×0.25**。
+
+### 记忆
+- **档案注入两条线**：`MemoryScope.split(all, personaId, shared)` → `base`（基础档案 `personaId=0`，**全带、不设上限**，同人设设定词性质）+ `owned`（角色自己的记忆，上限由调用方给：聊天 `MEMORY_INJECT_LIMIT=30`、后台四链 `PROFILE_FACTS_MAX=10`）。**绝不能合成一条再 `take`** —— 用户手填档案一多就把角色记忆挤出常驻。同 `key` 去重＝**留 id 更大者**；`personaId=0` 时 base 恒空；`visible()` **保留不动**（要全量）。
+- `ProfileFact.injectable` 是**白名单**（`active`/`core`）—— 黑名单会把 `staging` 放进去，审批制就不存在。`INJECT_ORDER` = `core` 置顶 + **id 倒序**（用 id 不用 updatedAt，否则编辑一次就整体洗牌）。
+- **记忆两条入口**：① `MemoryMarker` 即时标记 `<add:…>`，**每轮都可能**、不看门槛（`maybeStageMemories`）；② `ExtractionEngine` 批量提炼，攒够 `extract_every_<id>` 条**用户发言**（默认 6 = **12 段对话**）。
+- ⚠️ **水位线推进时机**：`setExtractionWatermark` 必须在 LLM 调用**之后**、提前返回在**之前** → 顺序反了自动提炼**永远不触发**。
+- **提炼不是配额**：`ProfileExtractor.DEFAULT_STRATEGY` 明写「0 条是正常的，不是失败」。已开放编辑（第十二段「记忆记录策略」，键 `memory_marker_strategy`；⚠️ 与「记忆提炼策略」`extraction_strategy` 是两条入口）。
+- **记忆语义召回（默认关）**：`memory_embeddings` 按 `baseUrl|model` 分桶；90 天未召回 active→archived（core 豁免），archived 高分（≥80）召回当场升回（双门槛/懒索引细节见 `PLAYBOOK.md`）。
+- `MEMORY_INJECT_LIMIT=30` / `PROFILE_FACTS_MAX=10` **没有来历依据**（别凭感觉调）。
+
+## 可编提示词段（三件套）
+`HINT_FRAMEWORK`（硬编码只读，改了解析会崩）+ `DEFAULT_STRATEGY`（用户可覆盖）+ `promptSection/systemPrompt(strategy)`；配套 `SettingsRepository` 一个 `stringPreferencesKey` + Flow + setter（空值或等于默认则 remove 键）；页 `PromptSettingsScreen` 用 `LayeredEditor`。**形状统一 → 新增段照抄三件套。**
+
+## 手册 replace 链
+- 只追加链尾；target 必须**从 dump 出的最终文案里抄**；只许 `.manualPatch()`（落空记进 `assistantManualPatchMisses`），**不许裸 `.replace()`**。每加一条同时在 `AiPromptsTest` 补一对断言（新在 + 旧不在，只写后者是假绿）。
+- ⚠️ **离线模拟补丁链不可信**（v0.92.0：249 条模拟出 22 条假未命中、第 87 条起级联失真）。**只有真编译 + jshell dump 才可信**（手法见 `PLAYBOOK.md`）；核锚点用 Python `count()`（grep 对中文失效）。
+- **补信息不能插进句子中间**（中文会断）→ 整句保留 + 分号后补一句；**改一句要搬全它承载的所有事实**，别丢 `**` 强调。⚠️ **断言别钉版本相关数字/计数**（钉「八段」→ 改十段当场红），也别钉排序等易变行为。
 
 ## 禁止复活
-- 打字机 `streamingText`、表情包、API 列表 ✓、语音两个总开关、设定词模板按钮。
-- 已删：`EdgeTtsClient.kt`、`ReadAloudPlayer.kt`、`realtime/Mp3Decoder.kt`。
+- 打字机 `streamingText`、表情包、API 列表 ✓、语音两个总开关、设定词模板按钮、备忘本。
+- 已删：`EdgeTtsClient.kt`、`ReadAloudPlayer.kt`、`realtime/Mp3Decoder.kt`、`WeeklyReportGenerator`。
 
-## 2026-10-08 新增（v0.64.0 · Live2D 动作系统）
-- ⚠️ **绝对不要用 `git checkout -- <文件>` 回退**：本仓库工作区长期存着大量**未提交**改动
-  （HEAD 还停在 v0.61.1）。10-08 就用它冲掉过 `AiPrompts.kt` 里 v0.62/v0.63 的四条 replace。
-  真丢了的话：`app/build/tmp/kotlin-classes/release/.../AiPrompts.class` 的**常量池里留着每条
-  replace 的目标串与替换串**（Kotlin 会把字面量拼接折叠成一条常量）；更狠的一招是用那份
-  release classes 跑个 Java main 调 `AiPrompts.INSTANCE.getDEFAULT_ASSISTANT_PROMPT()`，
-  dump 出货版手册全文当基准逐行 diff。dump 脚本见 `build/dump/`。
-  （Windows 上 classpath 分隔符是 `;`；`/tmp` 路径 javac/java 不认，要用 `X:/...`。）
-- 恢复 replace 时**写成普通字符串 + 显式 `\n`**：带缩进的裸字符串会把每行前的空格也写进文案、
-  并且目标串因多了空白而**静默落空**（踩过）。
-- **通话页布局定稿**（用户原话"下面的 UI 都不见、好像是移到了右边，顶栏的 UI 还要"）：
-  上下分区（角色区 + 对话台）→ **右滑**让对话台横移出场进纯净态、**左滑**唤回、顶栏常驻。
-  角色靠 `setViewportBottomInset` 收进上方那块，**所以不许再加任何蒙版**；画面层尺寸恒定（只改投影）。
-- **动作引擎**（`com.menghuan.app.live2d`，与通话解耦）四条铁律：
-  ① 播放写在 `saveParameters` 之后、`onLateUpdate` 之前 → **口型永远归实时语音**；
-  ② 内置动作**一律不碰 `GENERIC_MOUTH`**（碰了角色会一直张嘴）；
-  ③ 舞台通道（整体位移/旋转/缩放）走**渲染矩阵、零参数依赖**，这是"翻跟斗任何模型都能演"的根；
-  ④ 归一化 `1.0 = 参数可用范围的 60%`，换模型不会被甩到破图。
-- 模型自带动作/表情清单从 GL 线程回调出来（`onCatalogReady`），**回调里只许转手、不许碰 Room**。
-- 删动作时**必须顺手清掉指向它的绑定**，否则表现为"角色卡着不动且毫无提示"。
-- **ZipEntryGuard 现在拒绝开头的 `/`**（绝对路径一律不要），与 `CallVisualTest` 的口径对齐。
-- 当前版本 **0.64.0 / versionCode 152**，APK 落在根目录 `梦欢-v0.64.0-release.apk`，旧版在 `archive/`。
+## 死代码审计（工具留在 `tools/`，每版可重跑）
+- **病根**：声明/注释承诺了、实现没接上（死代码 / 写了没人调 / 常量没人读 / **只在测试里活**）。**6 个脚本与已知局限见 `PLAYBOOK.md`。** 已清 v0.98 收尾的 30 文件 / 47 处 + 5 处补漏（老「几天没聊」残留、设计令牌、UI/VM/DAO 死件、`DailySuggestionReceiver` 通知段 = 行为不变清理；`PersonaRepository.remove` 补上漏调的 `removeCompanionState(id)`）。
+- **已处置（用户拍板「本来就没有的东西不要补回」）**：数据页「提炼」按钮 v0.42.1 就被收敛，手册 v0.86/v0.88 又把它写回去 → 假承诺。已删整链（`refreshInsights` + `extracting`/`extractMessage` + `AiEntryCard` 三个无用参数 + `DataViewModel` 的 `extractionEngine` 字段）+ 链尾两条 `manualPatch` 更正手册 + 翻掉钉它的断言。**教训：测试断言会替假承诺站岗 —— 改行为前先看有没有断言在钉旧说法。**
+- 遗留未定：**省钱旋钮**（历史窗口默认 12_000 每轮全量重发）、「每隔几轮提炼一次」UI 文案歧义。
+
+## 手机 Agent（`com.menghuan.app.agent`，7 文件 ≈800 行）
+- 路线：无障碍读屏 + LLM 决策（每步一次非流式请求）+ 无障碍手势。两个入口：对话内 `[操作手机:目标]`（autoConfirm）/ 任务页 ▶（`AgentSheet`，走确认）。
+- **保活 = 默认开**（`agent_keep_alive`）：`AgentKeepAliveService`（specialUse 前台服务 + 静默常驻通知），**只在 `AgentLoop.run()` 前置检查通过后挂** —— 用过才挂，**不在 App onCreate 恢复**（那等于人人常驻，且后台起 FGS 会被系统拒）；开关在 `AgentSheet`。
+- **自愈**：连续 3 次读不到屏幕 → 中止并让用户重开无障碍（别空转烧完步数）；服务 `onUnbind` 必须清 `instance`。⚠️ 代码**无法**自动重开无障碍（系统限制），只能深链设置页 + 电池白名单引导。
+- `waitWindowStable` **两阶段**：等首次 tick 变化 ≤600ms（无变化直接返回）+ 变化后静默 400ms，上限 2.5s。**别再改回"从入口起算静默 900ms"**（那是 ≥13.5s 纯等待的根因）。
+- 解析失败重试**必须带提示**（`AgentLoop.RETRY_HINT` → `AgentPrompts.userPrompt(retryHint)`）；原样重发 = 花两次钱买同一个错。
+- 方案文档 `docs/PLAN-2026-10-11-手机Agent优化方案.md`（P0 六条 / P1 脚本缓存 / P2 Shizuku+视觉），**按批交付、每批做完即停**。P2 闸门 = 用户 API 是否支持多模态。
+- **元素清单**（`ScreenState`）：准入只留 `clickable||editable||scrollable`，**纯文本仅整屏无交互元素时兜底**；折叠（type+真实文案，留 3 标 `×N`）**必须先于截断**；**无真实文案的节点绝不折叠**（一排图标按钮会点错）；标签截断 20 字**只影响清单文本**，`UiElement.text/desc` 保持完整。
+- **定位**（`ActionExecutor.resolve`）：resourceId 优先（同 id 取最近心）→ 坐标兜底；**"界面动过"只认窗口 tick**（比自己的快照序号恒等 = 没校验），动过则坐标必须过标签校验，认不出就**拒绝执行**报"界面已变化"。
+- **卡住判定**按 `AgentPrompts.actionSignature`（`tap[3]`/`text[4]`/`swipe[up]`），**失败也计入**，连续 2 次同类即中止；`text` 的输入内容不进签名。
+- **敏感围栏**：元素文案 + **要输入的内容**（`isSensitiveValue`）两处都查；`execute()` 返回 `StepOutcome`（Done/Failed + 可读原因），失败原因进日志与历史。
+- **动作脚本缓存**（`ActionScriptStore` + `AgentLoop.replayScript`，存 `filesDir/agent_scripts.json`）：命中 = 目标规范化 + 起始包名 + **起始界面指纹**全等；**每步重读屏按指纹（resourceId 优先，无 id 用类型+标签）找元素，同屏多命中即作废，绝不盲重放**；只有 done 成功且 ≥2 步才落盘，上限 50；起点指纹必须在任何部分重放**之后**再取。入口在 `AgentSheet`（条数 + 清除）。
+- **Agent 专用模型**：键 `agent_model`（空 = 跟随接口），`baseApi.copy(model=…)` **只换模型名**，地址/Key 仍用接口的；记账传生效模型。
+- **观测层混合输入（截图+树）**：`ScreenCapture`（`takeScreenshot`，**API 30+ 才生效**，低版本静默退回纯树）落 `filesDir/agent_screenshot.jpg`（固定名每步覆盖）→ `ChatMessage.imagePath`。⚠️ **`collectReply` 的 `imageDataUrl` 默认 `{ null }`，不显式传 lambda 图片静默不发** —— 走多模态必须 imagePath + lambda 两件都给。开关 `agent_vision`（默认开）；SYSTEM 规则 6 钉死「动作只能按编号、截图只辅助」。
+- **Shizuku 后端已判定不做**（P2-K）：`screencap`/`input` 的独特价值被 M4-L 吃掉，代价（新依赖 + 装 App + 重启重激活 + 双后端）没变。触发条件 = 主力机停在 Android 10 且要视觉。
+
+## Live2D
+- 子系统在 `com.menghuan.app.live2d`，与通话解耦。**动作引擎 4 条铁律、通话页布局定稿、缩放与背景约束见 `PLAYBOOK.md`** —— 动 Live2D 前先读那节。
+

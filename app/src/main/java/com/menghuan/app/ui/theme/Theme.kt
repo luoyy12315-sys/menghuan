@@ -111,7 +111,6 @@ val TextSecondary: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette
 val MutedText: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.muted
 val FaintText: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.faint
 val NeuAccent: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.accent
-val NeuAccentDeep: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.accentDeep
 /** 强调色上的文字 / 图标色（浅色=白，深色=近黑） */
 val AccentInk: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.onAccent
 val NeuDanger: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.danger
@@ -135,7 +134,6 @@ val HandleFill: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.cu
 val HandleInk: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.handleInk
 /** 弹层顶部抓手色 */
 val SheetGrip: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.grip
-val OutlineGray: Color @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.outline
 /** 当前是否深色（系统栏图标反色等跨层判断用） */
 val IsDarkTheme: Boolean @Composable @ReadOnlyComposable get() = LocalNeuPalette.current.isDark
 
@@ -210,11 +208,6 @@ val HeroBrush: Brush
     get() = remember {
         Brush.sweepGradient(listOf(BrandGreen, BrandYellow, BrandPurple, BrandBlue, BrandGreen))
     }
-
-/** 火花渐变（AI 洞察标）：紫→橙红 */
-val SparkBrush: Brush
-    @Composable
-    get() = remember { Brush.linearGradient(listOf(BrandPurple, BrandSalmon)) }
 
 /** 强调渐变：强调色的竖向微渐变（主按钮 / 勾选 / 用户气泡），比纯色多一层纸感 */
 val AccentBrush: Brush

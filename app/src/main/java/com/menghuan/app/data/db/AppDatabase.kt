@@ -11,7 +11,6 @@ import androidx.room.Update
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.menghuan.app.data.model.AiInsight
-import com.menghuan.app.data.model.AiWeeklyReport
 import com.menghuan.app.data.model.CallActionBindingEntity
 import com.menghuan.app.data.model.InteractionBindingEntity
 import com.menghuan.app.data.model.CallSession
@@ -102,13 +101,6 @@ interface MessageDao {
     )
     suspend fun getRecentPaged(conversationId: Long, limit: Int, offset: Int): List<ChatMessage>
 
-    /** 会话最新一条（来电判断"上次聊天时间"等只需要 last 的调用点，别再整表读）。 */
-    @Query(
-        "SELECT * FROM messages WHERE conversationId = :conversationId " +
-            "ORDER BY timestamp DESC, id DESC LIMIT 1"
-    )
-    suspend fun getLatest(conversationId: Long): ChatMessage?
-
     /** 清除记忆待审系统气泡（v0.82.0）：同一时刻只保留最新一条，旧的整批删掉。 */
     @Query("DELETE FROM messages WHERE conversationId = :conversationId AND mediaKind = 'MEMORY_NOTICE'")
     suspend fun deleteMemoryNotices(conversationId: Long)
@@ -129,13 +121,6 @@ interface MessageDao {
             "ORDER BY timestamp DESC LIMIT 50"
     )
     suspend fun searchMessages(query: String): List<ChatMessage>
-
-    /** 周报上下文：某时间段内的消息（截断限量，防 token 爆炸） */
-    @Query(
-        "SELECT * FROM messages WHERE timestamp >= :from AND timestamp < :to " +
-            "ORDER BY timestamp ASC LIMIT 60"
-    )
-    suspend fun getBetween(from: Long, to: Long): List<ChatMessage>
 
     /** 删除单条消息（长按气泡菜单；LLM 历史随 DB 实时变化） */
     @Query("DELETE FROM messages WHERE id = :id")
@@ -266,6 +251,14 @@ interface ProfileFactDao {
     suspend fun findScoped(key: String, personaId: Long): ProfileFact?
 
     /**
+     * 提炼合并用（v0.97.0）：**一次**把本角色的记忆全取回来建索引，
+     * 替代逐条 [findScoped]（一批 N 条 = 2N 次数据库往返）。
+     * 同一张表本来就小（几十到几百条），一次全取比 N 次点查便宜得多。
+     */
+    @Query("SELECT * FROM profile_facts WHERE personaId = :personaId")
+    suspend fun getAllForPersona(personaId: Long): List<ProfileFact>
+
+    /**
      * 某个角色**能读到的全部记忆**：自己的 + 用户的基础档案（personaId = 0）。
      * 基础档案那部分要不要真给，由调用方按「个人档案全部 AI 可读」这个开关再筛一次
      * （SQL 里判不了开关，别把开关逻辑塞进查询——两处各写一份迟早打架）。
@@ -378,26 +371,67 @@ interface MemoryEmbeddingDao {
 
 @Dao
 interface AiInsightDao {
-    /** 数据页「AI 洞察」真数据源：最新两条 */
-    @Query("SELECT * FROM ai_insights ORDER BY createdAt DESC LIMIT 2")
+    /**
+     * 数据页「AI 洞察」真数据源：**最近 20 条**。
+     *
+     * ⚠️ v0.88.0 修了一处口径分裂：这里原本是 `LIMIT 2`，而详情页用的是 `latest()`（`LIMIT 20`），
+     * 于是入口卡写「2 条洞察」、点进去列出 20 条 —— 同一个功能两个数，用户一眼看得见的错。
+     * 现在两条路走同一个上限（[INSIGHT_KEEP]），卡片与列表永远一致。
+     */
+    @Query("SELECT * FROM ai_insights ORDER BY createdAt DESC LIMIT 20")
     fun observeLatest(): Flow<List<AiInsight>>
 
     @Query("SELECT * FROM ai_insights WHERE title = :title LIMIT 1")
     suspend fun getByTitle(title: String): AiInsight?
 
-    /** 周报导出用：最近 20 条全量快照 */
+    /** 导出/详情用：最近 20 条全量快照（与 observeLatest 同口径） */
     @Query("SELECT * FROM ai_insights ORDER BY createdAt DESC LIMIT 20")
     suspend fun latest(): List<AiInsight>
+
+    /**
+     * 某一天产出的洞察（每日建议取材）：`day = 归属日`，**新→旧**。
+     * 日/周/月三种洞察只要归属日相同就会被一起取到 —— 这正是「建议统筹日+周+月洞察」要的。
+     */
+    @Query("SELECT * FROM ai_insights WHERE day = :day ORDER BY createdAt DESC")
+    suspend fun forDay(day: Long): List<AiInsight>
+
+    /** 指定周期最近一条（幂等判断用：今天这条日洞察是不是已经生成过了） */
+    @Query("SELECT * FROM ai_insights WHERE period = :period AND day = :day LIMIT 1")
+    suspend fun getByPeriodAndDay(period: String, day: Long): AiInsight?
 
     @Insert
     suspend fun insert(insight: AiInsight): Long
 
-    /** 只留最近 20 条，防无限膨胀 */
+    /** 保留条数上限（卡片与列表共用，避免两处写不一样的数） */
+    companion object {
+        const val INSIGHT_KEEP = 20
+    }
+
+    /**
+     * 各周期分别留最近 N 条，防无限膨胀（v0.88.0）。
+     *
+     * ⚠️ 以前是「全表留 20 条」——那是洞察只在提炼时偶尔产出才成立的口径。
+     * 现在日洞察**每天一条**、周/月各一条，全表 20 条约等于只存 3 周，
+     * **周洞察与月洞察会被日洞察挤出去**（用户最想看的恰是周/月）。
+     * 所以改成按 period 分桶保留：日 30 条 / 周 12 条 / 月 12 条 ≈ 一个月的日 + 一季的周月。
+     */
     @Query(
-        "DELETE FROM ai_insights WHERE id NOT IN " +
-            "(SELECT id FROM ai_insights ORDER BY createdAt DESC LIMIT 20)"
+        "DELETE FROM ai_insights WHERE period = 'DAILY' AND id NOT IN " +
+            "(SELECT id FROM ai_insights WHERE period = 'DAILY' ORDER BY createdAt DESC LIMIT 30)"
     )
-    suspend fun prune()
+    suspend fun pruneDaily()
+
+    @Query(
+        "DELETE FROM ai_insights WHERE period = 'WEEKLY' AND id NOT IN " +
+            "(SELECT id FROM ai_insights WHERE period = 'WEEKLY' ORDER BY createdAt DESC LIMIT 12)"
+    )
+    suspend fun pruneWeekly()
+
+    @Query(
+        "DELETE FROM ai_insights WHERE period = 'MONTHLY' AND id NOT IN " +
+            "(SELECT id FROM ai_insights WHERE period = 'MONTHLY' ORDER BY createdAt DESC LIMIT 12)"
+    )
+    suspend fun pruneMonthly()
 
     /** 洞察卡长按删除（v0.36.5） */
     @Query("DELETE FROM ai_insights WHERE id = :id")
@@ -422,28 +456,6 @@ interface ImageGenerationDao {
 
     @Query("SELECT COUNT(*) FROM image_generations")
     fun observeCount(): Flow<Long>
-}
-
-@Dao
-interface AiWeeklyReportDao {
-    /** 数据页「AI 周报」历史列表（新→旧） */
-    @Query("SELECT * FROM ai_weekly_reports ORDER BY weekStart DESC")
-    fun observeAll(): Flow<List<AiWeeklyReport>>
-
-    @Query("SELECT * FROM ai_weekly_reports WHERE weekStart = :weekStart LIMIT 1")
-    suspend fun getByWeekStart(weekStart: Long): AiWeeklyReport?
-
-    /** 同周重复生成 = 覆盖：weekStart 唯一索引 + REPLACE */
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(report: AiWeeklyReport)
-
-    /** 周报历史长按删除（v0.36.5） */
-    @Query("DELETE FROM ai_weekly_reports WHERE id = :id")
-    suspend fun deleteById(id: Long)
-
-    /** 清除全部数据用（v0.36.5） */
-    @Query("DELETE FROM ai_weekly_reports")
-    suspend fun deleteAll()
 }
 
 @Dao
@@ -561,12 +573,6 @@ interface CallDao {
 
     @Query("SELECT * FROM call_turns WHERE sessionId = :sessionId ORDER BY timestamp ASC")
     suspend fun turns(sessionId: Long): List<CallTurn>
-
-    @Query("DELETE FROM call_sessions WHERE id = :sessionId")
-    suspend fun deleteSession(sessionId: Long)
-
-    @Query("DELETE FROM call_turns WHERE sessionId = :sessionId")
-    suspend fun deleteTurns(sessionId: Long)
 }
 
 /**
@@ -691,7 +697,6 @@ interface InteractionBindingDao {
         TaskCompletion::class,
         ProfileFact::class,
         AiInsight::class,
-        AiWeeklyReport::class,
         ImageGenerationRecord::class,
         LedgerEntry::class,
         DailySuggestion::class,
@@ -705,7 +710,7 @@ interface InteractionBindingDao {
         ConversationSummary::class,
         MemoryEmbedding::class,
     ],
-    version = 25,
+    version = 29,
     // schema JSON 导出到 app/schemas/：迁移出错可 diff 出具体差异
     exportSchema = true,
 )
@@ -716,7 +721,6 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun taskCompletionDao(): TaskCompletionDao
     abstract fun profileFactDao(): ProfileFactDao
     abstract fun aiInsightDao(): AiInsightDao
-    abstract fun aiWeeklyReportDao(): AiWeeklyReportDao
     abstract fun imageGenerationDao(): ImageGenerationDao
     abstract fun ledgerDao(): LedgerDao
     abstract fun momentDao(): MomentDao
@@ -823,6 +827,84 @@ abstract class AppDatabase : RoomDatabase() {
                         // vector 列不带 DEFAULT：实体也没声明 defaultValue，两边一致（Room 校验形状）
                         "`vector` BLOB NOT NULL, " +
                         "`updatedAt` INTEGER NOT NULL DEFAULT 0)"
+                )
+            }
+        }
+
+        /**
+         * v26：记账流水加分类（v0.83.0，用户点名要回来）。
+         *
+         * **一条带默认值加列**，一条数据都不动、不重建表（§六 禁破坏性迁移）：
+         * 存量流水落到 `category = ''` = 未分类，正是它们升级前的样子；
+         * 列表里空分类不显示标签，老数据看起来与升级前完全一致。
+         * 与 v0.70.0 / v0.74.0 / v0.82.0 那几条 ALTER 同一手法。
+         *
+         * **不建索引**：分类只作显示用，从不进 WHERE / ORDER BY（流水一律按 occurredAt 排），
+         * 给它建索引是白占空间还拖慢写入 —— 同 v0.76.0 给 moments 加 images/location 的取舍。
+         */
+        val MIGRATION_25_26 = object : Migration(25, 26) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `ledger_entries` ADD COLUMN `category` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v27：**删掉 AI 周报表**（v0.87.0，用户点名「表没有用就删掉」）。
+         *
+         * 「AI 周报」整个功能已删除（生成器 / 定时闹钟 / 通知 / 数据页板块 / 设置项 / 备份字段），
+         * 表里只剩下再也没人会读的历史正文，留着只是占空间。用 `IF EXISTS` 兜住
+         * 那些从 v8 之前一路重放上来、没来得及建表的库。
+         *
+         * 反悔成本说明：这是**真删**，不可逆 —— 但周报正文是 LLM 每周现生成的产物，
+         * 不是用户亲手输入的东西，删掉不损失用户资产（同 v0.58.0 清废弃立绘资产的取舍）。
+         */
+        val MIGRATION_26_27 = object : Migration(26, 27) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DROP TABLE IF EXISTS `ai_weekly_reports`")
+            }
+        }
+
+        /**
+         * v28：**洞察加「周期」与「归属日」两列**（v0.88.0）。
+         *
+         * 洞察的数据源从「对话转录」改成「记忆 + 任务 + 记账」，触发从「每 N 轮提炼时顺带」
+         * 改成「每天 / 每周日 / 每月末各跑一次」，所以需要：
+         * - `period`：区分日 / 周 / 月洞察（UI 分组、建议取材都靠它）；
+         * - `day`：归属日 epochDay，让「取昨天的洞察」成为一次直接查询。
+         *
+         * 老数据（v0.88.0 之前从对话里提炼的）落 `DAILY` + `day = 0`：
+         * 它们没有归属日，只能按 createdAt 排序展示，历史一条不丢。
+         *
+         * ⚠️ 两条都要带 `DEFAULT`：`period` 是 TEXT NOT NULL、`day` 是 INTEGER NOT NULL，
+         * 表里已有行必须能填上值，否则 ALTER 直接失败。同时新建 `index_ai_insights_day`
+         * 与实体声明的 `indices = [Index("day")]` **逐项一致**（少一个 onValidateSchema 就崩）。
+         */
+        val MIGRATION_27_28 = object : Migration(27, 28) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `ai_insights` ADD COLUMN `period` TEXT NOT NULL DEFAULT 'DAILY'")
+                db.execSQL("ALTER TABLE `ai_insights` ADD COLUMN `day` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_ai_insights_day` ON `ai_insights` (`day`)")
+            }
+        }
+
+        /**
+         * v0.97.0：给 `profile_facts` 补索引（纯加索引，不改表结构、不动数据）。
+         * 索引名与顺序必须与实体 `ProfileFact` 的 `indices` 声明完全一致
+         * （Room 的 onValidateSchema 会逐项比对，名字差一个字就在打开数据库时抛错）。
+         */
+        val MIGRATION_28_29 = object : Migration(28, 29) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_profile_facts_key_personaId` " +
+                        "ON `profile_facts` (`key`, `personaId`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_profile_facts_personaId` " +
+                        "ON `profile_facts` (`personaId`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_profile_facts_lifecycle` " +
+                        "ON `profile_facts` (`lifecycle`)",
                 )
             }
         }
@@ -1036,7 +1118,7 @@ abstract class AppDatabase : RoomDatabase() {
         /**
          * v12：记账流水 + 每日建议（v0.42.0）。
          * - ledger_entries：收入/支出双向流水，现金余额不入库（由 LedgerMath 累加保证自洽）
-         * - daily_suggestions：每日一条建议，day 唯一索引 = 重复生成即覆盖（同周报套路）
+         * - daily_suggestions：每日一条建议，day 唯一索引 = 重复生成即覆盖
          */
         val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -1166,7 +1248,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        /** v8：AI 周报表（每周日 21:30 生成，weekStart 唯一 = 同周覆盖） */
+        /**
+         * v8：AI 周报表（**已废弃**）。
+         *
+         * v0.87.0 起「AI 周报」整个功能被删除，表也由 [MIGRATION_26_27] DROP 掉了。
+         * 这一段**必须原样保留**：还停在 v7 的老库要一路重放到最新版本，
+         * 中间少一环 Room 直接报"找不到迁移路径"。建完立刻会被 26→27 删掉，无害。
+         */
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(

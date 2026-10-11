@@ -78,12 +78,39 @@ class MomentMarkerTest {
         assertTrue(block.contains("· 7 小满：今天下了很大的雨"))
     }
 
+    // ===== v0.85.0：名单标清「谁发的」 =====
+
     @Test
-    fun `固定说明里两条语法都在`() {
-        val p = MomentMarker.promptSection()
-        assertTrue(p.contains("[动态:一句话]"))
-        assertTrue(p.contains("[动态#帖子id:一句话]"))
-        assertTrue(p.contains("不要为了刷存在感而发"))
+    fun `自己的帖子标 你自己`() {
+        val line = MomentMarker.feedLine(7, "小满", "今天下了很大的雨", self = true)
+        assertEquals("7 小满（你自己）：今天下了很大的雨", line)
+    }
+
+    @Test
+    fun `别人的角色标 另一位角色`() {
+        val line = MomentMarker.feedLine(8, "阿远", "刚跑完步", otherAi = true)
+        assertEquals("8 阿远（另一位角色）：刚跑完步", line)
+    }
+
+    @Test
+    fun `用户的帖子不带任何标记`() {
+        val line = MomentMarker.feedLine(9, "用户", "今天好累")
+        assertEquals("9 用户：今天好累", line)
+    }
+
+    @Test
+    fun `self 优先于 otherAi 不会同时挂两个标记`() {
+        // 调用侧保证二者互斥，这里兜一个底：真同时传了也只出「你自己」
+        val line = MomentMarker.feedLine(7, "小满", "正文", self = true, otherAi = true)
+        assertEquals("7 小满（你自己）：正文", line)
+    }
+
+    @Test
+    fun `名单说明写了 别回自己也别给自己点赞`() {
+        val block = MomentMarker.feedBlock(listOf(MomentMarker.feedLine(7, "小满", "雨", self = true)))
+        assertTrue("没讲清标记含义", block.contains("`你自己` = 你发的"))
+        assertTrue("没讲清用户标记", block.contains("`用户` = 用户本人发的"))
+        assertTrue("没禁止自回自赞", block.contains("**你自己发的那些不要回、也不要点赞**"))
     }
 
     // ===== v0.77.0：AI 点赞 =====
@@ -132,22 +159,8 @@ class MomentMarkerTest {
         assertTrue("正文要原样留着", d.cleanText.contains("点赞"))
     }
 
-    @Test
-    fun `固定说明里点赞语法在_且点名了看动态的两个时机与记忆可读`() {
-        val p = MomentMarker.promptSection()
-        assertTrue("要点出点赞语法", p.contains("[点赞:帖子id]"))
-        // v0.79.0 **改正**：v0.77.0 把用户那句"AI 回复动态只能在跟 AI 聊天时回复"当成了产品要求，
-        // 写成"你只能在聊天里顺手做、没有刷动态的能力"——**理解反了**。
-        // 用户原话是"不跟 AI 聊的时候它也会看我动态，像真人一样"。
-        assertTrue("要点出看动态的两个时机", p.contains("你看到动态的时机有两个"))
-        assertTrue("主动找用户时也能看到动态", p.contains("让你主动去找用户"))
-        assertFalse(
-            "不许再写「只能在聊天里做」",
-            p.contains("所有动态动作都只发生在你回复用户这条消息的过程中"),
-        )
-        // 保留的仍然是"别假装自己一直在线"（不诚实，也不是真话）
-        assertTrue("要禁止假装随时在线", p.contains("别假装自己一直在线"))
-        // v0.77.0：AI 记忆可读要说清楚
-        assertTrue("要说清 AI 看得到记忆", p.contains("你看得到用户的记忆"))
-    }
+    // 注：原来还有两条测 `MomentMarker.promptSection()` 的用例（教回帖/点赞语法、看动态的两个时机、
+    // 记忆可读）。用户拍板「动态只存于主动关心那条链」后，聊天链那份固定说明连同函数一起删了 ——
+    // 主动链的教法由 ProactiveChat 自己拼（那边的名单规则测在 ProactiveChatTest）。
+    // 「你看得到记忆」这条没有丢，搬去了 MemoryMarker.promptSection，断言在 MemoryMarkerTest。
 }
