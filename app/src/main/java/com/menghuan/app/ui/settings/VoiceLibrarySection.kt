@@ -104,6 +104,7 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
     var busyVoice by remember { mutableStateOf<String?>(null) }
     var status by remember { mutableStateOf<String?>(null) }
     var showClone by remember { mutableStateOf(false) }
+    var showHidden by remember { mutableStateOf(false) }
     var showManual by remember { mutableStateOf(false) }
     var showAddCustom by remember { mutableStateOf(false) }
     var manualDraft by remember { mutableStateOf(manualId) }
@@ -290,6 +291,30 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
                 Spacer(Modifier.height(6.dp))
                 Text(it, fontSize = 12.sp, lineHeight = 18.sp, color = NeuDanger)
             }
+            // v1.0.1：隐藏表原来是**只进不出**的（长按删一条就再也找不回来，界面上无入口）。
+            // 这里给一条回来的路：列出被隐藏的、可逐条恢复。
+            if (hidden.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { showHidden = true },
+                        )
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "查看已隐藏的音色（${hidden.size}）",
+                        fontSize = 13.sp,
+                        color = TextSecondary,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text("›", fontSize = 14.sp, color = TextSecondary)
+                }
+            }
             if (!config.isComplete) {
                 Spacer(Modifier.height(14.dp))
                 NeuButton(
@@ -350,6 +375,50 @@ fun VoiceLibraryScreen(onBack: () -> Unit) {
             onDismiss = { showClone = false },
             onDone = { reloadKey++ },
         )
+    }
+
+    // 「已隐藏的音色」（v1.0.1）：隐藏只影响本机名单，服务商账号里的音色从未被删。
+    // 恢复 = 从隐藏表里摘掉，名单立刻重新包含它（列表里那条还在就能直接再用）。
+    if (showHidden) {
+        NeuSheetScaffold(title = "已隐藏的音色", onDismiss = { showHidden = false }) {
+            Spacer(Modifier.height(4.dp))
+            if (hidden.isEmpty()) {
+                Text("没有已隐藏的音色", fontSize = 13.sp, color = MutedText)
+            }
+            hidden.toList().sorted().forEach { vid ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        aliases[vid] ?: vid,
+                        fontSize = 13.sp,
+                        color = TextPrimary,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    NeuTextButton(
+                        "恢复",
+                        onClick = {
+                            hidden = hidden - vid
+                            scope.launch {
+                                runCatching { app.settingsRepository.unhideVoice(provider, vid) }
+                                status = "已恢复「${aliases[vid] ?: vid}」"
+                            }
+                        },
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "「删除」只是把这条从本机名单里藏起来（服务商账号里的音色没有被删除），所以随时可以恢复。",
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                color = MutedText,
+            )
+            Spacer(Modifier.height(16.dp))
+        }
     }
 
     // 自定义端点的「添加音色」弹层（v0.56.13）：ID 必填（服务商侧的音色标识），
@@ -536,11 +605,12 @@ private fun CloneVoiceSheet(
         Spacer(Modifier.height(6.dp))
         Text(
             if (config.provider == TtsProvider.XIAOMI_MIMO) {
-                "MiMo 没有音色上传接口：样本留在本机，每次合成随请求内联。"
+                "MiMo 没有音色上传接口：样本留在本机（可以克隆多个），每次合成随请求内联。"
             } else {
-                "硅基流动的音色克隆需先在官网完成实名认证。" +
-                    "样本用 8~10 秒**干净单人声**：带背景音乐、或只截到半句话，" +
-                    "克隆出来的声音会发抖变调。"
+                "克隆效果几乎全看样本。服务商的要求：只有一个人说话、吐字清楚、" +
+                    "音量与情绪平稳、没有背景音乐和回声，长度 8~10 秒。" +
+                    "带 BGM、多人对话、或只截到半句话的样本，克隆出来必然发抖变调——这不是 App 能修的。" +
+                    "首次使用需先在硅基流动官网完成实名认证。"
             },
             fontSize = 12.sp,
             lineHeight = 18.sp,
@@ -573,6 +643,38 @@ private fun CloneVoiceSheet(
                     minLines = 2,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    // v1.0.1：逐字稿是端侧识别自动填的，**ITN 会把口语数字改写成阿拉伯数字**
+                    // （"一千二" → "1200"），而服务商明确要求"文本必须与音频内容一致" ——
+                    // 对不上就会跑调。含数字时单独提一句，让用户自己核对。
+                    if (transcript.any { it.isDigit() }) {
+                        "⚠️ 稿子里有数字：自动识别会把「一千二」这类读法写成 1200，请对着录音确认一致"
+                    } else {
+                        "逐字稿是端侧识别自动填的，与录音不一致会让克隆跑调，请核对（可改）"
+                    },
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp,
+                    color = MutedText,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            // v1.0.1：边听边核对逐字稿；样本本来就在本地，直接播这一份裁剪后的 WAV
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                NeuButton(
+                    text = "▶ 重听样本",
+                    kind = NeuButtonKind.Secondary,
+                    onClick = {
+                        runCatching { playTtsPreview(context, file.readBytes(), "wav") }
+                            .onFailure { error = "播放失败：${it.javaClass.simpleName}" }
+                    },
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "上传用的是这段裁剪后的样本",
+                    fontSize = 11.sp,
+                    color = MutedText,
+                )
             }
             Spacer(Modifier.height(12.dp))
             NeuButton(
@@ -587,15 +689,29 @@ private fun CloneVoiceSheet(
                         // 用户起的名字（可以中文）只在本机显示；服务端那侧必须用 ASCII 名
                         val display = voiceName.trim().ifBlank { "我的音色" }
                         if (config.provider == TtsProvider.SILICONFLOW) {
+                            // ⚠️ v1.0.1：**只算一次**。asciiVoiceName 现在带随机后缀，算两次就是两个名字，
+                            // 缓存里存的名字会跟服务端实际那个对不上。
+                            val asciiName = VoiceCloner.asciiVoiceName(display)
                             runCatching {
                                 VoiceCloner.upload(
                                     config,
                                     file,
-                                    VoiceCloner.asciiVoiceName(display),
+                                    asciiName,
                                     transcript.trim(),
                                 )
                             }.onSuccess { uri ->
                                 app.settingsRepository.setCloneVoiceName(uri, display)
+                                // v1.0.1：**顺手写进本机名单缓存**。旧实现只写了显示名，
+                                // 而名单只有"列表接口成功"这一条来源 —— 那次请求一失败（403/网络），
+                                // 刚克隆的音色在名单里就查无此音（看着像"只能克隆一个"）。
+                                runCatching {
+                                    val rest = app.settingsRepository.cachedClonedVoices(config.provider)
+                                        .filter { it.uri != uri }
+                                    app.settingsRepository.setCachedClonedVoices(
+                                        config.provider,
+                                        rest + ClonedVoice(asciiName, uri, config.effectiveModel()),
+                                    )
+                                }
                                 // 克隆完直接把它设成默认音色，用户立刻能听到效果
                                 app.settingsRepository.setTtsDefaultVoice(VoiceRef(config.provider, uri))
                                 onDone()

@@ -1307,6 +1307,23 @@ class SettingsRepository(
         }
     }
 
+    /**
+     * 取消隐藏（v1.0.1）：隐藏表原来是**只进不出**的 —— 长按删一条克隆音色后，
+     * 任何界面都没有把它放回来的入口（用户因此会觉得"克隆的音色莫名其妙少了一个"）。
+     * 音色页底部据此提供「查看已隐藏」+ 恢复。
+     */
+    suspend fun unhideVoice(provider: TtsProvider, voiceId: String) {
+        if (voiceId.isBlank()) return
+        withContext(Dispatchers.IO) {
+            store.edit { prefs ->
+                val entry = "${provider.name}\t$voiceId"
+                val table = (prefs[keyHiddenVoices] ?: "").lines()
+                    .filter { it.isNotBlank() && it != entry }
+                if (table.isEmpty()) prefs.remove(keyHiddenVoices) else prefs[keyHiddenVoices] = table.joinToString("\n")
+            }
+        }
+    }
+
     /** 覆盖写该服务商那一份缓存（别的服务商的条目原样留着） */
     suspend fun setCachedClonedVoices(provider: TtsProvider, voices: List<ClonedVoice>) =
         withContext(Dispatchers.IO) {

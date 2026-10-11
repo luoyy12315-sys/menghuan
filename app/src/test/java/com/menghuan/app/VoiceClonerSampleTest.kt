@@ -123,4 +123,56 @@ class VoiceClonerSampleTest {
         val out = VoiceCloner.trimToSpeech(short, rate, VoiceCloner.MAX_SAMPLE_SECONDS)
         assertEquals(short.size, out.size)
     }
+
+    // ===== v1.0.1：同名覆盖（用户报"只能克隆一个"，且上传成功、无报错）=====
+
+    @Test
+    fun `服务端音色名每次都唯一`() {
+        // 旧实现只把名字里的 ASCII 抠出来：`小美a` / `小明a` 都变成 `a`，两次都用英文名也是同一个
+        // → 服务端视作同名、名单里永远只有一条，且不会有任何报错。
+        // 现在**唯一性来自后缀**（不是名字），所以断言用固定后缀，避免随机数让用例偶发变红。
+        assertEquals("a_k3f9", VoiceCloner.asciiVoiceName("小美a", "k3f9"))
+        assertEquals("a_k3f9", VoiceCloner.asciiVoiceName("小明a", "k3f9"))   // 这是旧行为的撞名点
+        assertEquals("voice_k3f9", VoiceCloner.asciiVoiceName("永雏塔菲", "k3f9"))
+        // 同一个显示名两次（后缀不同）必须得到不同的服务端名
+        assertTrue(
+            VoiceCloner.asciiVoiceName("yuki", "k3f9") != VoiceCloner.asciiVoiceName("yuki", "m7q2"),
+        )
+        // 服务端上限 64 字符（base 截到 40 + 后缀）
+        assertTrue(VoiceCloner.asciiVoiceName("x".repeat(200)).length <= 64)
+        // 真实调用产出的名字只含服务端允许的字符（字母数字下划线连字符）
+        val real = VoiceCloner.asciiVoiceName("小美a")
+        assertTrue(
+            "只允许字母数字 _ -（实际 $real）",
+            real.all { (it in 'a'..'z') || (it in 'A'..'Z') || (it in '0'..'9') || it == '_' || it == '-' },
+        )
+    }
+
+    // ===== v1.0.1：峰值归一（官方要求"稳定的音量"）=====
+
+    @Test
+    fun `偏小的样本被抬到目标峰值`() {
+        // 9000 ≈ -11dBFS：增益在 +12dB 封顶之内，能被抬到目标（留 1dB 余量）
+        val quiet = tone(24_000, 440, 0.5, amp = 9_000.0)
+        val out = VoiceCloner.normalizePeak(quiet)
+        val peak = out.maxOf { abs(it.toInt()) }
+        assertTrue("应被明显抬起来（peak=$peak）", peak > 20_000)
+        assertTrue("但不能削顶", peak <= 32767)
+    }
+
+    @Test
+    fun `已经够响的样本原样返回`() {
+        val loud = tone(24_000, 440, 0.3, amp = 30_000.0)
+        assertTrue("不该动它", VoiceCloner.normalizePeak(loud) === loud)
+    }
+
+    @Test
+    fun `全静音与极易放大的信号不被乱抬`() {
+        val silence = ShortArray(2_400)
+        assertTrue("全静音原样返回", VoiceCloner.normalizePeak(silence) === silence)
+        // 极小的底噪：增益有上限（+12dB），绝不把噪声抬成主信号
+        val noise = ShortArray(2_400) { if (it % 2 == 0) 30 else -30 }
+        val out = VoiceCloner.normalizePeak(noise)
+        assertTrue("增益必须封顶，噪声不能被抬到满刻度", out.maxOf { abs(it.toInt()) } <= (30 * 4 + 1))
+    }
 }

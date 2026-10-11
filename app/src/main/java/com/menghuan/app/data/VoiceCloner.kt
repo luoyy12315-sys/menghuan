@@ -68,6 +68,8 @@ object VoiceCloner {
      * **mp4** / flac / ogg（v0.52.0 起，用户点名要能传 mp4）。不写 MP3 编码器：上传接口收 wav，
      * 而抽音轨本来就要解码，解完直接重写成 WAV 反而更小更稳。
      *
+     * 落盘文件名 = `音色名_时间戳.wav`（**唯一**，见下），MiMo 那句"样本留在本机"就是靠这个目录里的文件。
+     *
      * @return 落盘文件；解不出音轨时抛 [IllegalStateException]，消息可直接给用户看
      */
     suspend fun prepareSample(context: Context, uri: Uri, name: String): File =
@@ -99,9 +101,13 @@ object VoiceCloner {
             val shorts = ShortArray(atOutRate.size) {
                 (atOutRate[it].coerceIn(-1f, 1f) * 32767f).toInt().toShort()
             }
-            val wav = WavPcm.writeMono(shorts, OUT_RATE)
+            // v1.0.1：峰值归一（官方要求"稳定的音量"）。放在重采样之后 —— 归一的是最终要上传的那份样本。
+            val wav = WavPcm.writeMono(normalizePeak(shorts), OUT_RATE)
 
-            val out = File(voiceDir(context), "${sanitize(name)}.wav")
+            // ⚠️ v1.0.1：**文件名必须唯一**。旧实现只用音色名当文件名，而选样本那一刻名字还没填
+            // （取默认值"我的音色"）→ 第二次克隆把同一个文件覆盖掉；MiMo 的音色名单就是"这个目录
+            // 里的 .wav"，于是**按设计只能存在一个**（用户报的"只能克隆一个"就是这条）。
+            val out = File(voiceDir(context), "${sanitize(name)}_${System.currentTimeMillis()}.wav")
             out.writeBytes(wav)
             out
         }
@@ -202,13 +208,54 @@ object VoiceCloner {
      * （真机 HTTP 400 原文："Invalid custom name. only letters and digits and _ and - are supported.
      * Should not exceed 64 chars"）。用户起的中文名（"永雏塔菲"）一个字符都发不出去，
      * 所以这里只用来生成一个 ASCII 标识，中文名另存本机显示（`SettingsRepository.cloneVoiceNames`）。
+     *
+     * ## v1.0.1：**必须带唯一后缀**（用户报"只能克隆一个"，且**上传成功、无任何报错**）
+     * 旧实现只是把名字里的 ASCII 抠出来（`小美a` / `小明a` → 都变成 `a`；两次都用英文名也是同一个），
+     * 服务端拿到**同名**就覆盖/视作同一个音色 → 名单里永远只有一条，且不会有任何报错。
+     * 现在一律拼一个 4 位随机后缀，**每次克隆都是新音色**（同一段样本反复克隆也会各留一条）。
      */
-    fun asciiVoiceName(display: String): String {
+    fun asciiVoiceName(display: String, stamp: String = newStamp()): String {
         val kept = display.trim().toCharArray()
             .filter { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '_' || it == '-' }
-            .joinToString("").take(40)
-        return if (kept.isNotBlank()) kept else "voice_${System.currentTimeMillis()}"
+            .joinToString("").take(MAX_NAME_BASE)
+        val base = kept.ifBlank { "voice" }
+        return "${base}_$stamp"
     }
+
+    /** 4 位随机后缀（`_k3f9`）：只求"同名不撞"，不承担标识作用 */
+    private fun newStamp(): String =
+        java.util.UUID.randomUUID().toString().replace("-", "").take(4)
+
+    private const val MAX_NAME_BASE = 40
+
+    /**
+     * 峰值归一化（v1.0.1）：官方对参考音频的要求里明写「**稳定的音量**」，而用户给的样本
+     * 音量千差万别（手机录音常偏小、直播切片偏大且压限过）。太小的样本会让模型听不清音色细节。
+     *
+     * 保守做法：只**放大**不缩小，最多个位数 +12dB；已经够响（≥ -0.5dBFS 的 0.9 倍）就原样返回，
+     * 全静音也原样返回 —— 绝不为了"标准化"把底噪一起抬起来。纯函数，JVM 可测。
+     */
+    fun normalizePeak(samples: ShortArray): ShortArray {
+        var peak = 0
+        for (s in samples) {
+            val v = kotlin.math.abs(s.toInt())
+            if (v > peak) peak = v
+        }
+        if (peak <= 0) return samples
+        val target = (32767 * PEAK_TARGET_RATIO).toInt()
+        if (peak >= target) return samples                       // 已经够响
+        val gain = (target.toDouble() / peak).coerceAtMost(MAX_GAIN)
+        if (gain <= 1.05) return samples
+        return ShortArray(samples.size) {
+            (samples[it] * gain).toInt().coerceIn(-32768, 32767).toShort()
+        }
+    }
+
+    /** 目标峰值（留 1dB 余量，别贴着满刻度） */
+    private const val PEAK_TARGET_RATIO = 0.89
+    private const val MAX_GAIN = 4.0                              // ≈ +12dB
+
+    /** 端侧转写样本，拿到上传接口必填的 `text`。识别模型没下载 / 转不出来返回 null，由 UI 让用户手填 */
 
     /**
      * 上传样本换 `uri`（硅基 `POST /uploads/audio/voice`，multipart 形态）。

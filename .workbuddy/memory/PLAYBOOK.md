@@ -21,6 +21,14 @@ open('classes.dex','rb').read().count('中文'.encode('utf-8'))
 - ⚠️ `strings -e l`、`decode('utf-16-le')` 结果全 0 是**假阴性**；`grep` 对中文也失效 → 一律用 Python 数 UTF-8 字节。
 - 短串容易误命中，以长串锚点为准。
 
+## Git 推送（Windows）
+- **在 Git Bash 里 `git push` 会失败**：`could not read Username for 'https://github.com': terminal prompts disabled`
+  （本机 `credential.helper = helper-selector`，即 GCM；非交互会话里弹不出登录窗）。
+- **改用 PowerShell 工具跑 `git push origin main`** → GCM 会弹窗授权，之后就成功。
+- ⚠️ PowerShell 会把 git 写到 stderr 的进度当成错误、报 `NativeCommandError` + `CategoryInfo: NotSpecified`
+  → **别据此判定失败**，认输出里的 `* [new branch] main -> main`；再用
+  `git rev-parse HEAD origin/main` 两边一致来复核（比 `git status` 更硬）。
+
 ## 手册 replace 链 · dump 手法
 - `jshell` **不在 PATH**，用 `C:/Users/16621/.workbuddy/toolchains/jdk17/bin/jshell.exe`。
 - ⚠️ **Git Bash 下调 jshell 必须加 `MSYS_NO_PATHCONV=1`**：类路径是 `;` 分隔的列表，MSYS 会把整串当路径转换

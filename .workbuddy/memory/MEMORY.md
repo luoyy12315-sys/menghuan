@@ -120,6 +120,13 @@
 - **观测层混合输入（截图+树）**：`ScreenCapture`（`takeScreenshot`，**API 30+ 才生效**，低版本静默退回纯树）落 `filesDir/agent_screenshot.jpg`（固定名每步覆盖）→ `ChatMessage.imagePath`。⚠️ **`collectReply` 的 `imageDataUrl` 默认 `{ null }`，不显式传 lambda 图片静默不发** —— 走多模态必须 imagePath + lambda 两件都给。开关 `agent_vision`（默认开）；SYSTEM 规则 6 钉死「动作只能按编号、截图只辅助」。
 - **Shizuku 后端已判定不做**（P2-K）：`screencap`/`input` 的独特价值被 M4-L 吃掉，代价（新依赖 + 装 App + 重启重激活 + 双后端）没变。触发条件 = 主力机停在 Android 10 且要视觉。
 
+## 音色克隆（易踩的两条）
+- **服务端 `customName` 必须唯一**：`VoiceCloner.asciiVoiceName` **一律拼 4 位随机后缀**。旧实现只把显示名里的 ASCII 抠出来（`小美a`/`小明a` → 都成 `a`）→ 服务端同名 → **名单里永远只有一条，且上传成功、无任何报错**（用户报"只能克隆一个"的真因）。改完记得：算一次就复用（存缓存的名字必须与上传的一致）。
+- **样本文件名也必须唯一**（`音色名_时间戳.wav`）：MiMo 的音色名单**就是 `filesDir/voices/` 里的 .wav**，同名即覆盖 → 按设计只能有一个。
+- 逐字稿是端侧 ASR 自动填的，而 ASR 开着 **ITN**（口语数字→阿拉伯数字），服务商要求 prompt 文本与音频逐字一致 → 对不上会跑调。**别用"再开一个 ITN=false 的识别器"解决**（两份 228MB≈500MB，`SherpaAsr` 头注释警告过的 OOM 场景）→ 走「含数字时 UI 提示核对 + 重听样本」。
+- 官方样本硬要求：**单一说话人 / 无 BGM 与回声 / 音量情绪平稳 / 8~10 秒**；只能靠 UI 明示，代码救不了。
+- 「删除克隆音色」= **写隐藏表**（`hiddenVoiceIds`，服务商账号里的实体不动），**必须有恢复入口**（`unhideVoice`）；克隆成功要顺手写 `cachedClonedVoices`，否则列表接口一失败名单里就查无此音。
+
 ## Live2D
 - 子系统在 `com.menghuan.app.live2d`，与通话解耦。**动作引擎 4 条铁律、通话页布局定稿、缩放与背景约束见 `PLAYBOOK.md`** —— 动 Live2D 前先读那节。
 

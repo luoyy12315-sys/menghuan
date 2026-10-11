@@ -2464,4 +2464,45 @@ fun `手册写明 Agent 屏幕截图开关与隐私口径`() {
         manual.lastIndexOf("「**发送屏幕截图**」开关"),
     )
 }
+
+@Test
+fun `手册写明音色可克隆多个与已隐藏可恢复`() {
+    val manual = AiPrompts.DEFAULT_ASSISTANT_PROMPT
+
+    // 新说法在：可以克隆多个（用户报"只能克隆一个"）
+    assertTrue(
+        "没写明克隆音色可以克隆多个",
+        manual.contains("克隆音色**可以克隆多个**：每克隆一次都是新的一条"),
+    )
+    // 新说法在：已隐藏可恢复
+    assertTrue(
+        "没写明已隐藏音色的恢复入口",
+        manual.contains("音色页下面有「查看已隐藏的音色（N）」可以逐条**恢复**回来"),
+    )
+    assertTrue(
+        "没写明「删除」只是本机隐藏",
+        manual.contains("「删除」只是从本机名单里藏起来，服务商账号里的音色并没有被删除"),
+    )
+    // 新说法在：重听样本 + 逐字稿对不上会跑调
+    assertTrue(
+        "没写明可以重听样本核对逐字稿",
+        manual.contains("**可以点「▶ 重听样本」边听边核对**"),
+    )
+
+    // 旧内容必须仍完整保留（本次是整句保留 + 前后补句）
+    assertTrue(
+        "音色板块那句被改丢了",
+        manual.contains("人设编辑页的候选就是这份名单（那边不再有试听与添加）。"),
+    )
+    assertTrue(
+        "克隆步骤那句被改丢了",
+        manual.contains("点「存入我的音色」得到音色；"),
+    )
+    // 新措辞只出现一次
+    assertEquals(
+        "克隆多个说明出现了不止一次",
+        manual.indexOf("克隆音色**可以克隆多个**"),
+        manual.lastIndexOf("克隆音色**可以克隆多个**"),
+    )
+}
 }
